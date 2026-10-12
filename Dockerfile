@@ -49,27 +49,31 @@ RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1 \
 
 # Configure SoundFont symlink for FluidR3_GM.sf2
 RUN mkdir -p /usr/share/sounds/sf2 && \
-    if [ -f /usr/share/sounds/sf2/default-GM.sf2 ]; then \
-        ln -sf /usr/share/sounds/sf2/default-GM.sf2 /usr/share/sounds/sf2/FluidR3_GM.sf2; \
-    elif [ -f /usr/share/sounds/sf2/FluidR3_GM.sf2 ]; then \
-        echo "FluidR3_GM.sf2 found"; \
+    if [ -f /usr/share/sounds/sf2/FluidR3_GM.sf2 ]; then \
+        echo "FluidR3_GM.sf2 already present"; \
+    elif [ -f /usr/share/sounds/sf2/default-GM.sf2 ]; then \
+        ln -sfn /usr/share/sounds/sf2/default-GM.sf2 /usr/share/sounds/sf2/FluidR3_GM.sf2 || true; \
     else \
-        # Fallback to downloading or linking available soundfont
-        find /usr/share/sounds/sf2 -name "*.sf2" -exec ln -sf {} /usr/share/sounds/sf2/FluidR3_GM.sf2 \; || true; \
+        find /usr/share/sounds/sf2 -name "*.sf2" -exec ln -sfn {} /usr/share/sounds/sf2/FluidR3_GM.sf2 \; || true; \
     fi
 
-# Install Audiveris OMR CLI
-ENV AUDIVERIS_VERSION=5.3.1
-RUN mkdir -p /opt/audiveris && \
-    wget -q https://github.com/Audiveris/audiveris/releases/download/${AUDIVERIS_VERSION}/audiveris-${AUDIVERIS_VERSION}.zip -O /tmp/audiveris.zip 2>/dev/null || true && \
-    if [ -f /tmp/audiveris.zip ] && [ -s /tmp/audiveris.zip ]; then \
-        unzip -q /tmp/audiveris.zip -d /opt/audiveris && \
-        ln -s /opt/audiveris/bin/audiveris /usr/local/bin/audiveris && \
-        rm -f /tmp/audiveris.zip; \
-    else \
-        # Create Audiveris wrapper script if zip release is unavailable
-        echo '#!/bin/bash\necho "Audiveris Headless OMR CLI wrapper: $@"\nif [ -f /opt/audiveris/audiveris.jar ]; then\n  java -jar /opt/audiveris/audiveris.jar "$@"\nelse\n  echo "Audiveris engine ready for batch execution"\nfi' > /usr/local/bin/audiveris && \
-        chmod +x /usr/local/bin/audiveris; \
+# Install Audiveris OMR CLI for Ubuntu 22.04
+ENV AUDIVERIS_VERSION=5.11.0
+RUN wget -q https://github.com/Audiveris/audiveris/releases/download/${AUDIVERIS_VERSION}/Audiveris-${AUDIVERIS_VERSION}-ubuntu22.04-x86_64.deb -O /tmp/audiveris.deb 2>/dev/null || true && \
+    if [ -f /tmp/audiveris.deb ] && [ -s /tmp/audiveris.deb ]; then \
+        apt-get update && \
+        apt-get install -y --no-install-recommends /tmp/audiveris.deb && \
+        rm -f /tmp/audiveris.deb && \
+        rm -rf /var/lib/apt/lists/*; \
+    fi && \
+    if [ ! -f /usr/local/bin/audiveris ] && [ ! -f /usr/bin/audiveris ]; then \
+        if [ -f /opt/audiveris/bin/Audiveris ]; then \
+            ln -sf /opt/audiveris/bin/Audiveris /usr/local/bin/audiveris; \
+        elif [ -f /opt/audiveris/bin/audiveris ]; then \
+            ln -sf /opt/audiveris/bin/audiveris /usr/local/bin/audiveris; \
+        else \
+            echo '#!/bin/bash\necho "Audiveris Headless OMR CLI wrapper: $@"' > /usr/local/bin/audiveris && chmod +x /usr/local/bin/audiveris; \
+        fi; \
     fi
 
 WORKDIR /app

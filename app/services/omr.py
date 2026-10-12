@@ -14,11 +14,27 @@ class OMREngine:
     """Optical Music Recognition service using headless Audiveris CLI."""
 
     def __init__(self, audiveris_bin: Optional[str] = None):
-        self.audiveris_bin = audiveris_bin or settings.AUDIVERIS_BIN
+        self.explicit_bin = audiveris_bin
+
+    def get_bin(self) -> str:
+        candidates = [
+            self.explicit_bin,
+            settings.AUDIVERIS_BIN,
+            "audiveris",
+            "Audiveris",
+            "/opt/audiveris/bin/Audiveris",
+            "/opt/audiveris/bin/audiveris",
+            "/usr/local/bin/audiveris",
+            "/usr/bin/audiveris",
+        ]
+        for c in candidates:
+            if c and shutil.which(c):
+                return c
+        return self.explicit_bin or settings.AUDIVERIS_BIN
 
     def is_available(self) -> bool:
         """Check if Audiveris CLI is accessible in PATH or configured location."""
-        return shutil.which(self.audiveris_bin) is not None
+        return shutil.which(self.get_bin()) is not None
 
     def process_pdf(self, pdf_path: Path, output_dir: Path) -> Path:
         """
@@ -34,15 +50,16 @@ class OMREngine:
         if not pdf_path.exists():
             raise FileNotFoundError(f"PDF file does not exist: {pdf_path}")
 
+        bin_path = self.get_bin()
         if not self.is_available():
             raise RuntimeError(
-                f"Audiveris CLI binary '{self.audiveris_bin}' not found on system PATH. "
+                f"Audiveris CLI binary '{bin_path}' not found on system PATH. "
                 "Audiveris is required for PDF Optical Music Recognition. "
                 "In local dev without Audiveris, you can upload MusicXML (.musicxml / .mxl / .xml) directly."
             )
 
         cmd = [
-            self.audiveris_bin,
+            bin_path,
             "-batch",
             "-export",
             "-output",
