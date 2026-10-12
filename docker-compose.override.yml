@@ -1,0 +1,10 @@
+version: '3.8'
+
+# This file is automatically loaded by Docker Compose in local development.
+# It enables local builds from the source Dockerfile when developing locally.
+
+services:
+  parttrackr:
+    build:
+      context: .
+      dockerfile: Dockerfile
