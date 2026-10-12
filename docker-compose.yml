@@ -2,6 +2,7 @@ version: '3.8'
 
 services:
   parttrackr:
+    image: ghcr.io/qlueconsulting/parttrackr:latest
     build:
       context: .
       dockerfile: Dockerfile

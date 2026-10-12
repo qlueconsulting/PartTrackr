@@ -57,23 +57,52 @@ Deployment: Dockerized FastAPI Microservice (Local Dev -> Supabase Production Ta
 
 ---
 
-## Quickstart
+## Quickstart & Deployment
 
-### 1. Running with Docker Compose (Recommended)
+### 1. Production Server Deployment (`docker pull`)
+
+GitHub Actions automatically builds and publishes the production image to **GitHub Container Registry (GHCR)** on every push to `main` and release tag.
+
+To deploy on any server without building from source:
+
+#### Option A: Direct Docker CLI
+```bash
+# Pull prebuilt image from GHCR
+docker pull ghcr.io/qlueconsulting/parttrackr:latest
+
+# Run container with persistent storage
+docker run -d \
+  --name parttrackr \
+  --restart unless-stopped \
+  -p 8000:8000 \
+  -v $(pwd)/storage:/app/storage \
+  ghcr.io/qlueconsulting/parttrackr:latest
+```
+
+#### Option B: Docker Compose (Production)
+```bash
+# Pull and start using the production compose file
+docker compose -f docker-compose.prod.yml pull
+docker compose -f docker-compose.prod.yml up -d
+```
+
+---
+
+### 2. Local Container Build (Development)
 
 ```bash
 # Clone the repository
 git clone https://github.com/qlueconsulting/PartTrackr.git
 cd PartTrackr
 
-# Launch the microservice container
+# Build and start container locally
 docker compose up --build
 ```
-Once started, navigate to `http://localhost:8000` in your browser.
+Navigate to `http://localhost:8000` in your browser.
 
 ---
 
-### 2. Running Locally (Python Virtual Environment)
+### 3. Running Locally (Python Virtual Environment)
 
 ```bash
 # Create virtual environment

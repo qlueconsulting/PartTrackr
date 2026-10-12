@@ -1,0 +1,28 @@
+version: '3.8'
+
+# Production Docker Compose definition for server deployment.
+# Pulls the pre-built image published by GitHub Actions from GHCR.
+
+services:
+  parttrackr:
+    image: ghcr.io/qlueconsulting/parttrackr:latest
+    container_name: parttrackr_service
+    restart: always
+    ports:
+      - "8000:8000"
+    environment:
+      - DEBUG=false
+      - STORAGE_DIR=/app/storage
+      - DATABASE_URL=sqlite:////app/storage/parttrackr_local.db
+      - AUDIVERIS_BIN=/usr/local/bin/audiveris
+      - FLUIDSYNTH_BIN=/usr/bin/fluidsynth
+      - FFMPEG_BIN=/usr/bin/ffmpeg
+      - SOUNDFONT_PATH=/usr/share/sounds/sf2/FluidR3_GM.sf2
+    volumes:
+      - ./storage:/app/storage
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s

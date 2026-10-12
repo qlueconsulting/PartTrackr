@@ -1,0 +1,16 @@
+.git
+.github
+.venv
+venv
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache
+*.db
+*.sqlite3
+storage/*
+!storage/uploads/.gitkeep
+!storage/xml/.gitkeep
+!storage/stems/.gitkeep
+!storage/midi/.gitkeep
