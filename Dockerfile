@@ -59,12 +59,11 @@ RUN mkdir -p /usr/share/sounds/sf2 && \
 
 # Install Audiveris OMR CLI for Ubuntu 22.04
 ENV AUDIVERIS_VERSION=5.11.0
-RUN wget -q https://github.com/Audiveris/audiveris/releases/download/${AUDIVERIS_VERSION}/Audiveris-${AUDIVERIS_VERSION}-ubuntu22.04-x86_64.deb -O /tmp/audiveris.deb 2>/dev/null || true && \
+RUN mkdir -p /usr/share/desktop-directories /opt/audiveris && \
+    wget -q https://github.com/Audiveris/audiveris/releases/download/${AUDIVERIS_VERSION}/Audiveris-${AUDIVERIS_VERSION}-ubuntu22.04-x86_64.deb -O /tmp/audiveris.deb 2>/dev/null || true && \
     if [ -f /tmp/audiveris.deb ] && [ -s /tmp/audiveris.deb ]; then \
-        apt-get update && \
-        apt-get install -y --no-install-recommends /tmp/audiveris.deb && \
-        rm -f /tmp/audiveris.deb && \
-        rm -rf /var/lib/apt/lists/*; \
+        dpkg-deb -x /tmp/audiveris.deb / && \
+        rm -f /tmp/audiveris.deb; \
     fi && \
     if [ ! -f /usr/local/bin/audiveris ] && [ ! -f /usr/bin/audiveris ]; then \
         if [ -f /opt/audiveris/bin/Audiveris ]; then \
