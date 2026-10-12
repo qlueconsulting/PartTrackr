@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PartTrackr - Choral Rehearsal & Notation Microservice</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        choral: {
+                            50: '#eef2ff',
+                            500: '#6366f1',
+                            600: '#4f46e5',
+                            700: '#4338ca',
+                            900: '#1e1b4b',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <!-- OpenSheetMusicDisplay (OSMD) for interactive score notation rendering -->
+    <script src="https://cdn.jsdelivr.net/npm/opensheetmusicdisplay@1.8.8/build/opensheetmusicdisplay.min.js"></script>
+    <link rel="stylesheet" href="/static/css/styles.css">
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen flex flex-col font-sans antialiased selection:bg-indigo-600 selection:text-white">
+
+    <!-- Top Navigation Bar -->
+    <header class="border-b border-slate-800 bg-slate-900/90 backdrop-blur sticky top-0 z-50">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+            <div class="flex items-center space-x-3">
+                <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-indigo-600 to-purple-600 flex items-center justify-center shadow-lg shadow-indigo-500/20">
+                    <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3"></path>
+                    </svg>
+                </div>
+                <div>
+                    <h1 class="text-lg font-bold tracking-tight text-white flex items-center gap-2">
+                        PartTrackr
+                        <span class="text-[10px] font-mono px-2 py-0.5 rounded bg-indigo-950 text-indigo-400 border border-indigo-800">v1.0 Microservice</span>
+                    </h1>
+                    <p class="text-xs text-slate-400">Choral Rehearsal & Multi-Track Notation Engine</p>
+                </div>
+            </div>
+
+            <div class="flex items-center space-x-3">
+                <div class="hidden sm:flex items-center space-x-2 text-xs bg-slate-800/80 px-3 py-1.5 rounded-full border border-slate-700">
+                    <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                    <span class="text-slate-300 font-medium">Local Engine Ready</span>
+                </div>
+                <button id="load-sample-btn" class="text-xs font-semibold px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white shadow transition flex items-center gap-1.5">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                    Load Bach SATB Sample
+                </button>
+            </div>
+        </div>
+    </header>
+
+    <!-- Loading & Buffer Notification Banner -->
+    <div id="loading-banner" class="hidden bg-indigo-950/90 border-b border-indigo-800 text-indigo-200 text-xs py-2 px-4 text-center font-medium flex items-center justify-center gap-2">
+        <svg class="animate-spin w-4 h-4 text-indigo-400" fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+        </svg>
+        <span id="loading-text">Loading score...</span>
+    </div>
+
+    <!-- Main Container -->
+    <main class="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 lg:p-8 grid grid-cols-1 lg:grid-cols-12 gap-6">
+
+        <!-- Left Column: Upload & Ingested Scores Library -->
+        <aside class="lg:col-span-4 space-y-6">
+
+            <!-- Upload Card -->
+            <div class="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl">
+                <h2 class="text-sm font-bold text-slate-200 uppercase tracking-wider mb-3 flex items-center gap-2">
+                    <svg class="w-4 h-4 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"></path></svg>
+                    Score Ingestion (PDF / MusicXML)
+                </h2>
+
+                <form id="upload-form" class="space-y-3">
+                    <input type="file" id="file-input" accept=".pdf,.musicxml,.xml,.mxl,.mid,.midi" class="hidden">
+                    <div id="drop-zone" class="border-2 border-dashed border-slate-700 hover:border-indigo-500 rounded-xl p-6 text-center cursor-pointer transition bg-slate-950/50 hover:bg-slate-800/40">
+                        <svg class="mx-auto h-9 w-9 text-slate-500 mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path></svg>
+                        <p class="text-xs font-semibold text-slate-300">Drag & drop score file, or <span class="text-indigo-400 underline">browse</span></p>
+                        <p class="text-[11px] text-slate-500 mt-1">Accepts PDF (Audiveris OMR) or direct MusicXML / MXL / MIDI</p>
+                    </div>
+                </form>
+            </div>
+
+            <!-- Scores Ingested Library -->
+            <div class="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl">
+                <div class="flex items-center justify-between mb-3">
+                    <h2 class="text-sm font-bold text-slate-200 uppercase tracking-wider flex items-center gap-2">
+                        <svg class="w-4 h-4 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"></path></svg>
+                        Score Library
+                    </h2>
+                    <span class="text-[11px] text-slate-500">Local Database</span>
+                </div>
+                <div id="scores-list" class="space-y-2 max-h-72 overflow-y-auto pr-1">
+                    <!-- Populated by JavaScript -->
+                    <div class="text-xs text-slate-500 py-4 text-center">Loading library...</div>
+                </div>
+            </div>
+
+            <!-- Choral Part Reference Guide -->
+            <div class="bg-slate-900/60 border border-slate-800/80 rounded-2xl p-4 text-xs text-slate-400 space-y-2">
+                <div class="font-bold text-slate-300 uppercase tracking-wider text-[11px]">11-Part Taxonomy Support</div>
+                <p class="text-[11px] leading-relaxed">
+                    PartTrackr splits scores into discrete registers:
+                    <span class="text-indigo-300 font-mono">Piano Score, S1, S2, A1, A2, T1, T2, Bar1, Bar2, B1, B2</span>.
+                    SATB, SAB, SSA, & TTBB scores automatically collapse and map to their registers without failing.
+                </p>
+            </div>
+
+        </aside>
+
+        <!-- Right Column: Audit Console, Synchronized Rehearsal Player, Mixer & Notation -->
+        <section class="lg:col-span-8 space-y-6">
+
+            <!-- Score Audit Banner -->
+            <div class="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl">
+                <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-slate-800">
+                    <div>
+                        <div class="flex items-center gap-2">
+                            <h2 id="current-score-title" class="text-lg font-bold text-white tracking-tight">Select or Upload a Score</h2>
+                            <span id="current-score-status" class="px-2.5 py-0.5 text-xs font-semibold rounded-full bg-slate-800 text-slate-400">IDLE</span>
+                        </div>
+                        <p id="current-score-subtitle" class="text-xs text-slate-400 mt-0.5">Upload a choral PDF or click "Load Bach SATB Sample" to start.</p>
+                    </div>
+                    <div class="flex items-center space-x-2">
+                        <a id="score-download-xml" href="#" download class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium transition flex items-center gap-1.5" title="Download Master MusicXML">
+                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
+                            MusicXML
+                        </a>
+                        <a id="score-download-pdf" href="#" download class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium transition flex items-center gap-1.5" title="Download Source File">
+                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+                            Source File
+                        </a>
+                    </div>
+                </div>
+
+                <!-- Detected Parts Badges -->
+                <div class="pt-3">
+                    <span class="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mr-2">Detected Parts:</span>
+                    <div id="detected-parts-container" class="inline-flex flex-wrap gap-1.5 mt-1 sm:mt-0">
+                        <span class="text-xs text-slate-500 italic">None yet</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Synchronized Transport & Rehearsal Focus Console -->
+            <div class="bg-gradient-to-b from-slate-900 to-slate-900/90 border border-slate-800 rounded-2xl p-5 shadow-2xl space-y-5">
+
+                <!-- Transport Bar -->
+                <div class="flex flex-col sm:flex-row items-center justify-between gap-4">
+                    <!-- Transport Buttons -->
+                    <div class="flex items-center space-x-2">
+                        <button id="play-btn" class="w-12 h-12 rounded-full bg-indigo-600 hover:bg-indigo-500 text-white flex items-center justify-center shadow-lg shadow-indigo-600/30 transition transform hover:scale-105 active:scale-95 disabled:opacity-50" title="Play">
+                            <svg class="w-6 h-6 ml-0.5" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"></path></svg>
+                        </button>
+                        <button id="pause-btn" class="hidden w-12 h-12 rounded-full bg-amber-500 hover:bg-amber-400 text-black flex items-center justify-center shadow-lg transition transform hover:scale-105 active:scale-95" title="Pause">
+                            <svg class="w-6 h-6" fill="currentColor" viewBox="0 0 24 24"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"></path></svg>
+                        </button>
+                        <button id="stop-btn" class="w-10 h-10 rounded-full bg-slate-800 hover:bg-slate-700 text-slate-300 flex items-center justify-center transition" title="Stop & Return to 00:00">
+                            <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M6 6h12v12H6z"></path></svg>
+                        </button>
+                    </div>
+
+                    <!-- Scrubber & Time Display -->
+                    <div class="flex-1 w-full flex items-center space-x-3">
+                        <span id="time-display" class="font-mono text-xs text-slate-300 font-semibold w-24 text-center">00:00 / 00:00</span>
+                        <input id="seek-bar" type="range" min="0" max="100" value="0" step="0.1" class="w-full accent-indigo-500 h-2 bg-slate-800 rounded-lg cursor-pointer">
+                    </div>
+
+                    <!-- Master Volume -->
+                    <div class="flex items-center space-x-2 w-full sm:w-44">
+                        <svg class="w-4 h-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z"></path></svg>
+                        <input id="master-volume" type="range" min="0" max="1" step="0.05" value="0.9" class="w-full accent-indigo-500 h-1.5 bg-slate-800 rounded cursor-pointer">
+                        <span id="master-vol-value" class="font-mono text-[11px] text-slate-400 w-8 text-right">90%</span>
+                    </div>
+                </div>
+
+                <!-- Choral Rehearsal Focus Controls Console -->
+                <div class="bg-slate-950/80 border border-indigo-950 rounded-xl p-4 space-y-4">
+                    <div class="flex items-center justify-between">
+                        <span class="text-xs font-bold text-indigo-400 uppercase tracking-wider flex items-center gap-1.5">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
+                            Rehearsal Part Focus Engine
+                        </span>
+                        <div class="flex items-center space-x-2">
+                            <span class="text-xs text-slate-400">Piano Accompaniment:</span>
+                            <button id="piano-toggle-btn" class="px-3 py-1 text-xs font-semibold rounded bg-emerald-600 text-white hover:bg-emerald-500 transition">
+                                <span id="piano-toggle-indicator">ON</span>
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 items-center">
+                        <!-- Target Part Dropdown -->
+                        <div>
+                            <label class="block text-[11px] font-semibold text-slate-400 uppercase mb-1">Target Part to Rehearse</label>
+                            <select id="target-part-select" class="w-full bg-slate-900 border border-slate-700 text-slate-200 text-xs rounded-lg p-2 focus:ring-2 focus:ring-indigo-500 focus:outline-none">
+                                <option value="">(All Parts Equal)</option>
+                            </select>
+                        </div>
+
+                        <!-- Mode Switch: Emphasize vs Isolate/Solo -->
+                        <div>
+                            <label class="block text-[11px] font-semibold text-slate-400 uppercase mb-1">Rehearsal Mode</label>
+                            <div class="flex bg-slate-900 border border-slate-700 rounded-lg p-0.5 space-x-1">
+                                <button id="mode-emphasize" class="flex-1 py-1.5 px-3 rounded text-xs font-semibold bg-indigo-600 text-white shadow">
+                                    Emphasize Part
+                                </button>
+                                <button id="mode-isolate" class="flex-1 py-1.5 px-3 rounded text-xs font-semibold bg-slate-800 text-slate-300 hover:bg-slate-700">
+                                    Solo / Isolate
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- Emphasis Level Slider -->
+                        <div>
+                            <div class="flex items-center justify-between mb-1">
+                                <label class="text-[11px] font-semibold text-slate-400 uppercase">Emphasis Level</label>
+                                <span id="emphasis-value" class="font-mono text-xs text-indigo-400 font-bold">150%</span>
+                            </div>
+                            <input id="emphasis-slider" type="range" min="0" max="2" step="0.1" value="1.5" class="w-full accent-indigo-500 h-2 bg-slate-800 rounded-lg cursor-pointer">
+                            <div class="flex justify-between text-[10px] text-slate-500 mt-0.5">
+                                <span>0%</span>
+                                <span>100% (Normal)</span>
+                                <span>200% (Boost)</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+
+            <!-- Multi-Track Mixer Stems -->
+            <div class="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl">
+                <div class="flex items-center justify-between mb-4">
+                    <h3 class="text-sm font-bold text-slate-200 uppercase tracking-wider flex items-center gap-2">
+                        <svg class="w-4 h-4 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4"></path></svg>
+                        Multi-Track Mixer Console
+                    </h3>
+                    <span class="text-xs text-slate-400">Sample-Accurate Synchronized Stems</span>
+                </div>
+
+                <!-- Stems Container -->
+                <div id="stems-container" class="space-y-3">
+                    <div class="text-xs text-slate-500 py-6 text-center">
+                        Upload a score or click "Load Bach SATB Sample" to view stems.
+                    </div>
+                </div>
+            </div>
+
+            <!-- Sheet Music Notation Preview (OSMD) -->
+            <div class="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl">
+                <div class="flex items-center justify-between mb-3">
+                    <h3 class="text-sm font-bold text-slate-200 uppercase tracking-wider flex items-center gap-2">
+                        <svg class="w-4 h-4 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
+                        Score Notation Preview (Auditing)
+                    </h3>
+                    <span class="text-[11px] text-slate-500">Interactive OpenSheetMusicDisplay</span>
+                </div>
+                <!-- OSMD Canvas Container (White background for authentic sheet music contrast) -->
+                <div class="bg-white rounded-xl p-4 overflow-x-auto min-h-[160px] flex items-center justify-center text-slate-800">
+                    <div id="osmd-container" class="w-full text-center text-xs text-slate-400">
+                        Score notation will render here once loaded.
+                    </div>
+                </div>
+            </div>
+
+        </section>
+
+    </main>
+
+    <!-- Footer -->
+    <footer class="border-t border-slate-800/80 bg-slate-950 py-4 text-center text-xs text-slate-500">
+        PartTrackr Microservice • Choral Rehearsal & Stem Isolation Engine • Docker & Local Dev Ready
+    </footer>
+
+    <!-- Scripts -->
+    <script src="/static/js/player.js"></script>
+    <script src="/static/js/app.js"></script>
+</body>
+</html>
