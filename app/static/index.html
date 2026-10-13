@@ -31,7 +31,7 @@
 <body class="bg-slate-950 text-slate-100 min-h-screen flex flex-col font-sans antialiased selection:bg-indigo-600 selection:text-white">
 
     <!-- Top Navigation Bar -->
-    <header class="border-b border-slate-800 bg-slate-900/90 backdrop-blur sticky top-0 z-50">
+    <header class="border-b border-slate-800 bg-slate-900/90 backdrop-blur sticky top-0 z-40">
         <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
             <div class="flex items-center space-x-3">
                 <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-indigo-600 to-purple-600 flex items-center justify-center shadow-lg shadow-indigo-500/20">
@@ -48,14 +48,23 @@
                 </div>
             </div>
 
-            <div class="flex items-center space-x-3">
-                <div class="hidden sm:flex items-center space-x-2 text-xs bg-slate-800/80 px-3 py-1.5 rounded-full border border-slate-700">
-                    <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-                    <span class="text-slate-300 font-medium">Local Engine Ready</span>
-                </div>
+            <div class="flex items-center space-x-2 sm:space-x-3">
+                <!-- API Viewer Button -->
+                <button id="open-api-viewer-btn" class="text-xs font-semibold px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 hover:border-slate-600 shadow transition flex items-center gap-1.5" title="Open API Documentation & Diagnostics">
+                    <svg class="w-4 h-4 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"></path></svg>
+                    <span>API Viewer</span>
+                </button>
+
+                <!-- Swagger UI Direct Link -->
+                <a href="/docs" target="_blank" class="hidden sm:flex text-xs font-medium px-2.5 py-1.5 rounded-lg text-slate-400 hover:text-slate-200 hover:bg-slate-800 transition items-center gap-1" title="Open FastAPI Interactive Swagger Documentation">
+                    <span>Swagger Docs</span>
+                    <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"></path></svg>
+                </a>
+
+                <!-- Load Sample Button -->
                 <button id="load-sample-btn" class="text-xs font-semibold px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white shadow transition flex items-center gap-1.5">
                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
-                    Load Bach SATB Sample
+                    <span>Load Bach SATB</span>
                 </button>
             </div>
         </div>
@@ -131,9 +140,19 @@
                             <h2 id="current-score-title" class="text-lg font-bold text-white tracking-tight">Select or Upload a Score</h2>
                             <span id="current-score-status" class="px-2.5 py-0.5 text-xs font-semibold rounded-full bg-slate-800 text-slate-400">IDLE</span>
                         </div>
-                        <p id="current-score-subtitle" class="text-xs text-slate-400 mt-0.5">Upload a choral PDF or click "Load Bach SATB Sample" to start.</p>
+                        <p id="current-score-subtitle" class="text-xs text-slate-400 mt-0.5">Upload a choral PDF or click "Load Bach SATB" to start.</p>
                     </div>
                     <div class="flex items-center space-x-2">
+                        <!-- Reprocess button (always accessible) -->
+                        <button id="score-reprocess-btn" class="hidden px-3 py-1.5 rounded-lg bg-indigo-600/80 hover:bg-indigo-600 text-white text-xs font-semibold transition flex items-center gap-1.5 shadow" title="Re-trigger OMR & stem synthesis pipeline">
+                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+                            Reprocess
+                        </button>
+                        <!-- Show Error button (when failed) -->
+                        <button id="score-show-error-btn" class="hidden px-3 py-1.5 rounded-lg bg-rose-900/60 hover:bg-rose-900 text-rose-200 border border-rose-700 text-xs font-semibold transition flex items-center gap-1.5">
+                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
+                            Error Details
+                        </button>
                         <a id="score-download-xml" href="#" download class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium transition flex items-center gap-1.5" title="Download Master MusicXML">
                             <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
                             MusicXML
@@ -151,6 +170,61 @@
                     <div id="detected-parts-container" class="inline-flex flex-wrap gap-1.5 mt-1 sm:mt-0">
                         <span class="text-xs text-slate-500 italic">None yet</span>
                     </div>
+                </div>
+            </div>
+
+            <!-- ============================================================== -->
+            <!-- ERROR VIEWER CARD (Diagnostics & Stack Trace)                 -->
+            <!-- ============================================================== -->
+            <div id="error-viewer-card" class="hidden bg-rose-950/40 border border-rose-800/80 rounded-2xl p-5 shadow-2xl space-y-4 animate-fade-in">
+                <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-rose-900/60">
+                    <div class="flex items-start sm:items-center gap-3">
+                        <div class="w-10 h-10 rounded-xl bg-rose-900/60 border border-rose-700 flex items-center justify-center flex-shrink-0 text-rose-300">
+                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
+                        </div>
+                        <div>
+                            <h3 class="text-sm font-bold text-rose-200 flex items-center gap-2">
+                                Processing Failure Detected
+                                <span id="error-status-badge" class="px-2 py-0.5 text-[10px] uppercase font-mono rounded bg-rose-900 text-rose-300 border border-rose-700">FAILED</span>
+                            </h3>
+                            <p id="error-summary-text" class="text-xs text-rose-300/90 mt-0.5 font-mono break-all">No error details available.</p>
+                        </div>
+                    </div>
+                    <div class="flex items-center space-x-2">
+                        <button id="error-card-reprocess-btn" class="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold shadow transition flex items-center gap-1.5">
+                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+                            Reprocess Score
+                        </button>
+                        <button id="error-dismiss-btn" class="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs transition" title="Dismiss error panel">
+                            Dismiss
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Diagnostic Advice / Tips -->
+                <div id="error-diagnostic-tip" class="text-xs bg-rose-900/30 border border-rose-800/40 rounded-xl p-3 text-rose-200 space-y-1">
+                    <div class="font-bold text-[11px] uppercase tracking-wider text-rose-300 flex items-center gap-1.5">
+                        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                        Diagnostic Insight
+                    </div>
+                    <p id="error-diagnostic-advice" class="text-rose-200/90 text-xs">
+                        If Audiveris OMR fails due to image complexity or system environment, you can export and upload the score directly as MusicXML (.musicxml / .mxl / .xml) or MIDI.
+                    </p>
+                </div>
+
+                <!-- Traceback / Stderr Viewer -->
+                <div>
+                    <div class="flex items-center justify-between mb-1.5">
+                        <span class="text-[11px] font-mono uppercase tracking-wider text-rose-300 font-semibold flex items-center gap-1.5">
+                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
+                            Complete Stack Trace & Stderr Output
+                        </span>
+                        <button id="copy-traceback-btn" class="text-[11px] px-2.5 py-1 rounded bg-rose-900/70 hover:bg-rose-800 text-rose-200 border border-rose-700 transition flex items-center gap-1">
+                            <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"></path></svg>
+                            <span id="copy-traceback-label">Copy Traceback</span>
+                        </button>
+                    </div>
+                    <pre id="error-traceback-content" class="bg-slate-950/90 border border-slate-800 rounded-xl p-3.5 text-[11px] font-mono text-rose-300 overflow-x-auto max-h-64 overflow-y-auto leading-relaxed select-all whitespace-pre-wrap">No traceback available.</pre>
                 </div>
             </div>
 
@@ -254,7 +328,42 @@
                 <!-- Stems Container -->
                 <div id="stems-container" class="space-y-3">
                     <div class="text-xs text-slate-500 py-6 text-center">
-                        Upload a score or click "Load Bach SATB Sample" to view stems.
+                        Upload a score or click "Load Bach SATB" to view stems.
+                    </div>
+                </div>
+            </div>
+
+            <!-- ============================================================== -->
+            <!-- LIVE PIPELINE ACTIVITY & MESSAGES CONSOLE                     -->
+            <!-- ============================================================== -->
+            <div class="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl space-y-3">
+                <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 border-b border-slate-800">
+                    <div class="flex items-center space-x-2">
+                        <h3 class="text-sm font-bold text-slate-200 uppercase tracking-wider flex items-center gap-2">
+                            <svg class="w-4 h-4 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
+                            Pipeline Activity & Messages
+                        </h3>
+                        <span id="messages-count-badge" class="px-2 py-0.5 text-[10px] font-mono font-bold rounded-full bg-slate-800 text-slate-400 border border-slate-700">0 events</span>
+                    </div>
+                    <div class="flex items-center space-x-2 text-xs">
+                        <label class="flex items-center space-x-1.5 text-slate-400 cursor-pointer select-none">
+                            <input id="autoscroll-messages-toggle" type="checkbox" checked class="rounded border-slate-700 bg-slate-800 text-indigo-600 focus:ring-0">
+                            <span class="text-[11px]">Auto-scroll</span>
+                        </label>
+                        <button id="copy-messages-btn" class="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-[11px] transition flex items-center gap-1">
+                            <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"></path></svg>
+                            <span id="copy-messages-label">Copy Logs</span>
+                        </button>
+                        <button id="clear-messages-btn" class="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-slate-200 text-[11px] transition">
+                            Clear
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Scrollable Console -->
+                <div id="messages-log-console" class="bg-slate-950 border border-slate-800/80 rounded-xl p-3 font-mono text-xs max-h-56 overflow-y-auto space-y-1.5 shadow-inner">
+                    <div class="text-slate-500 italic text-[11px] py-4 text-center">
+                        No pipeline events logged yet. Upload a score to view real-time processing messages.
                     </div>
                 </div>
             </div>
@@ -279,6 +388,194 @@
         </section>
 
     </main>
+
+    <!-- ============================================================== -->
+    <!-- INTERACTIVE REST API VIEWER MODAL                              -->
+    <!-- ============================================================== -->
+    <div id="api-viewer-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 bg-slate-950/80 backdrop-blur-sm animate-fade-in">
+        <div class="bg-slate-900 border border-slate-700 rounded-2xl w-full max-w-5xl h-[88vh] flex flex-col shadow-2xl overflow-hidden">
+            <!-- Modal Header -->
+            <div class="px-6 py-4 border-b border-slate-800 flex items-center justify-between bg-slate-900/90 flex-shrink-0">
+                <div class="flex items-center space-x-3">
+                    <div class="w-9 h-9 rounded-xl bg-indigo-600/30 border border-indigo-500/50 flex items-center justify-center text-indigo-400 shadow-md">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"></path></svg>
+                    </div>
+                    <div>
+                        <h3 class="text-base font-bold text-white flex items-center gap-2">
+                            PartTrackr REST API Viewer & Diagnostics
+                            <span class="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-950 text-emerald-400 border border-emerald-800">FastAPI OpenAPI 3.1</span>
+                        </h3>
+                        <p class="text-xs text-slate-400">Inspect endpoints, test cURL commands, view schemas, and check server engine health</p>
+                    </div>
+                </div>
+                <div class="flex items-center space-x-2">
+                    <a href="/docs" target="_blank" class="text-xs font-semibold px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white transition flex items-center gap-1.5 shadow">
+                        <span>Open Swagger UI</span>
+                        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"></path></svg>
+                    </a>
+                    <button id="close-api-viewer-btn" class="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white transition" title="Close modal">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Modal Sub-navigation Tabs -->
+            <div class="px-6 pt-3 border-b border-slate-800 flex space-x-6 bg-slate-900/60 flex-shrink-0">
+                <button id="api-tab-btn-endpoints" class="pb-3 text-xs font-bold text-indigo-400 border-b-2 border-indigo-500 transition">
+                    API Endpoints Reference
+                </button>
+                <button id="api-tab-btn-health" class="pb-3 text-xs font-medium text-slate-400 hover:text-slate-200 border-b-2 border-transparent transition">
+                    Server Engine Health (/health)
+                </button>
+                <button id="api-tab-btn-swagger" class="pb-3 text-xs font-medium text-slate-400 hover:text-slate-200 border-b-2 border-transparent transition">
+                    Embedded Swagger UI
+                </button>
+            </div>
+
+            <!-- Modal Content Area -->
+            <div class="flex-1 overflow-y-auto p-6 space-y-6">
+
+                <!-- TAB 1: API ENDPOINTS REFERENCE -->
+                <div id="api-view-endpoints" class="space-y-4">
+                    <div class="text-xs text-slate-400 mb-2">
+                        Base URL: <code class="text-indigo-300 font-mono bg-slate-950 px-2 py-0.5 rounded border border-slate-800">http://localhost:8000/api/v1</code>
+                    </div>
+
+                    <!-- Endpoint 1: Upload Score -->
+                    <div class="bg-slate-950/70 border border-slate-800 rounded-xl p-4 space-y-2.5">
+                        <div class="flex items-center justify-between">
+                            <div class="flex items-center space-x-2.5 font-mono text-xs">
+                                <span class="px-2.5 py-0.5 rounded font-bold bg-emerald-950 text-emerald-400 border border-emerald-800">POST</span>
+                                <span class="text-slate-200 font-semibold">/api/v1/scores/upload</span>
+                            </div>
+                            <span class="text-[11px] text-slate-500">HTTP 202 Accepted</span>
+                        </div>
+                        <p class="text-xs text-slate-300">Upload a choral PDF or symbolic notation score. Triggers the background pipeline (Audiveris OMR -> music21 register splitting -> FluidSynth stem synthesis).</p>
+                        <div class="bg-slate-900 rounded-lg p-2.5 font-mono text-[11px] text-slate-300 overflow-x-auto">
+                            <span class="text-slate-500"># cURL Example:</span><br>
+                            curl -X POST "http://localhost:8000/api/v1/scores/upload" \<br>
+                            &nbsp;&nbsp;-F "file=@choral_score.pdf"
+                        </div>
+                    </div>
+
+                    <!-- Endpoint 2: List Scores -->
+                    <div class="bg-slate-950/70 border border-slate-800 rounded-xl p-4 space-y-2.5">
+                        <div class="flex items-center justify-between">
+                            <div class="flex items-center space-x-2.5 font-mono text-xs">
+                                <span class="px-2.5 py-0.5 rounded font-bold bg-sky-950 text-sky-400 border border-sky-800">GET</span>
+                                <span class="text-slate-200 font-semibold">/api/v1/scores</span>
+                            </div>
+                            <span class="text-[11px] text-slate-500">HTTP 200 OK</span>
+                        </div>
+                        <p class="text-xs text-slate-300">List all ingested scores with status (<code class="text-indigo-300 font-mono">queued</code>, <code class="text-indigo-300 font-mono">processing_omr</code>, <code class="text-indigo-300 font-mono">parsing</code>, <code class="text-indigo-300 font-mono">synthesizing</code>, <code class="text-indigo-300 font-mono">ready</code>, <code class="text-indigo-300 font-mono">failed</code>) and stem summaries.</p>
+                        <div class="bg-slate-900 rounded-lg p-2.5 font-mono text-[11px] text-slate-300 overflow-x-auto">
+                            <span class="text-slate-500"># cURL Example:</span><br>
+                            curl "http://localhost:8000/api/v1/scores?skip=0&limit=50"
+                        </div>
+                    </div>
+
+                    <!-- Endpoint 3: Get Score by ID -->
+                    <div class="bg-slate-950/70 border border-slate-800 rounded-xl p-4 space-y-2.5">
+                        <div class="flex items-center justify-between">
+                            <div class="flex items-center space-x-2.5 font-mono text-xs">
+                                <span class="px-2.5 py-0.5 rounded font-bold bg-sky-950 text-sky-400 border border-sky-800">GET</span>
+                                <span class="text-slate-200 font-semibold">/api/v1/scores/{score_id}</span>
+                            </div>
+                            <span class="text-[11px] text-slate-500">HTTP 200 OK</span>
+                        </div>
+                        <p class="text-xs text-slate-300">Retrieve score status, detected choral parts, isolated audio stem URLs, processing activity logs, and error stack traces.</p>
+                        <div class="bg-slate-900 rounded-lg p-2.5 font-mono text-[11px] text-slate-300 overflow-x-auto">
+                            <span class="text-slate-500"># cURL Example:</span><br>
+                            curl "http://localhost:8000/api/v1/scores/{score_id}"
+                        </div>
+                    </div>
+
+                    <!-- Endpoint 4: Reprocess Score -->
+                    <div class="bg-slate-950/70 border border-slate-800 rounded-xl p-4 space-y-2.5">
+                        <div class="flex items-center justify-between">
+                            <div class="flex items-center space-x-2.5 font-mono text-xs">
+                                <span class="px-2.5 py-0.5 rounded font-bold bg-emerald-950 text-emerald-400 border border-emerald-800">POST</span>
+                                <span class="text-slate-200 font-semibold">/api/v1/scores/{score_id}/reprocess</span>
+                            </div>
+                            <span class="text-[11px] text-slate-500">HTTP 200 OK</span>
+                        </div>
+                        <p class="text-xs text-slate-300">Re-triggers the OMR, notation parsing, and synthesis pipeline for an existing score.</p>
+                        <div class="bg-slate-900 rounded-lg p-2.5 font-mono text-[11px] text-slate-300 overflow-x-auto">
+                            <span class="text-slate-500"># cURL Example:</span><br>
+                            curl -X POST "http://localhost:8000/api/v1/scores/{score_id}/reprocess"
+                        </div>
+                    </div>
+
+                    <!-- Endpoint 5: Stream Stem Audio -->
+                    <div class="bg-slate-950/70 border border-slate-800 rounded-xl p-4 space-y-2.5">
+                        <div class="flex items-center justify-between">
+                            <div class="flex items-center space-x-2.5 font-mono text-xs">
+                                <span class="px-2.5 py-0.5 rounded font-bold bg-sky-950 text-sky-400 border border-sky-800">GET</span>
+                                <span class="text-slate-200 font-semibold">/api/v1/scores/{score_id}/stems/{stem_id}/audio</span>
+                            </div>
+                            <span class="text-[11px] text-slate-500">HTTP 200 / 206 Partial</span>
+                        </div>
+                        <p class="text-xs text-slate-300">Streams isolated WAV audio for a choral part (e.g., Soprano I, Tenor II, Piano Score) with HTTP range header support for Web Audio buffering.</p>
+                        <div class="bg-slate-900 rounded-lg p-2.5 font-mono text-[11px] text-slate-300 overflow-x-auto">
+                            <span class="text-slate-500"># cURL Example:</span><br>
+                            curl -O "http://localhost:8000/api/v1/scores/{score_id}/stems/{stem_id}/audio"
+                        </div>
+                    </div>
+
+                    <!-- Endpoint 6: Delete Score -->
+                    <div class="bg-slate-950/70 border border-slate-800 rounded-xl p-4 space-y-2.5">
+                        <div class="flex items-center justify-between">
+                            <div class="flex items-center space-x-2.5 font-mono text-xs">
+                                <span class="px-2.5 py-0.5 rounded font-bold bg-rose-950 text-rose-400 border border-rose-800">DELETE</span>
+                                <span class="text-slate-200 font-semibold">/api/v1/scores/{score_id}</span>
+                            </div>
+                            <span class="text-[11px] text-slate-500">HTTP 204 No Content</span>
+                        </div>
+                        <p class="text-xs text-slate-300">Deletes a score record and purges all rendered stem audio, MIDI, and MusicXML files from storage.</p>
+                        <div class="bg-slate-900 rounded-lg p-2.5 font-mono text-[11px] text-slate-300 overflow-x-auto">
+                            <span class="text-slate-500"># cURL Example:</span><br>
+                            curl -X DELETE "http://localhost:8000/api/v1/scores/{score_id}"
+                        </div>
+                    </div>
+                </div>
+
+                <!-- TAB 2: HEALTH & ENGINE DIAGNOSTICS -->
+                <div id="api-view-health" class="hidden space-y-4">
+                    <div class="flex items-center justify-between mb-2">
+                        <span class="text-xs text-slate-400">Microservice Health Endpoint: <code class="text-indigo-300 font-mono">GET /health</code></span>
+                        <button id="refresh-health-btn" class="px-2.5 py-1 text-xs rounded bg-slate-800 hover:bg-slate-700 text-slate-300 transition flex items-center gap-1">
+                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+                            Refresh Status
+                        </button>
+                    </div>
+
+                    <div id="health-cards-grid" class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        <!-- Populated by JavaScript -->
+                        <div class="text-xs text-slate-500 py-6 text-center col-span-2">Checking engine components...</div>
+                    </div>
+
+                    <!-- Raw JSON output -->
+                    <div class="mt-4">
+                        <span class="text-[11px] font-mono uppercase tracking-wider text-slate-400 font-semibold">Raw /health JSON Response:</span>
+                        <pre id="raw-health-json" class="mt-1 bg-slate-950 border border-slate-800 rounded-xl p-3.5 text-xs font-mono text-emerald-400 overflow-x-auto">{ "loading": true }</pre>
+                    </div>
+                </div>
+
+                <!-- TAB 3: EMBEDDED SWAGGER UI -->
+                <div id="api-view-swagger" class="hidden h-full flex flex-col space-y-2">
+                    <div class="flex items-center justify-between text-xs text-slate-400">
+                        <span>Interactive Swagger UI documentation powered by FastAPI</span>
+                        <a href="/docs" target="_blank" class="text-indigo-400 hover:underline flex items-center gap-1">
+                            Open in full window
+                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"></path></svg>
+                        </a>
+                    </div>
+                    <iframe id="swagger-iframe" src="about:blank" class="w-full flex-1 rounded-xl border border-slate-800 bg-white min-h-[500px]"></iframe>
+                </div>
+
+            </div>
+        </div>
+    </div>
 
     <!-- Footer -->
     <footer class="border-t border-slate-800/80 bg-slate-950 py-4 text-center text-xs text-slate-500">

@@ -15,10 +15,11 @@ ENV DEBIAN_FRONTEND=noninteractive \
     SOUNDFONT_PATH=/usr/share/sounds/sf2/FluidR3_GM.sf2 \
     AUDIVERIS_BIN=/usr/local/bin/audiveris \
     FLUIDSYNTH_BIN=/usr/bin/fluidsynth \
-    FFMPEG_BIN=/usr/bin/ffmpeg
+    FFMPEG_BIN=/usr/bin/ffmpeg \
+    LD_LIBRARY_PATH="/usr/lib/x86_64-linux-gnu:/usr/lib/aarch64-linux-gnu:/usr/lib"
 
 # Install system dependencies:
-# - OpenJDK 17 headless (Audiveris OMR runtime)
+# - OpenJDK 17 headless + GTK/X11 runtime libs (Audiveris OMR runtime)
 # - FluidSynth + SoundFonts (Audio synthesis)
 # - FFmpeg (Audio encoding/mixing)
 # - Poppler-utils & ImageMagick (PDF processing)
@@ -29,7 +30,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     wget \
     unzip \
     git \
-    openjdk-17-jre-headless \
+    openjdk-17-jre \
+    libgtk-3-0 \
+    libxtst6 \
+    libxrender1 \
+    libxi6 \
+    libasound2 \
+    libfontconfig1 \
+    libgl1 \
     fluidsynth \
     fluid-soundfont-gm \
     libsndfile1 \
@@ -42,6 +50,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3.11-dev \
     python3-pip \
     && rm -rf /var/lib/apt/lists/*
+
+# Ensure JNA can find libgtk-3.so for Audiveris (x86_64 and arm64 compatible)
+RUN for gtk_so in $(find /usr/lib -name "libgtk-3.so.0" 2>/dev/null); do \
+        gtk_dir=$(dirname "$gtk_so"); \
+        ln -sf "$gtk_so" "$gtk_dir/libgtk-3.so"; \
+        ln -sf "$gtk_so" /usr/lib/libgtk-3.so; \
+    done && \
+    ldconfig
 
 # Symlink python3.11 as default python
 RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1 \

@@ -1,13 +1,18 @@
 /**
- * PartTrackr - UI Controller & Audit Test Harness
+ * PartTrackr - UI Controller, Audit Test Harness & Live Diagnostics
  */
 document.addEventListener("DOMContentLoaded", () => {
     const player = new MultiTrackAudioEngine();
     let currentScore = null;
     let pollInterval = null;
     let osmd = null;
+    let lastRenderedLogsCount = 0;
 
-    // DOM Elements - Transport
+    // ==============================================================
+    // DOM ELEMENTS
+    // ==============================================================
+
+    // Transport
     const playBtn = document.getElementById("play-btn");
     const pauseBtn = document.getElementById("pause-btn");
     const stopBtn = document.getElementById("stop-btn");
@@ -34,14 +39,51 @@ document.addEventListener("DOMContentLoaded", () => {
     const loadingBanner = document.getElementById("loading-banner");
     const loadingText = document.getElementById("loading-text");
     const scoresListContainer = document.getElementById("scores-list");
+    const scoreReprocessBtn = document.getElementById("score-reprocess-btn");
+    const scoreShowErrorBtn = document.getElementById("score-show-error-btn");
+    const scoreDownloadXml = document.getElementById("score-download-xml");
+    const scoreDownloadPdf = document.getElementById("score-download-pdf");
 
-    // Upload & Sample
+    // Error Viewer Elements
+    const errorViewerCard = document.getElementById("error-viewer-card");
+    const errorStatusBadge = document.getElementById("error-status-badge");
+    const errorSummaryText = document.getElementById("error-summary-text");
+    const errorDiagnosticTip = document.getElementById("error-diagnostic-tip");
+    const errorDiagnosticAdvice = document.getElementById("error-diagnostic-advice");
+    const errorTracebackContent = document.getElementById("error-traceback-content");
+    const copyTracebackBtn = document.getElementById("copy-traceback-btn");
+    const copyTracebackLabel = document.getElementById("copy-traceback-label");
+    const errorDismissBtn = document.getElementById("error-dismiss-btn");
+    const errorCardReprocessBtn = document.getElementById("error-card-reprocess-btn");
+
+    // Messages Viewer Console Elements
+    const messagesCountBadge = document.getElementById("messages-count-badge");
+    const autoscrollMessagesToggle = document.getElementById("autoscroll-messages-toggle");
+    const copyMessagesBtn = document.getElementById("copy-messages-btn");
+    const copyMessagesLabel = document.getElementById("copy-messages-label");
+    const clearMessagesBtn = document.getElementById("clear-messages-btn");
+    const messagesLogConsole = document.getElementById("messages-log-console");
+
+    // API Viewer Modal Elements
+    const openApiViewerBtn = document.getElementById("open-api-viewer-btn");
+    const closeApiViewerBtn = document.getElementById("close-api-viewer-btn");
+    const apiViewerModal = document.getElementById("api-viewer-modal");
+    const apiTabBtnEndpoints = document.getElementById("api-tab-btn-endpoints");
+    const apiTabBtnHealth = document.getElementById("api-tab-btn-health");
+    const apiTabBtnSwagger = document.getElementById("api-tab-btn-swagger");
+    const apiViewEndpoints = document.getElementById("api-view-endpoints");
+    const apiViewHealth = document.getElementById("api-view-health");
+    const apiViewSwagger = document.getElementById("api-view-swagger");
+    const refreshHealthBtn = document.getElementById("refresh-health-btn");
+    const healthCardsGrid = document.getElementById("health-cards-grid");
+    const rawHealthJson = document.getElementById("raw-health-json");
+    const swaggerIframe = document.getElementById("swagger-iframe");
+
+    // Ingestion & Upload
     const fileInput = document.getElementById("file-input");
     const uploadForm = document.getElementById("upload-form");
     const dropZone = document.getElementById("drop-zone");
     const loadSampleBtn = document.getElementById("load-sample-btn");
-    const scoreDownloadXml = document.getElementById("score-download-xml");
-    const scoreDownloadPdf = document.getElementById("score-download-pdf");
 
     // Format seconds into MM:SS
     function formatTime(seconds) {
@@ -51,9 +93,9 @@ document.addEventListener("DOMContentLoaded", () => {
         return `${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`;
     }
 
-    // ==========================================
+    // ==============================================================
     // AUDIO ENGINE EVENT LISTENERS
-    // ==========================================
+    // ==============================================================
 
     player.onTimeUpdate = (current, duration) => {
         timeDisplay.textContent = `${formatTime(current)} / ${formatTime(duration)}`;
@@ -63,7 +105,7 @@ document.addEventListener("DOMContentLoaded", () => {
             seekBar.value = 0;
         }
 
-        // Update individual stem track progress indicators
+        // Update individual stem track progress bars
         document.querySelectorAll(".stem-progress-fill").forEach((el) => {
             el.style.width = duration > 0 ? `${(current / duration) * 100}%` : "0%";
         });
@@ -80,7 +122,7 @@ document.addEventListener("DOMContentLoaded", () => {
     };
 
     player.onTrackLoaded = (track, count, total) => {
-        loadingText.textContent = `Buffering audio stems: ${count}/${total} (${track.name})...`;
+        loadingText.textContent = `Buffering audio stem ${count}/${total}: ${track.name}...`;
     };
 
     player.onAllLoaded = (duration) => {
@@ -90,9 +132,9 @@ document.addEventListener("DOMContentLoaded", () => {
         renderStemsMixer(currentScore.stems);
     };
 
-    // ==========================================
+    // ==============================================================
     // TRANSPORT CONTROLS
-    // ==========================================
+    // ==============================================================
 
     playBtn.addEventListener("click", () => player.play());
     pauseBtn.addEventListener("click", () => player.pause());
@@ -109,9 +151,9 @@ document.addEventListener("DOMContentLoaded", () => {
         masterVolValue.textContent = `${Math.round(val * 100)}%`;
     });
 
-    // ==========================================
-    // REHEARSAL CONTROLS
-    // ==========================================
+    // ==============================================================
+    // REHEARSAL FOCUS CONTROLS
+    // ==============================================================
 
     targetPartSelect.addEventListener("change", (e) => {
         const key = e.target.value;
@@ -160,13 +202,18 @@ document.addEventListener("DOMContentLoaded", () => {
         });
     }
 
-    // ==========================================
+    // ==============================================================
     // STEMS MIXER RENDERING
-    // ==========================================
+    // ==============================================================
 
     function renderStemsMixer(stems) {
         stemsContainer.innerHTML = "";
         targetPartSelect.innerHTML = '<option value="">(All Parts Equal)</option>';
+
+        if (!stems || stems.length === 0) {
+            stemsContainer.innerHTML = '<div class="text-xs text-slate-500 py-6 text-center">No audio stems rendered yet.</div>';
+            return;
+        }
 
         stems.forEach((stem) => {
             // Populate target select
@@ -194,6 +241,7 @@ document.addEventListener("DOMContentLoaded", () => {
                     </div>
                     <div class="flex items-center space-x-1.5 text-xs text-slate-400">
                         ${stem.pitch_range ? `<span class="bg-slate-800 px-2 py-0.5 rounded">${stem.pitch_range}</span>` : ""}
+                        <span class="bg-slate-800 px-2 py-0.5 rounded">${stem.measure_count} bars</span>
                         <span class="bg-slate-800 px-2 py-0.5 rounded">${stem.note_count} notes</span>
                     </div>
                 </div>
@@ -264,9 +312,202 @@ document.addEventListener("DOMContentLoaded", () => {
         });
     }
 
-    // ==========================================
+    // ==============================================================
+    // MESSAGES CONSOLE RENDERING
+    // ==============================================================
+
+    function renderProcessingLogs(logs) {
+        if (!logs || !Array.isArray(logs)) logs = [];
+        messagesCountBadge.textContent = `${logs.length} ${logs.length === 1 ? 'event' : 'events'}`;
+
+        if (logs.length === 0) {
+            messagesLogConsole.innerHTML = `
+                <div class="text-slate-500 italic text-[11px] py-4 text-center">
+                    No pipeline events logged yet. Upload a score to view real-time processing messages.
+                </div>
+            `;
+            lastRenderedLogsCount = 0;
+            return;
+        }
+
+        messagesLogConsole.innerHTML = "";
+        logs.forEach((log) => {
+            const entry = document.createElement("div");
+            entry.className = "flex items-start space-x-2 py-0.5 border-b border-slate-900/60 last:border-b-0";
+
+            // Stage pill styling
+            let stageBadge = "bg-slate-800 text-slate-400 border-slate-700";
+            const s = (log.stage || "system").toLowerCase();
+            if (s === "omr") stageBadge = "bg-blue-950 text-blue-300 border-blue-800";
+            else if (s === "notation") stageBadge = "bg-purple-950 text-purple-300 border-purple-800";
+            else if (s === "synthesis") stageBadge = "bg-cyan-950 text-cyan-300 border-cyan-800";
+            else if (s === "system") stageBadge = "bg-slate-800 text-slate-300 border-slate-700";
+
+            // Level text styling
+            let msgColor = "text-slate-300";
+            const lvl = (log.level || "info").toLowerCase();
+            if (lvl === "error") msgColor = "text-rose-400 font-semibold";
+            else if (lvl === "success") msgColor = "text-emerald-400 font-semibold";
+            else if (lvl === "warning") msgColor = "text-amber-300";
+
+            entry.innerHTML = `
+                <span class="text-[10px] text-slate-500 flex-shrink-0 select-none">${log.timestamp ? log.timestamp.split(" ")[1] || log.timestamp : ""}</span>
+                <span class="text-[9px] uppercase px-1.5 py-0.2 rounded border font-mono font-bold flex-shrink-0 select-none ${stageBadge}">
+                    ${(log.stage || "SYS").toUpperCase()}
+                </span>
+                <span class="text-xs break-all leading-snug ${msgColor}">
+                    ${escapeHtml(log.message)}
+                </span>
+            `;
+            messagesLogConsole.appendChild(entry);
+        });
+
+        // Auto scroll to bottom
+        if (autoscrollMessagesToggle && autoscrollMessagesToggle.checked) {
+            messagesLogConsole.scrollTop = messagesLogConsole.scrollHeight;
+        }
+
+        lastRenderedLogsCount = logs.length;
+    }
+
+    function escapeHtml(str) {
+        if (!str) return "";
+        return str
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;")
+            .replace(/'/g, "&#039;");
+    }
+
+    copyMessagesBtn.addEventListener("click", () => {
+        if (!currentScore || !currentScore.processing_logs || currentScore.processing_logs.length === 0) {
+            copyMessagesLabel.textContent = "No logs!";
+            setTimeout(() => { copyMessagesLabel.textContent = "Copy Logs"; }, 1500);
+            return;
+        }
+        const text = currentScore.processing_logs
+            .map((l) => `[${l.timestamp}] [${(l.stage || 'SYS').toUpperCase()}] [${(l.level || 'INFO').toUpperCase()}] ${l.message}`)
+            .join("\n");
+        navigator.clipboard.writeText(text).then(() => {
+            copyMessagesLabel.textContent = "Copied!";
+            setTimeout(() => { copyMessagesLabel.textContent = "Copy Logs"; }, 2000);
+        });
+    });
+
+    clearMessagesBtn.addEventListener("click", () => {
+        messagesLogConsole.innerHTML = `
+            <div class="text-slate-500 italic text-[11px] py-4 text-center">
+                Console cleared.
+            </div>
+        `;
+        messagesCountBadge.textContent = "0 events";
+    });
+
+    // ==============================================================
+    // ERROR VIEWER LOGIC
+    // ==============================================================
+
+    function showErrorViewer(score) {
+        errorViewerCard.classList.remove("hidden");
+        scoreShowErrorBtn.classList.remove("hidden");
+
+        errorStatusBadge.textContent = (score.status || "FAILED").toUpperCase();
+        errorSummaryText.textContent = score.error_message || "An unknown error halted score processing.";
+
+        // Intelligent Diagnostic Advice
+        const msg = (score.error_message || "").toLowerCase();
+        const tb = (score.error_traceback || "").toLowerCase();
+
+        if (msg.includes("gtk-3") || tb.includes("gtk-3") || msg.includes("unsatisfiedlinkerror") || tb.includes("unsatisfiedlinkerror")) {
+            errorDiagnosticAdvice.innerHTML = `
+                <strong>GTK-3 Native Library Link Issue:</strong> Audiveris requires libgtk-3.so for its HiDPI scaling engine. 
+                The updated Docker container provides this library symlink. 
+                <span class="text-rose-100 font-semibold">Tip:</span> Ensure you have pulled the latest container image via <code>docker compose pull</code>.
+            `;
+        } else if (msg.includes("audiveris") || msg.includes("omr") || tb.includes("audiveris")) {
+            errorDiagnosticAdvice.innerHTML = `
+                <strong>Optical Music Recognition (OMR) Failure:</strong> The Audiveris engine was unable to decipher the PDF score staves.
+                <span class="text-rose-100 font-semibold">Tip:</span> Verify the PDF has clean black & white notation, or bypass OMR by uploading the score directly in <strong>MusicXML (.musicxml / .mxl / .xml)</strong> or <strong>MIDI (.mid)</strong> format.
+            `;
+        } else if (msg.includes("notation") || msg.includes("music21") || tb.includes("music21")) {
+            errorDiagnosticAdvice.innerHTML = `
+                <strong>MusicXML Notation Parsing Error:</strong> music21 encountered unparseable staves or unsupported notation elements.
+                <span class="text-rose-100 font-semibold">Tip:</span> Ensure the score contains valid choral voices/parts or re-export the score from MuseScore/Sibelius as standard MusicXML.
+            `;
+        } else if (msg.includes("synthesis") || msg.includes("fluidsynth") || tb.includes("fluidsynth")) {
+            errorDiagnosticAdvice.innerHTML = `
+                <strong>SoundFont Audio Synthesis Error:</strong> FluidSynth failed to render audio stems.
+                <span class="text-rose-100 font-semibold">Tip:</span> Check that the GM SoundFont file (FluidR3_GM.sf2) is present in the container.
+            `;
+        } else {
+            errorDiagnosticAdvice.textContent = `
+                Pipeline encountered an unhandled exception. Inspect the stack trace below for debugging or click "Reprocess Score" to retry.
+            `;
+        }
+
+        // Traceback content
+        errorTracebackContent.textContent = score.error_traceback || score.error_message || "No full stack trace available.";
+
+        // Scroll error card into view smoothly
+        errorViewerCard.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
+
+    function hideErrorViewer() {
+        errorViewerCard.classList.add("hidden");
+        scoreShowErrorBtn.classList.add("hidden");
+    }
+
+    errorDismissBtn.addEventListener("click", () => {
+        errorViewerCard.classList.add("hidden");
+    });
+
+    scoreShowErrorBtn.addEventListener("click", () => {
+        if (currentScore && currentScore.status === "failed") {
+            errorViewerCard.classList.remove("hidden");
+            errorViewerCard.scrollIntoView({ behavior: "smooth", block: "nearest" });
+        }
+    });
+
+    copyTracebackBtn.addEventListener("click", () => {
+        const text = errorTracebackContent.textContent;
+        navigator.clipboard.writeText(text).then(() => {
+            copyTracebackLabel.textContent = "Copied!";
+            setTimeout(() => { copyTracebackLabel.textContent = "Copy Traceback"; }, 2000);
+        });
+    });
+
+    async function reprocessScore(scoreId) {
+        if (!scoreId) return;
+        loadingBanner.classList.remove("hidden");
+        loadingText.textContent = `Triggering reprocess for score...`;
+        hideErrorViewer();
+
+        try {
+            const res = await fetch(`/api/v1/scores/${scoreId}/reprocess`, { method: "POST" });
+            if (!res.ok) throw new Error("Reprocess request failed");
+            const score = await res.json();
+            currentScore = score;
+            displayScoreInfo(score);
+            renderProcessingLogs(score.processing_logs);
+            pollScoreUntilComplete(scoreId);
+        } catch (err) {
+            alert(`Reprocess error: ${err.message}`);
+            loadingBanner.classList.add("hidden");
+        }
+    }
+
+    scoreReprocessBtn.addEventListener("click", () => {
+        if (currentScore) reprocessScore(currentScore.id);
+    });
+
+    errorCardReprocessBtn.addEventListener("click", () => {
+        if (currentScore) reprocessScore(currentScore.id);
+    });
+
+    // ==============================================================
     // SCORE SELECTION & POLLING
-    // ==========================================
+    // ==============================================================
 
     async function loadScore(scoreId) {
         if (pollInterval) clearInterval(pollInterval);
@@ -279,8 +520,10 @@ document.addEventListener("DOMContentLoaded", () => {
             const score = await res.json();
             currentScore = score;
             displayScoreInfo(score);
+            renderProcessingLogs(score.processing_logs);
 
             if (score.status === "ready") {
+                hideErrorViewer();
                 loadingText.textContent = "Loading audio stems into Web Audio context...";
                 scoreDownloadXml.href = score.xml_url || "#";
                 scoreDownloadPdf.href = score.pdf_url || "#";
@@ -288,27 +531,44 @@ document.addEventListener("DOMContentLoaded", () => {
                 renderScoreNotation(score.xml_url);
             } else if (score.status === "failed") {
                 loadingBanner.classList.add("hidden");
-                alert(`Score processing failed: ${score.error_message}`);
+                showErrorViewer(score);
             } else {
-                // Poll every 1.5s
-                pollInterval = setInterval(async () => {
-                    const pollRes = await fetch(`/api/v1/scores/${scoreId}`);
-                    const pollData = await pollRes.json();
-                    displayScoreInfo(pollData);
-                    if (pollData.status === "ready") {
-                        clearInterval(pollInterval);
-                        loadScore(scoreId);
-                    } else if (pollData.status === "failed") {
-                        clearInterval(pollInterval);
-                        loadingBanner.classList.add("hidden");
-                        alert(`Score processing failed: ${pollData.error_message}`);
-                    }
-                }, 1500);
+                pollScoreUntilComplete(scoreId);
             }
         } catch (err) {
             console.error("Error loading score:", err);
             loadingBanner.classList.add("hidden");
         }
+    }
+
+    function pollScoreUntilComplete(scoreId) {
+        if (pollInterval) clearInterval(pollInterval);
+        pollInterval = setInterval(async () => {
+            try {
+                const pollRes = await fetch(`/api/v1/scores/${scoreId}`);
+                if (!pollRes.ok) return;
+                const pollData = await pollRes.json();
+                currentScore = pollData;
+                displayScoreInfo(pollData);
+                renderProcessingLogs(pollData.processing_logs);
+
+                if (pollData.status === "ready") {
+                    clearInterval(pollInterval);
+                    pollInterval = null;
+                    hideErrorViewer();
+                    loadScore(scoreId);
+                    fetchScoresList();
+                } else if (pollData.status === "failed") {
+                    clearInterval(pollInterval);
+                    pollInterval = null;
+                    loadingBanner.classList.add("hidden");
+                    showErrorViewer(pollData);
+                    fetchScoresList();
+                }
+            } catch (pollErr) {
+                console.error("Polling error:", pollErr);
+            }
+        }, 1200);
     }
 
     function displayScoreInfo(score) {
@@ -324,23 +584,42 @@ document.addEventListener("DOMContentLoaded", () => {
             failed: "bg-rose-900/60 text-rose-300 border-rose-700",
         };
 
-        const badgeClass = statusBadges[score.status] || "bg-slate-800 text-slate-300";
+        const badgeClass = statusBadges[score.status] || "bg-slate-800 text-slate-300 border-slate-700";
         currentScoreStatus.className = `px-2.5 py-1 text-xs font-semibold rounded-full border ${badgeClass}`;
         currentScoreStatus.textContent = score.status.toUpperCase().replace("_", " ");
 
+        // Reprocess button visibility
+        if (score.status === "ready" || score.status === "failed") {
+            scoreReprocessBtn.classList.remove("hidden");
+        } else {
+            scoreReprocessBtn.classList.add("hidden");
+        }
+
+        // Show error button in banner if failed
+        if (score.status === "failed") {
+            scoreShowErrorBtn.classList.remove("hidden");
+        } else {
+            scoreShowErrorBtn.classList.add("hidden");
+        }
+
         // Detected Parts Badges
         detectedPartsContainer.innerHTML = "";
-        (score.detected_parts || []).forEach((part) => {
-            const badge = document.createElement("span");
-            badge.className = "px-2 py-0.5 text-xs bg-slate-800 text-indigo-300 border border-slate-700 rounded-md font-medium";
-            badge.textContent = part;
-            detectedPartsContainer.appendChild(badge);
-        });
+        const parts = score.detected_parts || [];
+        if (parts.length === 0) {
+            detectedPartsContainer.innerHTML = '<span class="text-xs text-slate-500 italic">None yet</span>';
+        } else {
+            parts.forEach((part) => {
+                const badge = document.createElement("span");
+                badge.className = "px-2 py-0.5 text-xs bg-slate-800 text-indigo-300 border border-slate-700 rounded-md font-medium";
+                badge.textContent = part;
+                detectedPartsContainer.appendChild(badge);
+            });
+        }
     }
 
-    // ==========================================
+    // ==============================================================
     // NOTATION RENDERING (OSMD)
-    // ==========================================
+    // ==============================================================
 
     async function renderScoreNotation(xmlUrl) {
         if (!xmlUrl || typeof opensheetmusicdisplay === "undefined") return;
@@ -362,9 +641,9 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     }
 
-    // ==========================================
+    // ==============================================================
     // SCORES LISTING
-    // ==========================================
+    // ==============================================================
 
     async function fetchScoresList() {
         try {
@@ -379,7 +658,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
     function renderScoresList(scores) {
         scoresListContainer.innerHTML = "";
-        if (scores.length === 0) {
+        if (!scores || scores.length === 0) {
             scoresListContainer.innerHTML = '<div class="text-xs text-slate-500 py-3 text-center">No scores uploaded yet. Upload a PDF/MusicXML above.</div>';
             return;
         }
@@ -387,16 +666,22 @@ document.addEventListener("DOMContentLoaded", () => {
         scores.forEach((s) => {
             const item = document.createElement("div");
             item.className = "p-2.5 bg-slate-900 border border-slate-800 rounded-lg hover:border-slate-700 cursor-pointer transition flex items-center justify-between";
+            
+            let statusPillClass = "bg-slate-800 text-slate-400";
+            if (s.status === "ready") statusPillClass = "bg-emerald-950 text-emerald-400 border border-emerald-800";
+            else if (s.status === "failed") statusPillClass = "bg-rose-950 text-rose-300 border border-rose-800";
+            else statusPillClass = "bg-amber-950 text-amber-300 border border-amber-800";
+
             item.innerHTML = `
-                <div class="truncate mr-2">
+                <div class="truncate mr-2 flex-1">
                     <div class="text-xs font-semibold text-slate-200 truncate">${s.title}</div>
                     <div class="text-[11px] text-slate-500 truncate">${s.filename} • ${s.stems ? s.stems.length : 0} stems</div>
                 </div>
                 <div class="flex items-center space-x-1.5 flex-shrink-0">
-                    <span class="text-[10px] px-1.5 py-0.5 rounded ${s.status === 'ready' ? 'bg-emerald-950 text-emerald-400' : 'bg-slate-800 text-slate-400'}">
-                        ${s.status}
+                    <span class="text-[10px] px-2 py-0.5 rounded font-mono font-bold ${statusPillClass}">
+                        ${s.status.toUpperCase()}
                     </span>
-                    <button class="delete-score-btn text-slate-500 hover:text-rose-400 p-1" title="Delete Score">
+                    <button class="delete-score-btn text-slate-500 hover:text-rose-400 p-1 transition" title="Delete Score">
                         <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
                     </button>
                 </div>
@@ -410,12 +695,14 @@ document.addEventListener("DOMContentLoaded", () => {
             const delBtn = item.querySelector(".delete-score-btn");
             delBtn.addEventListener("click", async (e) => {
                 e.stopPropagation();
-                if (confirm(`Delete score "${s.title}"?`)) {
+                if (confirm(`Delete score "${s.title}" and its audio stems?`)) {
                     await fetch(`/api/v1/scores/${s.id}`, { method: "DELETE" });
                     fetchScoresList();
                     if (currentScore && currentScore.id === s.id) {
                         player.stop();
                         currentScore = null;
+                        hideErrorViewer();
+                        renderProcessingLogs([]);
                     }
                 }
             });
@@ -424,9 +711,9 @@ document.addEventListener("DOMContentLoaded", () => {
         });
     }
 
-    // ==========================================
+    // ==============================================================
     // UPLOAD & SAMPLE HANDLERS
-    // ==========================================
+    // ==============================================================
 
     dropZone.addEventListener("click", () => fileInput.click());
     dropZone.addEventListener("dragover", (e) => {
@@ -456,6 +743,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
         loadingBanner.classList.remove("hidden");
         loadingText.textContent = `Uploading score '${file.name}'...`;
+        hideErrorViewer();
 
         try {
             const res = await fetch("/api/v1/scores/upload", {
@@ -477,7 +765,8 @@ document.addEventListener("DOMContentLoaded", () => {
 
     loadSampleBtn.addEventListener("click", async () => {
         loadingBanner.classList.remove("hidden");
-        loadingText.textContent = "Loading sample choral score (SATB & Piano)...";
+        loadingText.textContent = "Loading sample choral score (Bach SATB & Piano)...";
+        hideErrorViewer();
         try {
             const res = await fetch("/api/v1/scores/load-sample", { method: "POST" });
             if (!res.ok) throw new Error("Could not load sample");
@@ -490,6 +779,123 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     });
 
-    // Initial scores list
+    // ==============================================================
+    // API VIEWER MODAL CONTROLLER
+    // ==============================================================
+
+    openApiViewerBtn.addEventListener("click", () => {
+        apiViewerModal.classList.remove("hidden");
+        fetchEngineHealth();
+    });
+
+    closeApiViewerBtn.addEventListener("click", () => {
+        apiViewerModal.classList.add("hidden");
+    });
+
+    apiViewerModal.addEventListener("click", (e) => {
+        if (e.target === apiViewerModal) {
+            apiViewerModal.classList.add("hidden");
+        }
+    });
+
+    // Tab switching in API Viewer
+    function setApiTab(activeTab) {
+        // Reset button styles
+        [apiTabBtnEndpoints, apiTabBtnHealth, apiTabBtnSwagger].forEach((btn) => {
+            btn.className = "pb-3 text-xs font-medium text-slate-400 hover:text-slate-200 border-b-2 border-transparent transition";
+        });
+        // Hide views
+        apiViewEndpoints.classList.add("hidden");
+        apiViewHealth.classList.add("hidden");
+        apiViewSwagger.classList.add("hidden");
+
+        if (activeTab === "endpoints") {
+            apiTabBtnEndpoints.className = "pb-3 text-xs font-bold text-indigo-400 border-b-2 border-indigo-500 transition";
+            apiViewEndpoints.classList.remove("hidden");
+        } else if (activeTab === "health") {
+            apiTabBtnHealth.className = "pb-3 text-xs font-bold text-indigo-400 border-b-2 border-indigo-500 transition";
+            apiViewHealth.classList.remove("hidden");
+            fetchEngineHealth();
+        } else if (activeTab === "swagger") {
+            apiTabBtnSwagger.className = "pb-3 text-xs font-bold text-indigo-400 border-b-2 border-indigo-500 transition";
+            apiViewSwagger.classList.remove("hidden");
+            if (!swaggerIframe.src || swaggerIframe.src === "about:blank") {
+                swaggerIframe.src = "/docs";
+            }
+        }
+    }
+
+    apiTabBtnEndpoints.addEventListener("click", () => setApiTab("endpoints"));
+    apiTabBtnHealth.addEventListener("click", () => setApiTab("health"));
+    apiTabBtnSwagger.addEventListener("click", () => setApiTab("swagger"));
+    refreshHealthBtn.addEventListener("click", () => fetchEngineHealth());
+
+    async function fetchEngineHealth() {
+        try {
+            const res = await fetch("/health");
+            if (!res.ok) throw new Error("Health check returned status " + res.status);
+            const data = await res.json();
+            rawHealthJson.textContent = JSON.stringify(data, null, 2);
+
+            healthCardsGrid.innerHTML = `
+                <!-- Service Status -->
+                <div class="bg-slate-950/80 border border-slate-800 rounded-xl p-3.5 space-y-1">
+                    <div class="flex items-center justify-between">
+                        <span class="text-xs font-semibold text-slate-300">FastAPI Microservice</span>
+                        <span class="text-[10px] px-2 py-0.5 rounded font-mono font-bold ${data.status === 'healthy' ? 'bg-emerald-950 text-emerald-400 border border-emerald-800' : 'bg-rose-950 text-rose-300'}">${data.status.toUpperCase()}</span>
+                    </div>
+                    <p class="text-[11px] text-slate-500">${data.service} v${data.version}</p>
+                </div>
+
+                <!-- Audiveris OMR -->
+                <div class="bg-slate-950/80 border border-slate-800 rounded-xl p-3.5 space-y-1">
+                    <div class="flex items-center justify-between">
+                        <span class="text-xs font-semibold text-slate-300">Audiveris OMR Engine</span>
+                        <span class="text-[10px] px-2 py-0.5 rounded font-mono font-bold ${data.omr_engine_available ? 'bg-emerald-950 text-emerald-400 border border-emerald-800' : 'bg-amber-950 text-amber-300 border border-amber-800'}">
+                            ${data.omr_engine_available ? 'ONLINE' : 'FALLBACK MODE'}
+                        </span>
+                    </div>
+                    <p class="text-[11px] text-slate-500">
+                        ${data.omr_engine_available ? 'Headless CLI binary active for PDF recognition.' : 'Binary not found in local PATH. MusicXML/MIDI uploads active.'}
+                    </p>
+                </div>
+
+                <!-- FluidSynth -->
+                <div class="bg-slate-950/80 border border-slate-800 rounded-xl p-3.5 space-y-1">
+                    <div class="flex items-center justify-between">
+                        <span class="text-xs font-semibold text-slate-300">FluidSynth SoundFont Engine</span>
+                        <span class="text-[10px] px-2 py-0.5 rounded font-mono font-bold ${data.fluidsynth_available ? 'bg-emerald-950 text-emerald-400 border border-emerald-800' : 'bg-amber-950 text-amber-300 border border-amber-800'}">
+                            ${data.fluidsynth_available ? 'ONLINE' : 'SYNTH FALLBACK'}
+                        </span>
+                    </div>
+                    <p class="text-[11px] text-slate-500">
+                        ${data.fluidsynth_available ? 'GM SoundFont active for multi-stem acoustic synthesis.' : 'FluidSynth binary not detected; using tone synthesizer fallback.'}
+                    </p>
+                </div>
+
+                <!-- FFmpeg -->
+                <div class="bg-slate-950/80 border border-slate-800 rounded-xl p-3.5 space-y-1">
+                    <div class="flex items-center justify-between">
+                        <span class="text-xs font-semibold text-slate-300">FFmpeg Audio Encoder</span>
+                        <span class="text-[10px] px-2 py-0.5 rounded font-mono font-bold ${data.ffmpeg_available ? 'bg-emerald-950 text-emerald-400 border border-emerald-800' : 'bg-slate-800 text-slate-400'}">
+                            ${data.ffmpeg_available ? 'ONLINE' : 'NATIVE WAV'}
+                        </span>
+                    </div>
+                    <p class="text-[11px] text-slate-500">
+                        ${data.ffmpeg_available ? 'FFmpeg installed for MP3/WAV transcoding.' : 'Using standard WAV encoding.'}
+                    </p>
+                </div>
+            `;
+        } catch (err) {
+            rawHealthJson.textContent = JSON.stringify({ error: err.message }, null, 2);
+            healthCardsGrid.innerHTML = `
+                <div class="text-rose-400 text-xs col-span-2 text-center py-4 bg-rose-950/30 rounded-xl border border-rose-900">
+                    Failed to reach /health endpoint: ${err.message}
+                </div>
+            `;
+        }
+    }
+
+    // Initial load of scores list
     fetchScoresList();
 });

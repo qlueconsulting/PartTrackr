@@ -44,6 +44,8 @@ def _score_to_response(score: Score) -> ScoreResponse:
         status=score.status,
         detected_parts=score.detected_parts or [],
         error_message=score.error_message,
+        error_traceback=score.error_traceback,
+        processing_logs=score.processing_logs or [],
         created_at=score.created_at,
         updated_at=score.updated_at,
         stems=[_stem_to_response(st) for st in score.stems],
@@ -132,6 +134,8 @@ def reprocess_score(
 
     score.status = "queued"
     score.error_message = None
+    score.error_traceback = None
+    score.processing_logs = []
     db.commit()
 
     background_tasks.add_task(run_score_pipeline, score_id)

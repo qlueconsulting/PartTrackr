@@ -20,6 +20,8 @@ class Score(Base):
     )
     detected_parts = Column(JSON, default=list)  # List of part metadata
     error_message = Column(Text, nullable=True)
+    error_traceback = Column(Text, nullable=True)
+    processing_logs = Column(JSON, default=list)  # List of log message objects
     original_path = Column(String(500), nullable=True)
     xml_path = Column(String(500), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)

@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 import logging
 import shutil
 import traceback
@@ -17,6 +18,31 @@ from app.services.synthesis import audio_synthesizer
 logger = logging.getLogger("parttrackr.pipeline")
 
 
+def _log_event(
+    score: Score,
+    message: str,
+    level: str = "info",
+    stage: str = "system",
+    db: Optional[Session] = None,
+):
+    """Appends a structured event log entry to the score record."""
+    timestamp_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    entry = {
+        "timestamp": timestamp_str,
+        "level": level,  # 'info', 'warning', 'error', 'success'
+        "stage": stage,  # 'omr', 'notation', 'synthesis', 'system'
+        "message": message,
+    }
+    logs = list(score.processing_logs or [])
+    logs.append(entry)
+    score.processing_logs = logs
+    if db:
+        try:
+            db.commit()
+        except Exception as e:
+            logger.warning("Could not persist log entry to database: %s", e)
+
+
 def run_score_pipeline(score_id: str):
     """
     Main background pipeline execution for a score:
@@ -26,6 +52,7 @@ def run_score_pipeline(score_id: str):
     4. Database update to 'ready' (or 'failed' on error)
     """
     db: Session = database.SessionLocal()
+    score = None
     try:
         score = db.query(Score).filter(Score.id == score_id).first()
         if not score:
@@ -33,6 +60,8 @@ def run_score_pipeline(score_id: str):
             return
 
         logger.info("Starting processing pipeline for score: %s (%s)", score.id, score.filename)
+        _log_event(score, f"Pipeline initialized for '{score.filename}'.", level="info", stage="system", db=db)
+
         score_storage_dir = settings.STORAGE_DIR / score.id
         score_storage_dir.mkdir(parents=True, exist_ok=True)
 
@@ -54,32 +83,61 @@ def run_score_pipeline(score_id: str):
         if file_suffix == ".pdf":
             logger.info("Score is PDF, triggering OMR processing...")
             score.status = "processing_omr"
-            db.commit()
+            _log_event(
+                score,
+                f"PDF uploaded ({original_file.name}, {original_file.stat().st_size:,} bytes). Launching Audiveris OMR engine...",
+                level="info",
+                stage="omr",
+                db=db,
+            )
 
             try:
                 xml_file_path = omr_engine.process_pdf(original_file, score_xml_dir)
+                _log_event(
+                    score,
+                    f"OMR optical recognition finished. Extracted MusicXML: {xml_file_path.name}",
+                    level="success",
+                    stage="omr",
+                    db=db,
+                )
             except Exception as e:
-                logger.error("OMR processing failed for score %s: %s", score.id, e)
+                tb = traceback.format_exc()
+                logger.error("OMR processing failed for score %s: %s\n%s", score.id, e, tb)
                 score.status = "failed"
                 score.error_message = f"OMR processing failed: {str(e)}"
-                db.commit()
+                score.error_traceback = tb
+                _log_event(score, f"OMR processing failed: {str(e)}", level="error", stage="omr", db=db)
                 return
 
         elif file_suffix in [".xml", ".musicxml", ".mxl"]:
             logger.info("Score is direct MusicXML/MXL, skipping OMR.")
-            # Copy to score xml directory
+            _log_event(
+                score,
+                f"Uploaded symbolic format ({file_suffix}). Bypassing Audiveris OMR.",
+                level="info",
+                stage="omr",
+                db=db,
+            )
             dest_xml = score_xml_dir / original_file.name
             shutil.copy2(original_file, dest_xml)
             xml_file_path = dest_xml
         elif file_suffix in [".mid", ".midi"]:
             logger.info("Score is MIDI, skipping OMR.")
+            _log_event(
+                score,
+                f"Uploaded MIDI score ({file_suffix}). Bypassing Audiveris OMR.",
+                level="info",
+                stage="omr",
+                db=db,
+            )
             dest_mid = score_midi_dir / original_file.name
             shutil.copy2(original_file, dest_mid)
             xml_file_path = dest_mid
         else:
             score.status = "failed"
             score.error_message = f"Unsupported file extension: {file_suffix}"
-            db.commit()
+            score.error_traceback = f"Unsupported file extension: {file_suffix}"
+            _log_event(score, f"Unsupported file extension: {file_suffix}", level="error", stage="omr", db=db)
             return
 
         score.xml_path = str(xml_file_path)
@@ -90,7 +148,13 @@ def run_score_pipeline(score_id: str):
         # ----------------------------------------------------
         logger.info("Parsing notation and splitting choral parts...")
         score.status = "parsing"
-        db.commit()
+        _log_event(
+            score,
+            "Parsing musical score with music21: detecting staves, clefs, voices, and choral registers...",
+            level="info",
+            stage="notation",
+            db=db,
+        )
 
         try:
             m21_score = notation_processor.parse_score(xml_file_path)
@@ -109,12 +173,21 @@ def run_score_pipeline(score_id: str):
                 raise ValueError("No choral or accompaniment parts could be extracted from score.")
 
             score.detected_parts = [s.part_name for s in extracted_stems]
-            db.commit()
+            parts_summary = ", ".join(score.detected_parts)
+            _log_event(
+                score,
+                f"Notation parsed successfully. Detected {len(extracted_stems)} parts: {parts_summary}",
+                level="success",
+                stage="notation",
+                db=db,
+            )
         except Exception as e:
-            logger.error("Notation parsing failed for score %s: %s\n%s", score.id, e, traceback.format_exc())
+            tb = traceback.format_exc()
+            logger.error("Notation parsing failed for score %s: %s\n%s", score.id, e, tb)
             score.status = "failed"
             score.error_message = f"Notation parsing failed: {str(e)}"
-            db.commit()
+            score.error_traceback = tb
+            _log_event(score, f"Notation parsing failed: {str(e)}", level="error", stage="notation", db=db)
             return
 
         # ----------------------------------------------------
@@ -122,7 +195,13 @@ def run_score_pipeline(score_id: str):
         # ----------------------------------------------------
         logger.info("Synthesizing isolated audio stems...")
         score.status = "synthesizing"
-        db.commit()
+        _log_event(
+            score,
+            f"Rendering {len(extracted_stems)} audio stems using FluidSynth GM SoundFont...",
+            level="info",
+            stage="synthesis",
+            db=db,
+        )
 
         try:
             # Delete any existing stems for reprocessing
@@ -155,6 +234,13 @@ def run_score_pipeline(score_id: str):
                     note_count=ext_stem.note_count,
                 )
                 db.add(stem_record)
+                _log_event(
+                    score,
+                    f"Stem synthesized: '{ext_stem.part_name}' ({ext_stem.measure_count} bars, {ext_stem.note_count} notes, {ext_stem.duration_seconds:.1f}s)",
+                    level="info",
+                    stage="synthesis",
+                    db=db,
+                )
 
             db.commit()
 
@@ -163,16 +249,35 @@ def run_score_pipeline(score_id: str):
             # ----------------------------------------------------
             score.status = "ready"
             score.error_message = None
-            db.commit()
+            score.error_traceback = None
+            _log_event(
+                score,
+                f"Score processing complete! {len(extracted_stems)} parts are ready for rehearsal playback.",
+                level="success",
+                stage="system",
+                db=db,
+            )
             logger.info("Score %s processing successfully completed! Status: READY", score.id)
 
         except Exception as e:
-            logger.error("Synthesis failed for score %s: %s\n%s", score.id, e, traceback.format_exc())
+            tb = traceback.format_exc()
+            logger.error("Synthesis failed for score %s: %s\n%s", score.id, e, tb)
             score.status = "failed"
             score.error_message = f"Synthesis failed: {str(e)}"
-            db.commit()
+            score.error_traceback = tb
+            _log_event(score, f"Audio synthesis failed: {str(e)}", level="error", stage="synthesis", db=db)
 
     except Exception as exc:
-        logger.error("Unhandled pipeline exception for score %s: %s", score_id, exc)
+        tb = traceback.format_exc()
+        logger.error("Unhandled pipeline exception for score %s: %s\n%s", score_id, exc, tb)
+        if score:
+            try:
+                score.status = "failed"
+                score.error_message = f"Internal server error: {str(exc)}"
+                score.error_traceback = tb
+                _log_event(score, f"Internal pipeline error: {str(exc)}", level="error", stage="system", db=db)
+            except Exception:
+                pass
     finally:
         db.close()
+

@@ -100,3 +100,36 @@ def test_load_sample_score(client: TestClient):
     assert "A1" in stem_keys
     assert "T1" in stem_keys
     assert "B1" in stem_keys
+
+    # Verify processing_logs are recorded
+    assert "processing_logs" in data
+    assert len(data["processing_logs"]) > 0
+    # Check log structure
+    first_log = data["processing_logs"][0]
+    assert "timestamp" in first_log
+    assert "stage" in first_log
+    assert "level" in first_log
+    assert "message" in first_log
+
+
+def test_score_reprocess_endpoint(client: TestClient):
+    """Test triggering reprocess endpoint for an existing score."""
+    # Seed score
+    sample_res = client.post("/api/v1/scores/load-sample")
+    assert sample_res.status_code == 200
+    score_id = sample_res.json()["id"]
+
+    # Trigger reprocess
+    reprocess_res = client.post(f"/api/v1/scores/{score_id}/reprocess")
+    assert reprocess_res.status_code == 200
+    reprocess_data = reprocess_res.json()
+    assert reprocess_data["id"] == score_id
+    assert reprocess_data["status"] == "queued"
+
+    # Query updated score after background task executes
+    detail_res = client.get(f"/api/v1/scores/{score_id}")
+    assert detail_res.status_code == 200
+    detail_data = detail_res.json()
+    assert detail_data["status"] == "ready"
+    assert len(detail_data["processing_logs"]) > 0
+

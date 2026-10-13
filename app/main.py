@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.api.router import api_router
 from app.config import settings
-from app.database import Base, engine, get_db
+from app.database import Base, engine, get_db, init_db
 from app.models.score import Score
 from app.models.stem import Stem
 from app.services.pipeline import run_score_pipeline
@@ -22,8 +22,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger("parttrackr")
 
-# Initialize database schema
-Base.metadata.create_all(bind=engine)
+# Initialize database schema & safe migrations
+init_db()
 
 app = FastAPI(
     title=settings.APP_NAME,

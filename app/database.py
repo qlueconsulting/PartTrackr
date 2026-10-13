@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import declarative_base, sessionmaker
 from app.config import settings
 
@@ -10,6 +10,22 @@ engine = create_engine(
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
+
+
+def init_db():
+    """Initializes tables and migrates any missing columns safely."""
+    Base.metadata.create_all(bind=engine)
+    if "sqlite" in settings.DATABASE_URL:
+        with engine.connect() as conn:
+            for col_def in [
+                ("error_traceback", "TEXT"),
+                ("processing_logs", "JSON"),
+            ]:
+                try:
+                    conn.execute(text(f"ALTER TABLE scores ADD COLUMN {col_def[0]} {col_def[1]}"))
+                    conn.commit()
+                except Exception:
+                    pass  # Column already exists
 
 
 def get_db():

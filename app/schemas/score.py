@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, ConfigDict
 
 
@@ -30,6 +30,8 @@ class ScoreResponse(BaseModel):
     status: str
     detected_parts: List[str]
     error_message: Optional[str] = None
+    error_traceback: Optional[str] = None
+    processing_logs: List[Dict[str, Any]] = []
     created_at: datetime
     updated_at: datetime
     stems: List[StemResponse] = []
