@@ -292,17 +292,21 @@
 
                 <!-- Measure-Based Navigation & Section Replay Bar -->
                 <div class="bg-slate-950/60 border border-slate-800 rounded-xl p-3 flex flex-wrap items-center justify-between gap-3 text-xs">
-                    <div class="flex items-center space-x-2.5">
+                    <div class="flex flex-wrap items-center gap-2">
                         <span class="font-bold text-slate-300 uppercase tracking-wider text-[11px] flex items-center gap-1">
                             <svg class="w-3.5 h-3.5 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3"></path></svg>
-                            Section Navigation:
+                            Section:
                         </span>
-                        <span id="current-measure-badge" class="px-2.5 py-1 rounded bg-indigo-950 text-indigo-300 border border-indigo-800 font-mono font-bold text-[11px]">
-                            Measure 1 / 1
+                        <span id="current-measure-badge" class="px-2.5 py-1 rounded bg-indigo-950 text-indigo-300 border border-indigo-800 font-mono font-bold text-[11px] shadow-sm">
+                            Bar 1 [4/4] • Beat 1 / 4
                         </span>
                         <select id="measure-select" class="bg-slate-900 border border-slate-700 text-slate-200 text-xs rounded-lg p-1.5 focus:ring-1 focus:ring-indigo-500 focus:outline-none max-w-xs">
-                            <option value="1">Measure 1</option>
+                            <option value="1">Measure 1 [4/4]</option>
                         </select>
+                        <div class="flex items-center space-x-1">
+                            <input id="measure-jump-input" type="text" placeholder="Bar #" class="w-14 bg-slate-900 border border-slate-700 text-slate-100 font-mono text-center rounded-lg py-1 px-1 text-xs focus:ring-1 focus:ring-indigo-500 focus:outline-none" title="Type measure number matching PDF to jump">
+                            <button id="measure-jump-btn" class="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-indigo-300 font-bold text-xs transition border border-slate-700" title="Jump to specified measure">Go</button>
+                        </div>
                     </div>
 
                     <div class="flex items-center space-x-1.5">

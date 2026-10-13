@@ -296,3 +296,166 @@ def test_measure_analysis_and_extended_rests(tmp_path):
     assert rest_span["next_entry_measure"] == 5
     assert rest_span["next_entry_time"] > rest_span["start_time"]
 
+
+def test_dynamic_time_signature_changes_and_metric_analysis(tmp_path):
+    """Test score with multiple time signature changes (4/4 -> 3/4 -> 6/8 -> 2/4)."""
+    score = m21.stream.Score()
+    sop_part = m21.stream.Part()
+    sop_part.partName = "Soprano"
+
+    # M1: 4/4
+    m1 = m21.stream.Measure(number=1)
+    m1.timeSignature = m21.meter.TimeSignature("4/4")
+    m1.append(m21.note.Note("C4", quarterLength=4.0))
+    sop_part.append(m1)
+
+    # M2: 3/4
+    m2 = m21.stream.Measure(number=2)
+    m2.timeSignature = m21.meter.TimeSignature("3/4")
+    m2.append(m21.note.Note("D4", quarterLength=3.0))
+    sop_part.append(m2)
+
+    # M3: 3/4 (inherited)
+    m3 = m21.stream.Measure(number=3)
+    m3.append(m21.note.Note("E4", quarterLength=3.0))
+    sop_part.append(m3)
+
+    # M4: 6/8
+    m4 = m21.stream.Measure(number=4)
+    m4.timeSignature = m21.meter.TimeSignature("6/8")
+    m4.append(m21.note.Note("F4", quarterLength=3.0))
+    sop_part.append(m4)
+
+    # M5: 2/4
+    m5 = m21.stream.Measure(number=5)
+    m5.timeSignature = m21.meter.TimeSignature("2/4")
+    m5.append(m21.note.Note("G4", quarterLength=2.0))
+    sop_part.append(m5)
+
+    score.append(sop_part)
+
+    xml_dir = tmp_path / "xml"
+    midi_dir = tmp_path / "midi"
+    stems, analysis = notation_processor.process_and_extract_stems(score, xml_dir, midi_dir, return_analysis=True)
+
+    measures = analysis["measures"]
+    assert len(measures) == 5
+
+    # Measure 1: 4/4
+    assert measures[0]["time_signature"] == "4/4"
+    assert measures[0]["numerator"] == 4
+    assert measures[0]["denominator"] == 4
+    assert measures[0]["beats_per_measure"] == 4
+    assert measures[0]["accent_pattern"] == [1200, 680, 920, 680]
+
+    # Measure 2: 3/4
+    assert measures[1]["time_signature"] == "3/4"
+    assert measures[1]["numerator"] == 3
+    assert measures[1]["beats_per_measure"] == 3
+    assert measures[1]["accent_pattern"] == [1200, 680, 680]
+
+    # Measure 3: 3/4 (inherited from measure 2)
+    assert measures[2]["time_signature"] == "3/4"
+    assert measures[2]["beats_per_measure"] == 3
+
+    # Measure 4: 6/8 (compound meter)
+    assert measures[3]["time_signature"] == "6/8"
+    assert measures[3]["numerator"] == 6
+    assert measures[3]["denominator"] == 8
+    assert measures[3]["beats_per_measure"] == 6
+    assert measures[3]["is_compound"] is True
+    assert measures[3]["beat_unit_ql"] == 0.5
+    assert measures[3]["accent_pattern"] == [1200, 680, 680, 950, 680, 680]
+
+    # Measure 5: 2/4
+    assert measures[4]["time_signature"] == "2/4"
+    assert measures[4]["numerator"] == 2
+    assert measures[4]["beats_per_measure"] == 2
+    assert measures[4]["accent_pattern"] == [1200, 680]
+
+    # Verify time signature milestones were recorded
+    ts_milestones = [m["time_signature"] for m in analysis["time_signatures"]]
+    assert ts_milestones == ["4/4", "3/4", "6/8", "2/4"]
+
+
+def test_multimeasure_rest_pdf_consistency(tmp_path):
+    """Test that a multi-measure rest expands seamlessly so measure numbers strictly match the PDF."""
+    score = m21.stream.Score()
+    part = m21.stream.Part()
+    part.partName = "Bass"
+
+    # Bar 1: 4/4 active
+    m1 = m21.stream.Measure(number=1)
+    m1.timeSignature = m21.meter.TimeSignature("4/4")
+    m1.append(m21.note.Note("C3", quarterLength=4.0))
+    part.append(m1)
+
+    # Bar 2: Multi-measure rest for 4 measures (Bars 2, 3, 4, 5) with ql=16.0
+    m2 = m21.stream.Measure(number=2)
+    m2.append(m21.note.Rest(quarterLength=16.0))
+    part.append(m2)
+
+    # Bar 6: active again!
+    m6 = m21.stream.Measure(number=6)
+    m6.append(m21.note.Note("E3", quarterLength=4.0))
+    part.append(m6)
+
+    score.append(part)
+
+    xml_dir = tmp_path / "xml"
+    midi_dir = tmp_path / "midi"
+    stems, analysis = notation_processor.process_and_extract_stems(score, xml_dir, midi_dir, return_analysis=True)
+
+    measures = analysis["measures"]
+    # All 6 measures (1, 2, 3, 4, 5, 6) must exist to match the printed PDF markings!
+    assert len(measures) == 6
+    measure_numbers = [m["number"] for m in measures]
+    assert measure_numbers == [1, 2, 3, 4, 5, 6]
+
+    # Ensure start times are monotonically increasing and exact
+    for i in range(len(measures) - 1):
+        assert measures[i]["end_time"] == pytest.approx(measures[i + 1]["start_time"], abs=0.01)
+
+    # Bars 2, 3, 4, 5 should be resting for Bass
+    assert "B1" in measures[0]["active_parts"]
+    assert "B1" in measures[1]["resting_parts"]
+    assert "B1" in measures[2]["resting_parts"]
+    assert "B1" in measures[3]["resting_parts"]
+    assert "B1" in measures[4]["resting_parts"]
+    assert "B1" in measures[5]["active_parts"]
+    assert "B1" in measures[5]["entrances"]
+
+
+def test_pickup_measure_zero_pdf_numbering(tmp_path):
+    """Test pickup (anacrusis) measure 0 retains exact PDF numbering so Measure 1 is first full bar."""
+    score = m21.stream.Score()
+    part = m21.stream.Part()
+    part.partName = "Alto"
+
+    # Pickup bar (Measure 0) with 1 quarter note in 4/4
+    m0 = m21.stream.Measure(number=0)
+    m0.timeSignature = m21.meter.TimeSignature("4/4")
+    m0.append(m21.note.Note("A4", quarterLength=1.0))
+    part.append(m0)
+
+    # First full measure (Measure 1)
+    m1 = m21.stream.Measure(number=1)
+    m1.append(m21.note.Note("B4", quarterLength=4.0))
+    part.append(m1)
+
+    score.append(part)
+
+    xml_dir = tmp_path / "xml"
+    midi_dir = tmp_path / "midi"
+    stems, analysis = notation_processor.process_and_extract_stems(score, xml_dir, midi_dir, return_analysis=True)
+
+    measures = analysis["measures"]
+    assert len(measures) == 2
+    assert measures[0]["number"] == 0
+    assert "0" in measures[0]["display_number"]
+    assert measures[0]["beats_per_measure"] == 1
+
+    assert measures[1]["number"] == 1
+    assert measures[1]["display_number"] == "1"
+    assert measures[1]["beats_per_measure"] == 4
+

@@ -35,6 +35,8 @@ document.addEventListener("DOMContentLoaded", () => {
     // Measure Navigation & Replay
     const currentMeasureBadge = document.getElementById("current-measure-badge");
     const measureSelect = document.getElementById("measure-select");
+    const measureJumpInput = document.getElementById("measure-jump-input");
+    const measureJumpBtn = document.getElementById("measure-jump-btn");
     const prevMeasureBtn = document.getElementById("prev-measure-btn");
     const replayMeasureBtn = document.getElementById("replay-measure-btn");
     const nextMeasureBtn = document.getElementById("next-measure-btn");
@@ -156,16 +158,30 @@ document.addEventListener("DOMContentLoaded", () => {
         renderStemsMixer(currentScore.stems);
     };
 
-    player.onMeasureUpdate = (currentMeasure, totalMeasures, measureObj) => {
-        currentMeasureBadge.textContent = `Measure ${currentMeasure} / ${totalMeasures}`;
+    player.onMeasureUpdate = (currentMeasure, totalMeasures, measureObj, currentBeat, totalBeats) => {
+        const disp = (measureObj && measureObj.display_number) ? measureObj.display_number : currentMeasure;
+        const ts = (measureObj && measureObj.time_signature) ? measureObj.time_signature : "4/4";
+        const beatNum = currentBeat || 1;
+        const totalB = totalBeats || 4;
+
+        currentMeasureBadge.textContent = `Bar ${disp} [${ts}] • Beat ${beatNum} / ${totalB}`;
         if (measureSelect && measureSelect.value != currentMeasure) {
             measureSelect.value = currentMeasure;
         }
+
+        // Subtle visual flash on downbeat (beat 1)
+        if (beatNum === 1) {
+            currentMeasureBadge.classList.add("ring-2", "ring-indigo-400");
+            setTimeout(() => {
+                currentMeasureBadge.classList.remove("ring-2", "ring-indigo-400");
+            }, 100);
+        }
     };
 
-    player.onEntryCue = (nextMeasure, beats) => {
+    player.onEntryCue = (nextMeasure, beats, timeSignature) => {
         if (entryCueBanner && entryCueText) {
-            entryCueText.textContent = `Measure ${nextMeasure} in ${beats} beats!`;
+            const tsStr = timeSignature ? ` [${timeSignature}]` : "";
+            entryCueText.textContent = `Measure ${nextMeasure}${tsStr} entrance in ${beats} beats!`;
             entryCueBanner.classList.remove("hidden");
             if (entryCueTimeout) clearTimeout(entryCueTimeout);
             entryCueTimeout = setTimeout(() => {
@@ -246,19 +262,45 @@ document.addEventListener("DOMContentLoaded", () => {
     function populateMeasuresDropdown(measures) {
         measureSelect.innerHTML = "";
         if (!measures || measures.length === 0) {
-            measureSelect.innerHTML = '<option value="1">Measure 1</option>';
-            currentMeasureBadge.textContent = "Measure 1 / 1";
+            measureSelect.innerHTML = '<option value="1">Measure 1 [4/4]</option>';
+            currentMeasureBadge.textContent = "Bar 1 [4/4] • Beat 1 / 4";
             return;
         }
 
         measures.forEach((m) => {
             const opt = document.createElement("option");
             opt.value = m.number;
-            opt.textContent = `Measure ${m.number} (${formatTime(m.start_time)})`;
+            const disp = m.display_number || m.number;
+            const ts = m.time_signature ? ` [${m.time_signature}]` : "";
+            const hasEntrance = (m.entrances && m.entrances.length > 0) ? ` • Entr: ${m.entrances.join(",")}` : "";
+            opt.textContent = `Bar ${disp}${ts} (${formatTime(m.start_time)})${hasEntrance}`;
             measureSelect.appendChild(opt);
         });
 
-        currentMeasureBadge.textContent = `Measure 1 / ${measures.length}`;
+        const first = measures[0];
+        const disp = first.display_number || first.number;
+        const ts = first.time_signature || "4/4";
+        const totalB = first.beats_per_measure || 4;
+        currentMeasureBadge.textContent = `Bar ${disp} [${ts}] • Beat 1 / ${totalB}`;
+    }
+
+    if (measureJumpBtn && measureJumpInput) {
+        const doMeasureJump = () => {
+            const val = measureJumpInput.value.trim();
+            if (val) {
+                player.seekToMeasure(val);
+                if (measureSelect) {
+                    measureSelect.value = val;
+                }
+            }
+        };
+        measureJumpBtn.addEventListener("click", doMeasureJump);
+        measureJumpInput.addEventListener("keydown", (e) => {
+            if (e.key === "Enter") {
+                e.preventDefault();
+                doMeasureJump();
+            }
+        });
     }
 
     measureSelect.addEventListener("change", (e) => {

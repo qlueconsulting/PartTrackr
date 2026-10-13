@@ -320,9 +320,23 @@ class NotationProcessor:
             for p in parts:
                 p_m = p.measure(m_num)
                 if p_m:
+                    for header_el in p_m.getElementsByClass([m21.meter.TimeSignature, m21.key.KeySignature, m21.clef.Clef]):
+                        new_m.insert(float(header_el.offset), copy.deepcopy(header_el))
+                    break
+            seen = set()
+            for p in parts:
+                p_m = p.measure(m_num)
+                if p_m:
                     for el in p_m:
-                        if not isinstance(el, (m21.meter.TimeSignature, m21.key.KeySignature)):
-                            new_m.append(copy.deepcopy(el))
+                        if not isinstance(el, (m21.meter.TimeSignature, m21.key.KeySignature, m21.clef.Clef)):
+                            p_key = (float(el.offset), tuple(getattr(el, 'pitches', [])) if hasattr(el, 'pitches') else None)
+                            if p_key not in seen:
+                                seen.add(p_key)
+                                new_m.insert(float(el.offset), copy.deepcopy(el))
+            if not list(new_m.notes):
+                first_pm = parts[0].measure(m_num)
+                rest_ql = float(first_pm.quarterLength) if first_pm else 4.0
+                new_m.insert(0.0, m21.note.Rest(quarterLength=rest_ql))
             combined.append(new_m)
 
         return combined
@@ -349,15 +363,81 @@ class NotationProcessor:
             first_p_m = vocal_parts[0].measure(m_num)
             if first_p_m:
                 for h in first_p_m.getElementsByClass([m21.meter.TimeSignature, m21.key.KeySignature, m21.clef.Clef]):
-                    new_m.append(copy.deepcopy(h))
+                    new_m.insert(float(h.offset), copy.deepcopy(h))
+            seen = set()
             for vp in vocal_parts:
                 vp_m = vp.measure(m_num)
                 if vp_m:
                     for el in vp_m.notes:
-                        new_m.append(copy.deepcopy(el))
+                        p_key = (float(el.offset), tuple(getattr(el, 'pitches', [])))
+                        if p_key not in seen:
+                            seen.add(p_key)
+                            new_m.insert(float(el.offset), copy.deepcopy(el))
+            if not list(new_m.notes):
+                rest_ql = float(first_p_m.quarterLength) if first_p_m else 4.0
+                new_m.insert(0.0, m21.note.Rest(quarterLength=rest_ql))
             reduction.append(new_m)
 
         return reduction
+
+    def compute_time_signature_meta(
+        self, ts: m21.meter.TimeSignature, bpm: float, ql: Optional[float] = None
+    ) -> Dict[str, Any]:
+        """
+        Calculates detailed metric and acoustic properties for a given TimeSignature:
+        - Exact beats per measure count
+        - Beat unit quarter length & duration in seconds at current BPM
+        - Frequency accent pattern for downbeat, secondary accents, and regular beats
+        """
+        num = int(ts.numerator)
+        den = int(ts.denominator)
+        is_compound = (num in [6, 9, 12] and den == 8)
+
+        if is_compound:
+            # Compound meters (6/8, 9/8, 12/8): rehearsal pulse counts eighth notes
+            beats = num
+            unit_ql = 0.5
+            accents = []
+            for b in range(num):
+                if b == 0:
+                    accents.append(1200)  # Downbeat (high crisp tone)
+                elif b % 3 == 0:
+                    accents.append(950)   # Secondary accent (e.g. beat 4 in 6/8, beats 4 & 7 in 9/8)
+                else:
+                    accents.append(680)   # Off-beat ticks
+        else:
+            beats = num
+            unit_ql = 4.0 / den
+            accents = []
+            for b in range(num):
+                if b == 0:
+                    accents.append(1200)  # Downbeat
+                elif num == 4 and b == 2:
+                    accents.append(920)   # Beat 3 in 4/4
+                elif num == 5 and b in [2, 3]:
+                    accents.append(920)   # Secondary pulse in 5/4
+                else:
+                    accents.append(680)   # Regular beat ticks
+
+        # If this is an anacrusis / pickup measure with less quarterLength than a standard bar
+        standard_bar_ql = float(ts.barDuration.quarterLength)
+        if ql is not None and ql < standard_bar_ql - 0.05:
+            pickup_beats = max(1, round(ql / unit_ql))
+            beats = pickup_beats
+            accents = accents[:pickup_beats]
+
+        beat_dur = (unit_ql / (bpm / 60.0)) if bpm > 0 else (unit_ql * 0.6)
+
+        return {
+            "time_signature": f"{num}/{den}",
+            "numerator": num,
+            "denominator": den,
+            "beats_per_measure": beats,
+            "beat_unit_ql": round(unit_ql, 4),
+            "beat_duration": round(beat_dur, 4),
+            "is_compound": is_compound,
+            "accent_pattern": accents,
+        }
 
     def analyze_measures(
         self,
@@ -367,12 +447,15 @@ class NotationProcessor:
     ) -> Dict[str, Any]:
         """
         Full measure-by-measure analysis of the score:
-        - Exact start time (seconds), end time, duration, BPM, time signature for every measure.
+        - Music-sensitive to dynamic time signature changes across measures (altering measure counts,
+          note lengths, and metronome tone accent patterns).
+        - Strictly consistent with printed PDF measure markings (preserving pickup bar 0, suffixes,
+          and interpolating multi-measure rests so seeking lands on the exact printed bar).
         - Part activity (which parts have notes in each measure).
         - Part entrances (measures where a part enters after resting).
         - Extended rest segments for each part with precomputed jump-to entrance timestamps.
         """
-        # Collect all tempo changes
+        # 1. Collect all tempo changes
         tempo_points: List[Tuple[float, float]] = []
         for el in score.recurse().getElementsByClass(m21.tempo.MetronomeMark):
             if el.number:
@@ -394,87 +477,183 @@ class NotationProcessor:
             total_sec += (offset - last_off) * (60.0 / cur_bpm)
             return round(total_sec, 3)
 
-        # Collect all measure numbers across parts
-        all_measure_nums = set()
+        def get_bpm_at_offset(offset: float) -> float:
+            cur_bpm = tempo_points[0][1]
+            for tp_off, tp_bpm in tempo_points:
+                if offset >= tp_off:
+                    cur_bpm = tp_bpm
+                else:
+                    break
+            return cur_bpm
+
+        # 2. Collect all TimeSignature changes across the entire score
+        score_ts_list: List[Tuple[float, m21.meter.TimeSignature]] = []
+        for el in score.recurse().getElementsByClass(m21.meter.TimeSignature):
+            score_ts_list.append((float(el.offset), el))
         for p in reconciled_streams.values():
             for m in p.getElementsByClass(m21.stream.Measure):
-                all_measure_nums.add(m.number)
+                if m.timeSignature:
+                    score_ts_list.append((float(m.offset), m.timeSignature))
+        score_ts_list.sort(key=lambda x: x[0])
 
-        sorted_m_nums = sorted(all_measure_nums)
-        if not sorted_m_nums:
-            sorted_m_nums = [1]
+        default_ts = score_ts_list[0][1] if score_ts_list else m21.meter.TimeSignature("4/4")
+        if not score_ts_list or score_ts_list[0][0] > 0:
+            score_ts_list.insert(0, (0.0, default_ts))
 
-        # Get initial time signature
-        ts_elements = list(score.recurse().getElementsByClass(m21.meter.TimeSignature))
-        default_ts_str = f"{ts_elements[0].numerator}/{ts_elements[0].denominator}" if ts_elements else "4/4"
-
-        measures_list = []
-        part_activity_by_measure: Dict[int, Dict[str, bool]] = {}
-
-        # Measure by measure inspection
-        for m_num in sorted_m_nums:
-            # Measure offset and duration
-            m_offset = 0.0
-            m_ql = 4.0
-            m_ts_str = default_ts_str
-
-            for p in reconciled_streams.values():
-                m_obj = p.measure(m_num)
-                if m_obj:
-                    m_offset = float(m_obj.offset)
-                    m_ql = float(m_obj.quarterLength)
-                    m_ts = m_obj.timeSignature
-                    if m_ts:
-                        m_ts_str = f"{m_ts.numerator}/{m_ts.denominator}"
-                    break
-
-            start_sec = offset_to_seconds(m_offset)
-            end_sec = offset_to_seconds(m_offset + m_ql)
-            dur_sec = round(max(0.1, end_sec - start_sec), 3)
-
-            # Check which parts have non-rest notes in this measure
-            active_parts = []
-            resting_parts = []
-            act_dict: Dict[str, bool] = {}
-
-            for key, p_stream in reconciled_streams.items():
-                p_m = p_stream.measure(m_num)
-                has_notes = False
-                if p_m:
-                    non_rest_notes = [n for n in p_m.recurse().notes if not isinstance(n, m21.note.Rest)]
-                    if non_rest_notes:
-                        has_notes = True
-
-                act_dict[key] = has_notes
-                if has_notes:
-                    active_parts.append(key)
+        def get_ts_at_offset(off: float) -> m21.meter.TimeSignature:
+            active_ts = score_ts_list[0][1]
+            for ts_off, ts_obj in score_ts_list:
+                if ts_off <= off + 0.001:
+                    active_ts = ts_obj
                 else:
-                    resting_parts.append(key)
+                    break
+            return active_ts
 
-            part_activity_by_measure[m_num] = act_dict
+        # 3. Collect all raw measures across all reconciled parts by offset
+        raw_measures_by_offset: Dict[float, Dict[str, Any]] = {}
+        for key, part in reconciled_streams.items():
+            for m in part.getElementsByClass(m21.stream.Measure):
+                off = float(m.offset)
+                ql = float(m.quarterLength)
+                num = m.number
+                suffix = getattr(m, "numberSuffix", "") or ""
+                if off not in raw_measures_by_offset:
+                    raw_measures_by_offset[off] = {
+                        "offset": off,
+                        "quarterLength": ql,
+                        "number": num,
+                        "suffix": suffix,
+                        "parts_present": {key: m},
+                    }
+                else:
+                    raw_measures_by_offset[off]["parts_present"][key] = m
+                    if 0 < ql < raw_measures_by_offset[off]["quarterLength"]:
+                        raw_measures_by_offset[off]["quarterLength"] = ql
+                    if raw_measures_by_offset[off]["number"] is None and num is not None:
+                        raw_measures_by_offset[off]["number"] = num
+                        raw_measures_by_offset[off]["suffix"] = suffix
 
-            # Check entrances: active in this measure, but rested in previous measure
-            entrances = []
-            prev_m_num = m_num - 1
-            for key in active_parts:
-                prev_active = part_activity_by_measure.get(prev_m_num, {}).get(key, False)
-                if not prev_active:
-                    entrances.append(key)
+        sorted_offsets = sorted(raw_measures_by_offset.keys())
+        if not sorted_offsets:
+            sorted_offsets = [0.0]
+            raw_measures_by_offset[0.0] = {
+                "offset": 0.0,
+                "quarterLength": 4.0,
+                "number": 1,
+                "suffix": "",
+                "parts_present": {},
+            }
 
-            measures_list.append({
-                "number": m_num,
-                "start_time": start_sec,
-                "end_time": end_sec,
-                "duration": dur_sec,
-                "time_signature": m_ts_str,
-                "bpm": master_tempo_bpm,
-                "active_parts": active_parts,
-                "resting_parts": resting_parts,
-                "entrances": entrances,
-            })
+        # 4. Expand measures with strict PDF consistency & dynamic time signature tracking
+        measures_list = []
+        meter_changes = []
+        last_recorded_ts_str = None
 
-        # Compute part-level entrances and extended rest spans
-        part_entrances: Dict[str, List[int]] = {k: [] for k in ALL_CHORAL_KEYS}
+        for i, off in enumerate(sorted_offsets):
+            data = raw_measures_by_offset[off]
+            ts = get_ts_at_offset(off)
+            standard_bar_ql = float(ts.barDuration.quarterLength)
+            ql = data["quarterLength"]
+
+            next_off = sorted_offsets[i + 1] if i + 1 < len(sorted_offsets) else None
+            next_data = raw_measures_by_offset[next_off] if next_off is not None else None
+
+            # Detect if this measure represents a multi-measure rest or a number gap
+            if (
+                next_off is not None
+                and next_data
+                and isinstance(next_data["number"], int)
+                and isinstance(data["number"], int)
+                and next_data["number"] > data["number"] + 1
+            ):
+                num_bars = next_data["number"] - data["number"]
+                ql = max(ql, next_off - off)
+            elif ql > standard_bar_ql + 0.01:
+                num_bars = max(1, round(ql / standard_bar_ql))
+            else:
+                num_bars = 1
+
+            bar_ql = ql / num_bars if num_bars > 0 else ql
+            base_num = data["number"] if data["number"] is not None else (i + 1)
+
+            for sub_idx in range(num_bars):
+                sub_num = (base_num + sub_idx) if isinstance(base_num, int) else f"{base_num}_{sub_idx+1}"
+                sub_off = off + (sub_idx * bar_ql)
+                sub_dur_ql = bar_ql
+
+                if sub_num == 0:
+                    display_num = "0 (Pickup)"
+                else:
+                    display_num = f"{sub_num}{data['suffix'] if sub_idx == 0 else ''}"
+
+                sub_ts = get_ts_at_offset(sub_off)
+                sub_bpm = get_bpm_at_offset(sub_off)
+                ts_meta = self.compute_time_signature_meta(sub_ts, sub_bpm, ql=sub_dur_ql)
+
+                # Record meter change milestone
+                if ts_meta["time_signature"] != last_recorded_ts_str:
+                    meter_changes.append({
+                        "measure_number": sub_num,
+                        "time_signature": ts_meta["time_signature"],
+                        "offset": sub_off,
+                        "start_time": offset_to_seconds(sub_off),
+                    })
+                    last_recorded_ts_str = ts_meta["time_signature"]
+
+                start_sec = offset_to_seconds(sub_off)
+                end_sec = offset_to_seconds(sub_off + sub_dur_ql)
+                dur_sec = round(max(0.05, end_sec - start_sec), 3)
+
+                # Check which parts have non-rest notes in this measure
+                active_parts = []
+                resting_parts = []
+                for k, p in reconciled_streams.items():
+                    m_obj = data["parts_present"].get(k)
+                    has_notes = False
+                    if m_obj:
+                        if num_bars == 1:
+                            has_notes = any(not isinstance(n, m21.note.Rest) for n in m_obj.recurse().notes)
+                        else:
+                            has_notes = any(
+                                not isinstance(n, m21.note.Rest)
+                                and (sub_off <= (off + float(n.offset)) < sub_off + sub_dur_ql + 0.01)
+                                for n in m_obj.recurse().notes
+                            )
+                    if has_notes:
+                        active_parts.append(k)
+                    else:
+                        resting_parts.append(k)
+
+                measures_list.append({
+                    "number": sub_num,
+                    "display_number": display_num,
+                    "start_time": start_sec,
+                    "end_time": end_sec,
+                    "duration": dur_sec,
+                    "time_signature": ts_meta["time_signature"],
+                    "numerator": ts_meta["numerator"],
+                    "denominator": ts_meta["denominator"],
+                    "beats_per_measure": ts_meta["beats_per_measure"],
+                    "beat_unit_ql": ts_meta["beat_unit_ql"],
+                    "beat_duration": ts_meta["beat_duration"],
+                    "is_compound": ts_meta["is_compound"],
+                    "accent_pattern": ts_meta["accent_pattern"],
+                    "bpm": round(sub_bpm, 1),
+                    "active_parts": active_parts,
+                    "resting_parts": resting_parts,
+                    "entrances": [],
+                })
+
+        # 5. Compute entrances: active in current measure, but was resting in previous measure
+        for idx, m_info in enumerate(measures_list):
+            if idx == 0:
+                m_info["entrances"] = list(m_info["active_parts"])
+            else:
+                prev_active = set(measures_list[idx - 1]["active_parts"])
+                m_info["entrances"] = [k for k in m_info["active_parts"] if k not in prev_active]
+
+        # 6. Compute part-level entrances and extended rest spans
+        part_entrances: Dict[str, List[Union[int, str]]] = {k: [] for k in ALL_CHORAL_KEYS}
         part_extended_rests: Dict[str, List[Dict[str, Any]]] = {k: [] for k in ALL_CHORAL_KEYS}
 
         for m_info in measures_list:
@@ -510,10 +689,13 @@ class NotationProcessor:
                             })
                         current_rest_start_idx = None
 
+        initial_ts_str = measures_list[0]["time_signature"] if measures_list else "4/4"
+
         return {
             "total_measures": len(measures_list),
             "default_bpm": master_tempo_bpm,
-            "time_signature": default_ts_str,
+            "time_signature": initial_ts_str,
+            "time_signatures": meter_changes,
             "total_duration_seconds": measures_list[-1]["end_time"] if measures_list else 0.0,
             "measures": measures_list,
             "part_entrances": part_entrances,
@@ -778,10 +960,11 @@ class NotationProcessor:
             gm_inst = GM_INSTRUMENTS.get(key, m21.instrument.Choir())
             stream_part.insert(0, copy.deepcopy(gm_inst))
 
-            first_m = stream_part.measure(1)
-            if first_m:
-                if not first_m.getElementsByClass(m21.tempo.MetronomeMark):
-                    first_m.insert(0, copy.deepcopy(master_tempo))
+            measures_in_part = list(stream_part.getElementsByClass(m21.stream.Measure))
+            if measures_in_part:
+                first_bar = measures_in_part[0]
+                if not first_bar.getElementsByClass(m21.tempo.MetronomeMark):
+                    first_bar.insert(0, copy.deepcopy(master_tempo))
             else:
                 stream_part.insert(0, copy.deepcopy(master_tempo))
 
