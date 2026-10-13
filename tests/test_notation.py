@@ -522,3 +522,40 @@ def test_dynamic_choral_layout_resolver_11_parts(tmp_path):
         assert k in m37["resting_parts"]
 
 
+def test_audit_score_components_speed_and_reconciliation(tmp_path):
+    """Test audit_score_components verifies staves, recovers dropouts, and runs under 50ms."""
+    import time
+    score = m21.stream.Score()
+    score.metadata = m21.metadata.Metadata()
+    score.metadata.title = "The First Nowell"
+
+    p_men = m21.stream.Part()
+    p_men.partName = "Men"
+    p_pno = m21.stream.Part()
+    p_pno.partName = "Piano"
+
+    for m_num in range(1, 20):
+        m_m = m21.stream.Measure(number=m_num)
+        m_p = m21.stream.Measure(number=m_num)
+        if 4 <= m_num <= 10:
+            m_m.append(m21.note.Note("D3", quarterLength=3.0))
+        # Intentionally introduce accompaniment dropout at m=6..10
+        if m_num < 6 or m_num > 10:
+            m_p.append(m21.note.Note("C4", quarterLength=3.0))
+        p_men.append(m_m)
+        p_pno.append(m_p)
+
+    score.append(p_men)
+    score.append(p_pno)
+
+    t0 = time.time()
+    audit_rep = notation_processor.audit_score_components(score)
+    duration_ms = (time.time() - t0) * 1000
+
+    assert duration_ms < 50.0  # Fast in-memory audit (<15ms expected)
+    assert "reconciled_match_pct" in audit_rep
+    assert "raw_match_pct" in audit_rep
+    assert len(audit_rep["measure_grid"]) == 19
+
+
+

@@ -196,6 +196,20 @@ def run_score_pipeline(score_id: str):
                 stage="notation",
                 db=db,
             )
+
+            audit = measure_analysis.get("audit_report", {})
+            if audit:
+                infilled = audit.get("components", {}).get("accompaniment", {}).get("infilled_count", 0)
+                recovered = audit.get("components", {}).get("vocal_lines", {}).get("recovered_count", 0)
+                bleed = audit.get("components", {}).get("interludes", {}).get("bleed_count", 0)
+                match_pct = audit.get("reconciled_match_pct", 100)
+                _log_event(
+                    score,
+                    f"Component Audit Check: {match_pct}% Match with printed PDF. Auto-reconciled {infilled} dropped accompaniment measures, {recovered} dropped vocal measures, and suppressed {bleed} interlude bleeds.",
+                    level="success",
+                    stage="notation",
+                    db=db,
+                )
         except Exception as e:
             tb = traceback.format_exc()
             logger.error("Notation parsing failed for score %s: %s\n%s", score.id, e, tb)

@@ -176,3 +176,23 @@ def test_score_logs_endpoint(client: TestClient):
     assert len(logs_data["logs"]) > 0
 
 
+def test_score_audit_endpoint(client: TestClient):
+    """Test retrieving component audit report from dedicated endpoint."""
+    sample_res = client.post("/api/v1/scores/load-sample")
+    assert sample_res.status_code == 200
+    score_id = sample_res.json()["id"]
+
+    audit_res = client.get(f"/api/v1/scores/{score_id}/audit")
+    assert audit_res.status_code == 200
+    audit_data = audit_res.json()
+    assert audit_data["score_id"] == score_id
+    assert "audit" in audit_data
+    report = audit_data["audit"]
+    assert "reconciled_match_pct" in report
+    assert "execution_time_ms" in report
+    assert report["execution_time_ms"] < 200.0  # Fast execution constraint
+    assert isinstance(report["measure_grid"], list)
+
+
+
+

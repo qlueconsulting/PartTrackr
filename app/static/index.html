@@ -139,6 +139,11 @@
                         <div class="flex items-center gap-2">
                             <h2 id="current-score-title" class="text-lg font-bold text-white tracking-tight">Select or Upload a Score</h2>
                             <span id="current-score-status" class="px-2.5 py-0.5 text-xs font-semibold rounded-full bg-slate-800 text-slate-400">IDLE</span>
+                            <!-- Audit Badge & Quick Button -->
+                            <button id="open-audit-viewer-btn" class="hidden px-2.5 py-0.5 text-xs font-semibold rounded-full bg-emerald-950 text-emerald-300 border border-emerald-700 hover:bg-emerald-900 transition flex items-center gap-1.5 shadow" title="Click to view component audit report & reconciliation">
+                                <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                                <span id="score-audit-badge-text">Audit: 100% Match</span>
+                            </button>
                         </div>
                         <p id="current-score-subtitle" class="text-xs text-slate-400 mt-0.5">Upload a choral PDF or click "Load Bach SATB" to start.</p>
                     </div>
@@ -169,6 +174,34 @@
                     <span class="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mr-2">Detected Parts:</span>
                     <div id="detected-parts-container" class="inline-flex flex-wrap gap-1.5 mt-1 sm:mt-0">
                         <span class="text-xs text-slate-500 italic">None yet</span>
+                    </div>
+                </div>
+
+                <!-- Score Component Audit & Verification Strip -->
+                <div id="score-audit-strip" class="pt-3 border-t border-slate-800/80 mt-3 hidden space-y-2">
+                    <div class="flex items-center justify-between">
+                        <span class="text-[11px] font-bold text-emerald-400 uppercase tracking-wider flex items-center gap-1.5">
+                            <svg class="w-3.5 h-3.5 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                            Component Audit Check & Auto-Reconciliation:
+                        </span>
+                        <button id="audit-strip-view-btn" class="text-[11px] font-medium text-emerald-400 hover:text-emerald-300 underline flex items-center gap-1">
+                            <span>Inspect Full Audit Report</span>
+                            <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path></svg>
+                        </button>
+                    </div>
+                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                        <div class="bg-slate-950/70 border border-slate-800 rounded-xl p-2.5 text-xs flex items-center justify-between">
+                            <span class="text-slate-400 text-[11px]">Accompaniment:</span>
+                            <span id="audit-pill-accompaniment" class="font-mono font-bold text-[11px] px-2 py-0.5 rounded bg-emerald-950 text-emerald-300 border border-emerald-800">100% (Infilled)</span>
+                        </div>
+                        <div class="bg-slate-950/70 border border-slate-800 rounded-xl p-2.5 text-xs flex items-center justify-between">
+                            <span class="text-slate-400 text-[11px]">Choral Vocals:</span>
+                            <span id="audit-pill-vocals" class="font-mono font-bold text-[11px] px-2 py-0.5 rounded bg-emerald-950 text-emerald-300 border border-emerald-800">100% (Recovered)</span>
+                        </div>
+                        <div class="bg-slate-950/70 border border-slate-800 rounded-xl p-2.5 text-xs flex items-center justify-between">
+                            <span class="text-slate-400 text-[11px]">Interludes:</span>
+                            <span id="audit-pill-interludes" class="font-mono font-bold text-[11px] px-2 py-0.5 rounded bg-emerald-950 text-emerald-300 border border-emerald-800">100% (Cleaned)</span>
+                        </div>
                     </div>
                 </div>
 
@@ -692,6 +725,128 @@
                         </a>
                     </div>
                     <iframe id="swagger-iframe" src="about:blank" class="w-full flex-1 rounded-xl border border-slate-800 bg-white min-h-[500px]"></iframe>
+                </div>
+
+    <!-- ============================================================== -->
+    <!-- INTERACTIVE AUDIT CHECK & AUTO-RECONCILIATION MODAL             -->
+    <!-- ============================================================== -->
+    <div id="audit-viewer-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 bg-slate-950/80 backdrop-blur-sm animate-fade-in">
+        <div class="bg-slate-900 border border-slate-700 rounded-2xl w-full max-w-5xl h-[88vh] flex flex-col shadow-2xl overflow-hidden">
+            <!-- Modal Header -->
+            <div class="px-6 py-4 border-b border-slate-800 flex items-center justify-between bg-slate-900/90 flex-shrink-0">
+                <div class="flex items-center space-x-3">
+                    <div class="w-9 h-9 rounded-xl bg-emerald-600/30 border border-emerald-500/50 flex items-center justify-center text-emerald-400 shadow-md">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                    </div>
+                    <div>
+                        <h3 class="text-base font-bold text-white flex items-center gap-2">
+                            PDF Score Component Audit & Reconciliation Engine
+                            <span id="audit-modal-match-badge" class="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-950 text-emerald-400 border border-emerald-800">100% Match [Auto-Reconciled]</span>
+                        </h3>
+                        <p class="text-xs text-slate-400">
+                            Validates rendered MusicXML components against printed PDF score structure • <span class="text-emerald-300 font-mono" id="audit-modal-perf-text">Audited in &lt;15ms</span>
+                        </p>
+                    </div>
+                </div>
+                <div class="flex items-center space-x-2">
+                    <button id="close-audit-viewer-btn" class="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white transition" title="Close modal">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Modal Body (Scrollable) -->
+            <div class="flex-1 overflow-y-auto p-6 space-y-6">
+
+                <!-- Overall Health Gauge & Verification Status Cards -->
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <!-- Accompaniment Card -->
+                    <div class="bg-slate-950/70 border border-slate-800 rounded-xl p-4 space-y-2">
+                        <div class="flex items-center justify-between">
+                            <span class="text-xs font-bold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
+                                <svg class="w-4 h-4 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3"></path></svg>
+                                Piano Accompaniment
+                            </span>
+                            <span id="audit-card-acc-badge" class="px-2 py-0.5 text-[10px] font-mono rounded bg-emerald-950 text-emerald-400 border border-emerald-800">100% RECONCILED</span>
+                        </div>
+                        <div class="text-xs text-slate-400">
+                            Expected continuous keyboard backing. Raw OMR dropped <span id="audit-acc-dropped-count" class="text-amber-300 font-bold">34</span> measures.
+                        </div>
+                        <div class="text-[11px] text-emerald-300 bg-emerald-950/50 p-2 rounded border border-emerald-900/60 font-mono">
+                            Auto-Infilled: <span id="audit-acc-infilled-summary">34 measures synthesized from vocal harmony</span>
+                        </div>
+                    </div>
+
+                    <!-- Choral Vocal Lines Card -->
+                    <div class="bg-slate-950/70 border border-slate-800 rounded-xl p-4 space-y-2">
+                        <div class="flex items-center justify-between">
+                            <span class="text-xs font-bold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
+                                <svg class="w-4 h-4 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 100-6 3 3 0 000 6z"></path></svg>
+                                Choral Vocal Lines
+                            </span>
+                            <span id="audit-card-voc-badge" class="px-2 py-0.5 text-[10px] font-mono rounded bg-emerald-950 text-emerald-400 border border-emerald-800">100% RECONCILED</span>
+                        </div>
+                        <div class="text-xs text-slate-400">
+                            Verses & Chorus vocal continuity. Raw OMR dropped <span id="audit-voc-dropped-count" class="text-amber-300 font-bold">12</span> measures.
+                        </div>
+                        <div class="text-[11px] text-emerald-300 bg-emerald-950/50 p-2 rounded border border-emerald-900/60 font-mono">
+                            Auto-Recovered: <span id="audit-voc-recovered-summary">12 measures recovered from accompaniment</span>
+                        </div>
+                    </div>
+
+                    <!-- Interludes & Bleed Card -->
+                    <div class="bg-slate-950/70 border border-slate-800 rounded-xl p-4 space-y-2">
+                        <div class="flex items-center justify-between">
+                            <span class="text-xs font-bold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
+                                <svg class="w-4 h-4 text-cyan-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                                Interludes & Bleed
+                            </span>
+                            <span id="audit-card-bleed-badge" class="px-2 py-0.5 text-[10px] font-mono rounded bg-emerald-950 text-emerald-400 border border-emerald-800">100% CLEAN</span>
+                        </div>
+                        <div class="text-xs text-slate-400">
+                            Instrumental breaks. Detected <span id="audit-bleed-count" class="text-amber-300 font-bold">7</span> measures with phantom voice notes.
+                        </div>
+                        <div class="text-[11px] text-emerald-300 bg-emerald-950/50 p-2 rounded border border-emerald-900/60 font-mono">
+                            Bleed Filtered: <span id="audit-bleed-summary">Vocal stems rest cleanly during interludes</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Auto-Reconciliation Actions Taken Box -->
+                <div class="bg-slate-950/80 border border-indigo-900/60 rounded-xl p-4 space-y-2.5">
+                    <h4 class="text-xs font-bold text-indigo-300 uppercase tracking-wider flex items-center gap-1.5">
+                        <svg class="w-4 h-4 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
+                        Auto-Reconciliation Actions Applied Before Audio Rendering:
+                    </h4>
+                    <ul id="audit-actions-list" class="space-y-1.5 text-xs text-slate-300">
+                        <!-- Populated by JavaScript -->
+                    </ul>
+                </div>
+
+                <!-- Interactive Measure-by-Measure Audit Grid -->
+                <div class="space-y-3">
+                    <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                        <div>
+                            <h4 class="text-xs font-bold text-slate-200 uppercase tracking-wider flex items-center gap-2">
+                                <svg class="w-4 h-4 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 10h16M4 14h16M4 18h16"></path></svg>
+                                Measure-by-Measure Component Audit Grid (Click any bar to play & audit audio)
+                            </h4>
+                            <p class="text-[11px] text-slate-400">Every measure verified against printed score markings. Click a tile to jump rehearsal player directly to that measure.</p>
+                        </div>
+                        <!-- Grid Legend -->
+                        <div class="flex flex-wrap items-center gap-2 text-[10px] font-mono">
+                            <span class="flex items-center gap-1"><span class="w-2.5 h-2.5 rounded bg-emerald-500 inline-block"></span> Verified</span>
+                            <span class="flex items-center gap-1"><span class="w-2.5 h-2.5 rounded bg-blue-500 inline-block"></span> Pno Infilled</span>
+                            <span class="flex items-center gap-1"><span class="w-2.5 h-2.5 rounded bg-amber-500 inline-block"></span> Vocal Recovered</span>
+                            <span class="flex items-center gap-1"><span class="w-2.5 h-2.5 rounded bg-purple-500 inline-block"></span> Bleed Cleaned</span>
+                            <span class="flex items-center gap-1"><span class="w-2.5 h-2.5 rounded bg-slate-700 inline-block"></span> Rest</span>
+                        </div>
+                    </div>
+
+                    <!-- Scrollable Grid Container -->
+                    <div id="audit-measure-grid" class="grid grid-cols-6 sm:grid-cols-10 md:grid-cols-14 lg:grid-cols-16 gap-1.5 max-h-72 overflow-y-auto p-2 bg-slate-950 border border-slate-800 rounded-xl">
+                        <!-- Populated by JavaScript -->
+                    </div>
                 </div>
 
             </div>

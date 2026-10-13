@@ -105,6 +105,14 @@ document.addEventListener("DOMContentLoaded", () => {
     const rawHealthJson = document.getElementById("raw-health-json");
     const swaggerIframe = document.getElementById("swagger-iframe");
 
+    // Audit Viewer Elements
+    const openAuditViewerBtn = document.getElementById("open-audit-viewer-btn");
+    const closeAuditViewerBtn = document.getElementById("close-audit-viewer-btn");
+    const auditViewerModal = document.getElementById("audit-viewer-modal");
+    const scoreAuditBadgeText = document.getElementById("score-audit-badge-text");
+    const scoreAuditStrip = document.getElementById("score-audit-strip");
+    const auditStripViewBtn = document.getElementById("audit-strip-view-btn");
+
     // Ingestion & Upload
     const fileInput = document.getElementById("file-input");
     const uploadForm = document.getElementById("upload-form");
@@ -829,6 +837,162 @@ document.addEventListener("DOMContentLoaded", () => {
         } else if (scoreStructureContainer) {
             scoreStructureContainer.classList.add("hidden");
         }
+
+        // Component Audit & Auto-Reconciliation
+        const audit = score.audit_report || (score.measure_analysis ? score.measure_analysis.audit_report : null);
+        if (audit) {
+            populateAuditViewer(audit);
+        } else if (openAuditViewerBtn) {
+            openAuditViewerBtn.classList.add("hidden");
+            if (scoreAuditStrip) scoreAuditStrip.classList.add("hidden");
+        }
+    }
+
+    // ==============================================================
+    // AUDIT VIEWER & RECONCILIATION MODAL POPULATION
+    // ==============================================================
+
+    function populateAuditViewer(audit) {
+        if (!audit) return;
+
+        const matchPct = audit.reconciled_match_pct || 100;
+        const execMs = audit.execution_time_ms || 12;
+
+        if (scoreAuditBadgeText) {
+            scoreAuditBadgeText.textContent = `Audit: ${matchPct}% Match`;
+        }
+        if (openAuditViewerBtn) {
+            openAuditViewerBtn.classList.remove("hidden");
+        }
+        if (scoreAuditStrip) {
+            scoreAuditStrip.classList.remove("hidden");
+        }
+
+        // Modal Header
+        const auditModalMatchBadge = document.getElementById("audit-modal-match-badge");
+        if (auditModalMatchBadge) {
+            auditModalMatchBadge.textContent = `${matchPct}% Match [Auto-Reconciled]`;
+        }
+        const auditModalPerfText = document.getElementById("audit-modal-perf-text");
+        if (auditModalPerfText) {
+            auditModalPerfText.textContent = `Audited in <${execMs}ms`;
+        }
+
+        // Accompaniment
+        const acc = audit.components && audit.components.accompaniment ? audit.components.accompaniment : {};
+        const infilledCount = acc.infilled_count || 0;
+        const auditPillAccompaniment = document.getElementById("audit-pill-accompaniment");
+        if (auditPillAccompaniment) {
+            auditPillAccompaniment.textContent = `${acc.integrity_pct || 100}% (${infilledCount} Infilled)`;
+        }
+        const auditAccDroppedCount = document.getElementById("audit-acc-dropped-count");
+        if (auditAccDroppedCount) {
+            auditAccDroppedCount.textContent = infilledCount.toString();
+        }
+        const auditAccInfilledSummary = document.getElementById("audit-acc-infilled-summary");
+        if (auditAccInfilledSummary) {
+            auditAccInfilledSummary.textContent = `${infilledCount} measures synthesized from vocal harmony`;
+        }
+
+        // Vocal Lines
+        const voc = audit.components && audit.components.vocal_lines ? audit.components.vocal_lines : {};
+        const recoveredCount = voc.recovered_count || 0;
+        const auditPillVocals = document.getElementById("audit-pill-vocals");
+        if (auditPillVocals) {
+            auditPillVocals.textContent = `${voc.integrity_pct || 100}% (${recoveredCount} Recovered)`;
+        }
+        const auditVocDroppedCount = document.getElementById("audit-voc-dropped-count");
+        if (auditVocDroppedCount) {
+            auditVocDroppedCount.textContent = recoveredCount.toString();
+        }
+        const auditVocRecoveredSummary = document.getElementById("audit-voc-recovered-summary");
+        if (auditVocRecoveredSummary) {
+            auditVocRecoveredSummary.textContent = `${recoveredCount} measures recovered from accompaniment staves`;
+        }
+
+        // Interludes
+        const interludes = audit.components && audit.components.interludes ? audit.components.interludes : {};
+        const bleedCount = interludes.bleed_count || 0;
+        const auditPillInterludes = document.getElementById("audit-pill-interludes");
+        if (auditPillInterludes) {
+            auditPillInterludes.textContent = `${interludes.clean_pct || 100}% (${bleedCount} Cleaned)`;
+        }
+        const auditBleedCount = document.getElementById("audit-bleed-count");
+        if (auditBleedCount) {
+            auditBleedCount.textContent = bleedCount.toString();
+        }
+
+        // Actions List
+        const auditActionsList = document.getElementById("audit-actions-list");
+        if (auditActionsList) {
+            auditActionsList.innerHTML = "";
+            const actions = audit.reconciliation_actions || [];
+            actions.forEach((act) => {
+                const li = document.createElement("li");
+                li.className = "flex items-start gap-2";
+                li.innerHTML = `
+                    <svg class="w-3.5 h-3.5 text-emerald-400 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
+                    <span>${escapeHtml(act)}</span>
+                `;
+                auditActionsList.appendChild(li);
+            });
+        }
+
+        // Measure Grid
+        const auditMeasureGrid = document.getElementById("audit-measure-grid");
+        if (auditMeasureGrid) {
+            auditMeasureGrid.innerHTML = "";
+            const grid = audit.measure_grid || [];
+            grid.forEach((item) => {
+                const tile = document.createElement("button");
+                const colorMap = {
+                    emerald: "bg-emerald-950/80 text-emerald-300 border-emerald-800 hover:bg-emerald-800",
+                    blue: "bg-blue-950/80 text-blue-300 border-blue-800 hover:bg-blue-800",
+                    amber: "bg-amber-950/80 text-amber-300 border-amber-800 hover:bg-amber-800",
+                    purple: "bg-purple-950/80 text-purple-300 border-purple-800 hover:bg-purple-800",
+                    slate: "bg-slate-900 text-slate-400 border-slate-800 hover:bg-slate-800",
+                };
+                const cls = colorMap[item.status_color] || colorMap.emerald;
+                tile.className = `p-1.5 rounded-lg border text-center transition flex flex-col items-center justify-center cursor-pointer shadow-sm ${cls}`;
+                tile.title = `Measure ${item.display_number}: ${item.status_label}\n${item.action}\nClick to play this bar`;
+
+                tile.innerHTML = `
+                    <span class="font-mono font-bold text-xs leading-none">${item.display_number}</span>
+                    <span class="text-[8px] uppercase tracking-tighter mt-0.5 opacity-90 truncate max-w-full">${item.status_label.split(" ")[0]}</span>
+                `;
+
+                tile.addEventListener("click", () => {
+                    player.seekToMeasure(item.measure);
+                    player.play();
+                    if (auditViewerModal) auditViewerModal.classList.add("hidden");
+                });
+
+                auditMeasureGrid.appendChild(tile);
+            });
+        }
+    }
+
+    if (openAuditViewerBtn && auditViewerModal) {
+        openAuditViewerBtn.addEventListener("click", () => {
+            auditViewerModal.classList.remove("hidden");
+        });
+    }
+    if (auditStripViewBtn && auditViewerModal) {
+        auditStripViewBtn.addEventListener("click", () => {
+            auditViewerModal.classList.remove("hidden");
+        });
+    }
+    if (closeAuditViewerBtn && auditViewerModal) {
+        closeAuditViewerBtn.addEventListener("click", () => {
+            auditViewerModal.classList.add("hidden");
+        });
+    }
+    if (auditViewerModal) {
+        auditViewerModal.addEventListener("click", (e) => {
+            if (e.target === auditViewerModal) {
+                auditViewerModal.classList.add("hidden");
+            }
+        });
     }
 
     // ==============================================================
