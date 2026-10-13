@@ -260,6 +260,79 @@
                     </div>
                 </div>
 
+                <!-- Tempo & Metronome Control Strip -->
+                <div class="bg-slate-950/60 border border-slate-800 rounded-xl p-3 flex flex-wrap items-center justify-between gap-3 text-xs">
+                    <!-- Tempo (BPM) Adjustment -->
+                    <div class="flex items-center space-x-2">
+                        <span class="font-bold text-slate-300 uppercase tracking-wider text-[11px] flex items-center gap-1">
+                            <svg class="w-3.5 h-3.5 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                            Tempo:
+                        </span>
+                        <div class="flex items-center space-x-1">
+                            <button id="tempo-minus-btn" class="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold transition" title="Decrease Tempo by 5 BPM">-5</button>
+                            <input id="tempo-bpm-input" type="number" min="30" max="300" step="1" value="100" class="w-16 bg-slate-900 border border-slate-700 text-slate-100 font-mono text-center rounded py-1 px-1 focus:ring-1 focus:ring-indigo-500 focus:outline-none">
+                            <button id="tempo-plus-btn" class="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold transition" title="Increase Tempo by 5 BPM">+5</button>
+                            <button id="tempo-reset-btn" class="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-slate-200 text-[10px] transition" title="Reset to Original Tempo">Reset</button>
+                        </div>
+                        <span id="tempo-percent-badge" class="font-mono text-[11px] text-indigo-400 font-semibold ml-1">100%</span>
+                    </div>
+
+                    <!-- Metronome Controls -->
+                    <div class="flex items-center space-x-3">
+                        <button id="metronome-toggle-btn" class="px-3 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 font-semibold transition flex items-center gap-1.5 border border-slate-700">
+                            <svg class="w-3.5 h-3.5 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                            <span id="metronome-status-label">Metronome: OFF</span>
+                        </button>
+                        <div class="flex items-center space-x-1.5">
+                            <span class="text-slate-500 text-[10px] uppercase">Click Vol</span>
+                            <input id="metronome-vol-slider" type="range" min="0" max="1" step="0.05" value="0.8" class="w-20 accent-indigo-500 h-1.5 bg-slate-800 rounded cursor-pointer">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Measure-Based Navigation & Section Replay Bar -->
+                <div class="bg-slate-950/60 border border-slate-800 rounded-xl p-3 flex flex-wrap items-center justify-between gap-3 text-xs">
+                    <div class="flex items-center space-x-2.5">
+                        <span class="font-bold text-slate-300 uppercase tracking-wider text-[11px] flex items-center gap-1">
+                            <svg class="w-3.5 h-3.5 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3"></path></svg>
+                            Section Navigation:
+                        </span>
+                        <span id="current-measure-badge" class="px-2.5 py-1 rounded bg-indigo-950 text-indigo-300 border border-indigo-800 font-mono font-bold text-[11px]">
+                            Measure 1 / 1
+                        </span>
+                        <select id="measure-select" class="bg-slate-900 border border-slate-700 text-slate-200 text-xs rounded-lg p-1.5 focus:ring-1 focus:ring-indigo-500 focus:outline-none max-w-xs">
+                            <option value="1">Measure 1</option>
+                        </select>
+                    </div>
+
+                    <div class="flex items-center space-x-1.5">
+                        <button id="prev-measure-btn" class="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold transition flex items-center gap-1" title="Jump to Previous Measure">
+                            <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path></svg>
+                            Prev Bar
+                        </button>
+                        <button id="replay-measure-btn" class="px-3 py-1 rounded bg-indigo-600 hover:bg-indigo-500 text-white font-bold transition flex items-center gap-1.5 shadow" title="Instantly Replay Current Measure">
+                            <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+                            Replay Bar
+                        </button>
+                        <button id="next-measure-btn" class="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold transition flex items-center gap-1" title="Jump to Next Measure">
+                            Next Bar
+                            <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path></svg>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Entrance Cue Banner (Flashes when target part is about to enter after an extended rest) -->
+                <div id="entry-cue-banner" class="hidden bg-gradient-to-r from-indigo-900/90 to-purple-900/90 border border-indigo-500/80 rounded-xl p-3 text-xs text-white flex items-center justify-between shadow-lg animate-pulse">
+                    <div class="flex items-center space-x-2">
+                        <span class="w-2.5 h-2.5 rounded-full bg-amber-400 animate-ping"></span>
+                        <span class="font-bold text-slate-100">
+                            Target Part Entrance Cue:
+                        </span>
+                        <span id="entry-cue-text" class="text-indigo-200 font-mono">Measure 1 in 4 beats!</span>
+                    </div>
+                    <span class="text-[11px] font-bold text-amber-300 uppercase tracking-wider">Count-in beats active</span>
+                </div>
+
                 <!-- Choral Rehearsal Focus Controls Console -->
                 <div class="bg-slate-950/80 border border-indigo-950 rounded-xl p-4 space-y-4">
                     <div class="flex items-center justify-between">
@@ -281,6 +354,17 @@
                             <label class="block text-[11px] font-semibold text-slate-400 uppercase mb-1">Target Part to Rehearse</label>
                             <select id="target-part-select" class="w-full bg-slate-900 border border-slate-700 text-slate-200 text-xs rounded-lg p-2 focus:ring-2 focus:ring-indigo-500 focus:outline-none">
                                 <option value="">(All Parts Equal)</option>
+                                <option value="Piano">Piano Score (Piano)</option>
+                                <option value="S1">Soprano I (S1)</option>
+                                <option value="S2">Soprano II (S2)</option>
+                                <option value="A1">Alto I (A1)</option>
+                                <option value="A2">Alto II (A2)</option>
+                                <option value="T1">Tenor I (T1)</option>
+                                <option value="T2">Tenor II (T2)</option>
+                                <option value="Bar1">Baritone I (Bar1)</option>
+                                <option value="Bar2">Baritone II (Bar2)</option>
+                                <option value="B1">Bass I (B1)</option>
+                                <option value="B2">Bass II (B2)</option>
                             </select>
                         </div>
 
@@ -309,6 +393,25 @@
                                 <span>100% (Normal)</span>
                                 <span>200% (Boost)</span>
                             </div>
+                        </div>
+                    </div>
+
+                    <!-- Extended Rest Skipping & Entry Beats Selection Box -->
+                    <div class="pt-3 border-t border-slate-800/80 flex flex-wrap items-center justify-between gap-3 text-xs">
+                        <label class="flex items-center space-x-2 text-slate-300 cursor-pointer select-none">
+                            <input id="skip-rests-checkbox" type="checkbox" class="rounded border-slate-700 bg-slate-800 text-indigo-600 focus:ring-0 w-4 h-4">
+                            <span class="font-semibold text-slate-200">Skip Extended Rests</span>
+                            <span class="text-[11px] text-slate-500">(Bypass long periods of silence for selected part)</span>
+                        </label>
+
+                        <div class="flex items-center space-x-2">
+                            <label for="entry-beats-select" class="text-[11px] font-semibold text-slate-400 uppercase">Entry Count-in Beats:</label>
+                            <select id="entry-beats-select" class="bg-slate-900 border border-slate-700 text-slate-200 text-xs rounded-lg p-1.5 focus:ring-1 focus:ring-indigo-500 focus:outline-none">
+                                <option value="2">2 Beats Count-in</option>
+                                <option value="3">3 Beats Count-in</option>
+                                <option value="4" selected>4 Beats (1 Bar Count-in)</option>
+                                <option value="8">8 Beats (2 Bars Count-in)</option>
+                            </select>
                         </div>
                     </div>
                 </div>

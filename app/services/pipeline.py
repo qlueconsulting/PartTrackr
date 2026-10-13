@@ -163,20 +163,23 @@ def run_score_pipeline(score_id: str):
             if composer:
                 score.composer = composer
 
-            extracted_stems = notation_processor.process_and_extract_stems(
+            extracted_stems, measure_analysis = notation_processor.process_and_extract_stems(
                 m21_score,
                 output_xml_dir=score_xml_dir,
                 output_midi_dir=score_midi_dir,
+                return_analysis=True,
             )
 
             if not extracted_stems:
                 raise ValueError("No choral or accompaniment parts could be extracted from score.")
 
             score.detected_parts = [s.part_name for s in extracted_stems]
+            score.measure_analysis = measure_analysis
             parts_summary = ", ".join(score.detected_parts)
+            tot_measures = measure_analysis.get("total_measures", 0)
             _log_event(
                 score,
-                f"Notation parsed successfully. Detected {len(extracted_stems)} parts: {parts_summary}",
+                f"Full measure analysis complete ({tot_measures} measures). All 11 choral parts reconciled: {parts_summary}",
                 level="success",
                 stage="notation",
                 db=db,

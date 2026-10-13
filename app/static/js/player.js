@@ -1,7 +1,9 @@
 /**
  * PartTrackr - Multi-Track Synchronized Web Audio Player Engine
  * Handles sample-accurate multi-stem synchronized playback,
- * rehearsal part emphasis / isolation, piano toggling, and track routing.
+ * rehearsal part emphasis / isolation, dynamic tempo adjustment,
+ * synchronized metronome, measure-based navigation & section replay,
+ * and automatic extended rest skipping with entry count-in beats.
  */
 class MultiTrackAudioEngine {
     constructor() {
@@ -12,6 +14,28 @@ class MultiTrackAudioEngine {
         this.startTime = 0;
         this.pauseOffset = 0;
         this.duration = 0;
+
+        // Tempo & Playback Speed
+        this.baseBpm = 100.0;
+        this.currentBpm = 100.0;
+        this.playbackRate = 1.0;
+
+        // Metronome Click Engine
+        this.metronomeEnabled = false;
+        this.metronomeVolume = 0.8;
+        this.beatsPerMeasure = 4;
+        this._lastMetronomeBeatIdx = -1;
+
+        // Measure Structure & Navigation
+        this.measures = [];
+        this.partExtendedRests = {};
+        this.partEntrances = {};
+        this.currentMeasureNumber = 1;
+
+        // Extended Rest Skipping & Entry Beats
+        this.skipExtendedRests = false;
+        this.entryBeats = 4;
+        this._lastSkippedRest = null;
 
         // Rehearsal Focus State
         this.targetPartKey = null;       // e.g. "S1", "A1", "Piano"
@@ -25,6 +49,8 @@ class MultiTrackAudioEngine {
         this.onStateChange = null;
         this.onTrackLoaded = null;
         this.onAllLoaded = null;
+        this.onMeasureUpdate = null;
+        this.onEntryCue = null;
 
         this._animationFrame = null;
     }
@@ -39,6 +65,25 @@ class MultiTrackAudioEngine {
         }
         if (this.audioContext.state === "suspended") {
             this.audioContext.resume();
+        }
+    }
+
+    /**
+     * Ingests measure analysis metadata from the score.
+     */
+    setMeasureAnalysis(analysis) {
+        if (!analysis) return;
+        this.measures = analysis.measures || [];
+        this.baseBpm = analysis.default_bpm || 100.0;
+        this.currentBpm = this.baseBpm;
+        this.playbackRate = 1.0;
+        this.partExtendedRests = analysis.part_extended_rests || {};
+        this.partEntrances = analysis.part_entrances || {};
+        this._lastSkippedRest = null;
+
+        if (analysis.time_signature) {
+            const num = parseInt(analysis.time_signature.split("/")[0], 10);
+            if (!isNaN(num) && num > 0) this.beatsPerMeasure = num;
         }
     }
 
@@ -74,7 +119,7 @@ class MultiTrackAudioEngine {
                 loaded: false,
             };
 
-            // Connect routing graph: source -> panNode -> gainNode -> masterGain -> destination
+            // Connect routing graph: source -> panNode -> gainNode -> masterGain
             if (trackObj.panNode) {
                 trackObj.panNode.connect(trackObj.gainNode);
             }
@@ -114,16 +159,15 @@ class MultiTrackAudioEngine {
         this.initContext();
 
         const now = this.audioContext.currentTime;
-        this.startTime = now - this.pauseOffset;
+        const currentSec = Math.min(this.pauseOffset, this.duration);
+        this.startTime = now - (currentSec / this.playbackRate);
 
-        // Schedule all tracks to start at precisely now + 0.03s for sample-accurate alignment
         const scheduleTime = now + 0.03;
-        const offset = Math.min(this.pauseOffset, this.duration);
+        const offset = currentSec;
 
         for (const track of this.tracks.values()) {
             if (!track.loaded || !track.audioBuffer) continue;
 
-            // Stop any previous source
             if (track.sourceNode) {
                 try { track.sourceNode.stop(); } catch (e) {}
                 track.sourceNode.disconnect();
@@ -131,20 +175,18 @@ class MultiTrackAudioEngine {
 
             const src = this.audioContext.createBufferSource();
             src.buffer = track.audioBuffer;
+            src.playbackRate.value = this.playbackRate;
 
-            // Route: Source -> Pan (if available) -> Track Gain
             if (track.panNode) {
                 src.connect(track.panNode);
             } else {
                 src.connect(track.gainNode);
             }
 
-            // Start synchronized
             src.start(scheduleTime, offset);
             track.sourceNode = src;
 
             src.onended = () => {
-                // If last track ended at end of duration
                 if (this.getCurrentTime() >= this.duration - 0.1) {
                     this.stop();
                 }
@@ -174,6 +216,8 @@ class MultiTrackAudioEngine {
     stop() {
         this._stopSources();
         this.pauseOffset = 0;
+        this._lastSkippedRest = null;
+        this._lastMetronomeBeatIdx = -1;
         this.isPlaying = false;
         this._stopTimeUpdateLoop();
         if (this.onTimeUpdate) this.onTimeUpdate(0, this.duration);
@@ -190,17 +234,21 @@ class MultiTrackAudioEngine {
             this._stopSources();
         }
         this.pauseOffset = targetSeconds;
+        this._lastMetronomeBeatIdx = -1;
+
         if (wasPlaying) {
             this.isPlaying = false;
             this.play();
         } else {
             if (this.onTimeUpdate) this.onTimeUpdate(this.pauseOffset, this.duration);
+            this._checkMeasureUpdate(this.pauseOffset);
         }
     }
 
     getCurrentTime() {
         if (this.isPlaying && this.audioContext) {
-            return Math.min(this.duration, Math.max(0, this.audioContext.currentTime - this.startTime));
+            const elapsed = (this.audioContext.currentTime - this.startTime) * this.playbackRate;
+            return Math.min(this.duration, Math.max(0, elapsed));
         }
         return this.pauseOffset;
     }
@@ -221,6 +269,20 @@ class MultiTrackAudioEngine {
         const loop = () => {
             if (!this.isPlaying) return;
             const current = this.getCurrentTime();
+
+            // 1. Check Measure Progress
+            this._checkMeasureUpdate(current);
+
+            // 2. Metronome Tick Check
+            if (this.metronomeEnabled) {
+                this._tickMetronome(current);
+            }
+
+            // 3. Skip Extended Rests Check
+            if (this.skipExtendedRests && this.targetPartKey) {
+                this._checkSkipExtendedRests(current);
+            }
+
             if (this.onTimeUpdate) {
                 this.onTimeUpdate(current, this.duration);
             }
@@ -237,61 +299,203 @@ class MultiTrackAudioEngine {
     }
 
     // ==========================================
+    // TEMPO (BPM) ADJUSTMENT
+    // ==========================================
+
+    setTempoBpm(newBpm) {
+        newBpm = Math.max(30, Math.min(300, parseFloat(newBpm) || 100));
+        this.currentBpm = newBpm;
+        this.playbackRate = this.baseBpm > 0 ? this.currentBpm / this.baseBpm : 1.0;
+
+        if (this.audioContext) {
+            const now = this.audioContext.currentTime;
+            // Update playback rate on all active stems in real-time
+            for (const track of this.tracks.values()) {
+                if (track.sourceNode && track.sourceNode.playbackRate) {
+                    track.sourceNode.playbackRate.setValueAtTime(this.playbackRate, now);
+                }
+            }
+            // Preserve sample-accurate position alignment
+            if (this.isPlaying) {
+                const cur = this.getCurrentTime();
+                this.startTime = now - (cur / this.playbackRate);
+            }
+        }
+    }
+
+    // ==========================================
+    // SYNCHRONIZED METRONOME ENGINE
+    // ==========================================
+
+    setMetronomeEnabled(enabled) {
+        this.metronomeEnabled = !!enabled;
+        this._lastMetronomeBeatIdx = -1;
+    }
+
+    setMetronomeVolume(vol) {
+        this.metronomeVolume = Math.max(0, Math.min(1, parseFloat(vol) || 0.8));
+    }
+
+    _tickMetronome(currentSeconds) {
+        if (!this.audioContext) return;
+        const beatDurationSec = 60.0 / this.currentBpm;
+        const beatIdx = Math.floor(currentSeconds / beatDurationSec);
+
+        if (beatIdx > this._lastMetronomeBeatIdx) {
+            this._lastMetronomeBeatIdx = beatIdx;
+            const isDownbeat = (beatIdx % this.beatsPerMeasure) === 0;
+            this.playClick(isDownbeat);
+        }
+    }
+
+    playClick(isDownbeat = false) {
+        if (!this.audioContext || this.metronomeVolume <= 0.01) return;
+        try {
+            const now = this.audioContext.currentTime;
+            const osc = this.audioContext.createOscillator();
+            const gain = this.audioContext.createGain();
+
+            // Downbeat = high tick (1200Hz), regular beat = lower tick (800Hz)
+            osc.type = "sine";
+            osc.frequency.setValueAtTime(isDownbeat ? 1200 : 800, now);
+
+            const peakGain = (isDownbeat ? 1.0 : 0.65) * this.metronomeVolume;
+            gain.gain.setValueAtTime(peakGain, now);
+            gain.gain.exponentialRampToValueAtTime(0.0001, now + (isDownbeat ? 0.045 : 0.03));
+
+            osc.connect(gain);
+            gain.connect(this.masterGain);
+
+            osc.start(now);
+            osc.stop(now + 0.05);
+        } catch (e) {}
+    }
+
+    // ==========================================
+    // MEASURE-BASED NAVIGATION & INSTANT REPLAY
+    // ==========================================
+
+    _checkMeasureUpdate(currentTime) {
+        if (!this.measures || this.measures.length === 0) return;
+        let matchedMeasure = null;
+
+        for (const m of this.measures) {
+            if (currentTime >= m.start_time && currentTime < m.end_time) {
+                matchedMeasure = m;
+                break;
+            }
+        }
+
+        if (!matchedMeasure && this.measures.length > 0) {
+            if (currentTime < this.measures[0].start_time) {
+                matchedMeasure = this.measures[0];
+            } else {
+                matchedMeasure = this.measures[this.measures.length - 1];
+            }
+        }
+
+        if (matchedMeasure && matchedMeasure.number !== this.currentMeasureNumber) {
+            this.currentMeasureNumber = matchedMeasure.number;
+            if (this.onMeasureUpdate) {
+                this.onMeasureUpdate(this.currentMeasureNumber, this.measures.length, matchedMeasure);
+            }
+        }
+    }
+
+    seekToMeasure(measureNumber) {
+        if (!this.measures || this.measures.length === 0) return;
+        const target = this.measures.find((m) => m.number === parseInt(measureNumber, 10));
+        if (target) {
+            this.seek(target.start_time);
+        }
+    }
+
+    replayMeasure(measureNumber) {
+        if (!this.measures || this.measures.length === 0) return;
+        const target = this.measures.find((m) => m.number === parseInt(measureNumber, 10));
+        if (target) {
+            this.seek(target.start_time);
+            if (!this.isPlaying) this.play();
+        }
+    }
+
+    // ==========================================
+    // EXTENDED REST SKIPPING & ENTRY BEATS
+    // ==========================================
+
+    _checkSkipExtendedRests(currentTime) {
+        if (!this.targetPartKey || !this.partExtendedRests) return;
+        const rests = this.partExtendedRests[this.targetPartKey] || [];
+        if (rests.length === 0) return;
+
+        const beatDuration = 60.0 / this.currentBpm;
+        const countInSec = this.entryBeats * beatDuration;
+
+        for (const r of rests) {
+            // Check if current playback entered this rest span
+            const restStart = r.start_time;
+            const jumpTarget = Math.max(0, r.next_entry_time - countInSec);
+
+            if (currentTime >= restStart + 0.25 && currentTime < jumpTarget - 0.4) {
+                if (this._lastSkippedRest !== r.start_measure) {
+                    this._lastSkippedRest = r.start_measure;
+                    // Skip directly to entry count-in position
+                    this.seek(jumpTarget);
+
+                    if (this.onEntryCue) {
+                        this.onEntryCue(r.next_entry_measure, this.entryBeats);
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    // ==========================================
     // REHEARSAL MIXER LOGIC & BALANCING
     // ==========================================
 
-    /**
-     * Set target rehearsing part (e.g., "S1", "A1", "T1", "B1", "Piano").
-     */
     setTargetPart(partKey) {
         this.targetPartKey = partKey || null;
+        this._lastSkippedRest = null;
         this.applyMixerSettings();
     }
 
-    /**
-     * Set rehearsal mode: "emphasize" vs "isolate".
-     */
     setRehearsalMode(mode) {
-        this.rehearsalMode = mode; // "emphasize" or "isolate"
+        this.rehearsalMode = mode === "isolate" ? "isolate" : "emphasize";
         this.applyMixerSettings();
     }
 
-    /**
-     * Set emphasis boost multiplier (0.0 to 2.0).
-     */
     setEmphasisLevel(level) {
-        this.emphasisLevel = parseFloat(level);
+        this.emphasisLevel = Math.max(0, Math.min(2.0, parseFloat(level) || 1.5));
         this.applyMixerSettings();
     }
 
-    /**
-     * Quick toggle for Piano Accompaniment.
-     */
     setPianoEnabled(enabled) {
-        this.pianoEnabled = Boolean(enabled);
+        this.pianoEnabled = !!enabled;
         this.applyMixerSettings();
     }
 
     setMasterVolume(val) {
-        this.masterVolume = parseFloat(val);
+        this.masterVolume = Math.max(0, Math.min(1.0, parseFloat(val) || 0.9));
         if (this.masterGain && this.audioContext) {
-            this.masterGain.gain.setTargetAtTime(this.masterVolume, this.audioContext.currentTime, 0.02);
+            this.masterGain.gain.setValueAtTime(this.masterVolume, this.audioContext.currentTime);
         }
     }
 
     setTrackVolume(stemId, volume) {
         const track = this.tracks.get(stemId);
         if (track) {
-            track.baseVolume = parseFloat(volume);
+            track.baseVolume = Math.max(0, Math.min(1.0, volume));
             this.applyMixerSettings();
         }
     }
 
-    setTrackPan(stemId, panValue) {
+    setTrackPan(stemId, pan) {
         const track = this.tracks.get(stemId);
         if (track && track.panNode && this.audioContext) {
-            track.panValue = parseFloat(panValue);
-            track.panNode.pan.setTargetAtTime(track.panValue, this.audioContext.currentTime, 0.02);
+            track.panValue = Math.max(-1.0, Math.min(1.0, pan));
+            track.panNode.pan.setValueAtTime(track.panValue, this.audioContext.currentTime);
         }
     }
 
@@ -315,70 +519,44 @@ class MultiTrackAudioEngine {
         return false;
     }
 
-    /**
-     * Recalculates and smoothly updates GainNode for every stem according to:
-     * - Rehearsal Target Part & Mode (Emphasize vs Isolate)
-     * - Quick Piano Toggle
-     * - Individual Track Mute & Solo
-     */
     applyMixerSettings() {
         if (!this.audioContext) return;
         const now = this.audioContext.currentTime;
 
-        const anyManualSolo = Array.from(this.tracks.values()).some(t => t.isSoloed);
+        const anySolo = Array.from(this.tracks.values()).some((t) => t.isSoloed);
 
         for (const track of this.tracks.values()) {
-            if (!track.gainNode) continue;
+            let effectiveGain = track.baseVolume;
 
-            let computedGain = track.baseVolume;
-
-            // 1. Manual Mute check
-            if (track.isMuted) {
-                computedGain = 0.0;
-            }
-            // 2. Manual Solo check
-            else if (anyManualSolo) {
-                computedGain = track.isSoloed ? track.baseVolume : 0.0;
-            }
-            // 3. Piano Accompaniment Quick Toggle
-            else if (track.isAccompaniment && !this.pianoEnabled) {
-                computedGain = 0.0;
-            }
-            // 4. Target Part Rehearsal Logic
-            else if (this.targetPartKey) {
-                const isTarget = (track.key === this.targetPartKey);
+            if (track.isAccompaniment && !this.pianoEnabled) {
+                effectiveGain = 0.0;
+            } else if (track.isMuted) {
+                effectiveGain = 0.0;
+            } else if (anySolo) {
+                effectiveGain = track.isSoloed ? track.baseVolume : 0.0;
+            } else if (this.targetPartKey) {
+                const isTarget = track.key === this.targetPartKey;
 
                 if (this.rehearsalMode === "isolate") {
                     if (isTarget) {
-                        computedGain = track.baseVolume * 1.0;
+                        effectiveGain = track.baseVolume;
                     } else if (track.isAccompaniment) {
-                        // Keep piano accompaniment if pianoEnabled is on, else mute
-                        computedGain = this.pianoEnabled ? (track.baseVolume * 0.6) : 0.0;
+                        effectiveGain = this.pianoEnabled ? track.baseVolume * 0.4 : 0.0;
                     } else {
-                        // Mute all other vocal parts completely
-                        computedGain = 0.0;
+                        effectiveGain = 0.0;
                     }
-                } else {
-                    // "emphasize" Mode
+                } else if (this.rehearsalMode === "emphasize") {
                     if (isTarget) {
-                        // Boost target part up to 200%
-                        computedGain = track.baseVolume * Math.max(1.0, this.emphasisLevel);
-                    } else if (track.isAccompaniment) {
-                        // Gentle background accompaniment level
-                        computedGain = this.pianoEnabled ? (track.baseVolume * 0.7) : 0.0;
+                        effectiveGain = track.baseVolume * this.emphasisLevel;
                     } else {
-                        // Attenuate other choral vocal parts so target stands out
-                        const attenuation = 1.0 / (1.0 + (this.emphasisLevel - 1.0) * 1.8);
-                        computedGain = track.baseVolume * Math.min(1.0, Math.max(0.15, attenuation));
+                        effectiveGain = track.baseVolume * Math.max(0.05, 1.0 - (this.emphasisLevel - 1.0) * 0.7);
                     }
                 }
             }
 
-            // Smooth logarithmic volume transition (prevents clipping clicks)
-            track.gainNode.gain.setTargetAtTime(computedGain, now, 0.02);
-            track.effectiveVolume = computedGain;
+            effectiveGain = Math.max(0.0, Math.min(2.5, effectiveGain));
+            track.gainNode.gain.cancelScheduledValues(now);
+            track.gainNode.gain.linearRampToValueAtTime(effectiveGain, now + 0.03);
         }
     }
 }
-
-window.MultiTrackAudioEngine = MultiTrackAudioEngine;

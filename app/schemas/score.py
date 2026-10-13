@@ -32,6 +32,7 @@ class ScoreResponse(BaseModel):
     error_message: Optional[str] = None
     error_traceback: Optional[str] = None
     processing_logs: List[Dict[str, Any]] = []
+    measure_analysis: Optional[Dict[str, Any]] = None
     created_at: datetime
     updated_at: datetime
     stems: List[StemResponse] = []

@@ -7,6 +7,7 @@ document.addEventListener("DOMContentLoaded", () => {
     let pollInterval = null;
     let osmd = null;
     let lastRenderedLogsCount = 0;
+    let entryCueTimeout = null;
 
     // ==============================================================
     // DOM ELEMENTS
@@ -21,7 +22,30 @@ document.addEventListener("DOMContentLoaded", () => {
     const masterVolume = document.getElementById("master-volume");
     const masterVolValue = document.getElementById("master-vol-value");
 
-    // Rehearsal Controls
+    // Tempo & Metronome
+    const tempoMinusBtn = document.getElementById("tempo-minus-btn");
+    const tempoPlusBtn = document.getElementById("tempo-plus-btn");
+    const tempoResetBtn = document.getElementById("tempo-reset-btn");
+    const tempoBpmInput = document.getElementById("tempo-bpm-input");
+    const tempoPercentBadge = document.getElementById("tempo-percent-badge");
+    const metronomeToggleBtn = document.getElementById("metronome-toggle-btn");
+    const metronomeStatusLabel = document.getElementById("metronome-status-label");
+    const metronomeVolSlider = document.getElementById("metronome-vol-slider");
+
+    // Measure Navigation & Replay
+    const currentMeasureBadge = document.getElementById("current-measure-badge");
+    const measureSelect = document.getElementById("measure-select");
+    const prevMeasureBtn = document.getElementById("prev-measure-btn");
+    const replayMeasureBtn = document.getElementById("replay-measure-btn");
+    const nextMeasureBtn = document.getElementById("next-measure-btn");
+
+    // Extended Rest Skipping & Entry Beats
+    const skipRestsCheckbox = document.getElementById("skip-rests-checkbox");
+    const entryBeatsSelect = document.getElementById("entry-beats-select");
+    const entryCueBanner = document.getElementById("entry-cue-banner");
+    const entryCueText = document.getElementById("entry-cue-text");
+
+    // Rehearsal Focus Controls
     const targetPartSelect = document.getElementById("target-part-select");
     const modeEmphasizeBtn = document.getElementById("mode-emphasize");
     const modeIsolateBtn = document.getElementById("mode-isolate");
@@ -132,6 +156,24 @@ document.addEventListener("DOMContentLoaded", () => {
         renderStemsMixer(currentScore.stems);
     };
 
+    player.onMeasureUpdate = (currentMeasure, totalMeasures, measureObj) => {
+        currentMeasureBadge.textContent = `Measure ${currentMeasure} / ${totalMeasures}`;
+        if (measureSelect && measureSelect.value != currentMeasure) {
+            measureSelect.value = currentMeasure;
+        }
+    };
+
+    player.onEntryCue = (nextMeasure, beats) => {
+        if (entryCueBanner && entryCueText) {
+            entryCueText.textContent = `Measure ${nextMeasure} in ${beats} beats!`;
+            entryCueBanner.classList.remove("hidden");
+            if (entryCueTimeout) clearTimeout(entryCueTimeout);
+            entryCueTimeout = setTimeout(() => {
+                entryCueBanner.classList.add("hidden");
+            }, 3500);
+        }
+    };
+
     // ==============================================================
     // TRANSPORT CONTROLS
     // ==============================================================
@@ -149,6 +191,105 @@ document.addEventListener("DOMContentLoaded", () => {
         const val = parseFloat(e.target.value);
         player.setMasterVolume(val);
         masterVolValue.textContent = `${Math.round(val * 100)}%`;
+    });
+
+    // ==============================================================
+    // TEMPO & METRONOME CONTROLS
+    // ==============================================================
+
+    function updateTempoUI() {
+        tempoBpmInput.value = Math.round(player.currentBpm);
+        const pct = Math.round((player.currentBpm / (player.baseBpm || 100)) * 100);
+        tempoPercentBadge.textContent = `${pct}% speed`;
+    }
+
+    tempoBpmInput.addEventListener("change", (e) => {
+        const bpm = parseFloat(e.target.value) || player.baseBpm;
+        player.setTempoBpm(bpm);
+        updateTempoUI();
+    });
+
+    tempoMinusBtn.addEventListener("click", () => {
+        player.setTempoBpm(player.currentBpm - 5);
+        updateTempoUI();
+    });
+
+    tempoPlusBtn.addEventListener("click", () => {
+        player.setTempoBpm(player.currentBpm + 5);
+        updateTempoUI();
+    });
+
+    tempoResetBtn.addEventListener("click", () => {
+        player.setTempoBpm(player.baseBpm);
+        updateTempoUI();
+    });
+
+    metronomeToggleBtn.addEventListener("click", () => {
+        player.setMetronomeEnabled(!player.metronomeEnabled);
+        if (player.metronomeEnabled) {
+            metronomeToggleBtn.className = "px-3 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-semibold transition flex items-center gap-1.5 shadow";
+            metronomeStatusLabel.textContent = "Metronome: ON";
+        } else {
+            metronomeToggleBtn.className = "px-3 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 font-semibold transition flex items-center gap-1.5 border border-slate-700";
+            metronomeStatusLabel.textContent = "Metronome: OFF";
+        }
+    });
+
+    metronomeVolSlider.addEventListener("input", (e) => {
+        player.setMetronomeVolume(e.target.value);
+    });
+
+    // ==============================================================
+    // MEASURE-BASED NAVIGATION & INSTANT REPLAY
+    // ==========================================
+
+    function populateMeasuresDropdown(measures) {
+        measureSelect.innerHTML = "";
+        if (!measures || measures.length === 0) {
+            measureSelect.innerHTML = '<option value="1">Measure 1</option>';
+            currentMeasureBadge.textContent = "Measure 1 / 1";
+            return;
+        }
+
+        measures.forEach((m) => {
+            const opt = document.createElement("option");
+            opt.value = m.number;
+            opt.textContent = `Measure ${m.number} (${formatTime(m.start_time)})`;
+            measureSelect.appendChild(opt);
+        });
+
+        currentMeasureBadge.textContent = `Measure 1 / ${measures.length}`;
+    }
+
+    measureSelect.addEventListener("change", (e) => {
+        player.seekToMeasure(e.target.value);
+    });
+
+    prevMeasureBtn.addEventListener("click", () => {
+        const cur = player.currentMeasureNumber || 1;
+        player.seekToMeasure(Math.max(1, cur - 1));
+    });
+
+    nextMeasureBtn.addEventListener("click", () => {
+        const cur = player.currentMeasureNumber || 1;
+        const total = (player.measures && player.measures.length) ? player.measures.length : cur;
+        player.seekToMeasure(Math.min(total, cur + 1));
+    });
+
+    replayMeasureBtn.addEventListener("click", () => {
+        player.replayMeasure(player.currentMeasureNumber || 1);
+    });
+
+    // ==============================================================
+    // EXTENDED REST SKIPPING & ENTRY BEATS
+    // ==========================================
+
+    skipRestsCheckbox.addEventListener("change", (e) => {
+        player.skipExtendedRests = e.target.checked;
+    });
+
+    entryBeatsSelect.addEventListener("change", (e) => {
+        player.entryBeats = parseInt(e.target.value, 10) || 4;
     });
 
     // ==============================================================
@@ -208,7 +349,6 @@ document.addEventListener("DOMContentLoaded", () => {
 
     function renderStemsMixer(stems) {
         stemsContainer.innerHTML = "";
-        targetPartSelect.innerHTML = '<option value="">(All Parts Equal)</option>';
 
         if (!stems || stems.length === 0) {
             stemsContainer.innerHTML = '<div class="text-xs text-slate-500 py-6 text-center">No audio stems rendered yet.</div>';
@@ -216,13 +356,6 @@ document.addEventListener("DOMContentLoaded", () => {
         }
 
         stems.forEach((stem) => {
-            // Populate target select
-            const opt = document.createElement("option");
-            opt.value = stem.part_key;
-            opt.textContent = `${stem.part_name} (${stem.part_key})`;
-            targetPartSelect.appendChild(opt);
-
-            // Channel Strip Card
             const card = document.createElement("div");
             card.className = "stem-card bg-slate-900 border border-slate-800 rounded-lg p-3 transition";
             card.setAttribute("data-part-key", stem.part_key);
@@ -277,7 +410,6 @@ document.addEventListener("DOMContentLoaded", () => {
                 </div>
             `;
 
-            // Wire Card Events
             const volSlider = card.querySelector(".stem-vol-slider");
             const volVal = card.querySelector(".stem-vol-val");
             const panSlider = card.querySelector(".stem-pan-slider");
@@ -310,6 +442,10 @@ document.addEventListener("DOMContentLoaded", () => {
 
             stemsContainer.appendChild(card);
         });
+
+        if (player.targetPartKey) {
+            updateActiveTrackHighlight(player.targetPartKey);
+        }
     }
 
     // ==============================================================
@@ -335,7 +471,6 @@ document.addEventListener("DOMContentLoaded", () => {
             const entry = document.createElement("div");
             entry.className = "flex items-start space-x-2 py-0.5 border-b border-slate-900/60 last:border-b-0";
 
-            // Stage pill styling
             let stageBadge = "bg-slate-800 text-slate-400 border-slate-700";
             const s = (log.stage || "system").toLowerCase();
             if (s === "omr") stageBadge = "bg-blue-950 text-blue-300 border-blue-800";
@@ -343,7 +478,6 @@ document.addEventListener("DOMContentLoaded", () => {
             else if (s === "synthesis") stageBadge = "bg-cyan-950 text-cyan-300 border-cyan-800";
             else if (s === "system") stageBadge = "bg-slate-800 text-slate-300 border-slate-700";
 
-            // Level text styling
             let msgColor = "text-slate-300";
             const lvl = (log.level || "info").toLowerCase();
             if (lvl === "error") msgColor = "text-rose-400 font-semibold";
@@ -362,7 +496,6 @@ document.addEventListener("DOMContentLoaded", () => {
             messagesLogConsole.appendChild(entry);
         });
 
-        // Auto scroll to bottom
         if (autoscrollMessagesToggle && autoscrollMessagesToggle.checked) {
             messagesLogConsole.scrollTop = messagesLogConsole.scrollHeight;
         }
@@ -415,14 +548,12 @@ document.addEventListener("DOMContentLoaded", () => {
         errorStatusBadge.textContent = (score.status || "FAILED").toUpperCase();
         errorSummaryText.textContent = score.error_message || "An unknown error halted score processing.";
 
-        // Intelligent Diagnostic Advice
         const msg = (score.error_message || "").toLowerCase();
         const tb = (score.error_traceback || "").toLowerCase();
 
         if (msg.includes("gtk-3") || tb.includes("gtk-3") || msg.includes("unsatisfiedlinkerror") || tb.includes("unsatisfiedlinkerror")) {
             errorDiagnosticAdvice.innerHTML = `
                 <strong>GTK-3 Native Library Link Issue:</strong> Audiveris requires libgtk-3.so for its HiDPI scaling engine. 
-                The updated Docker container provides this library symlink. 
                 <span class="text-rose-100 font-semibold">Tip:</span> Ensure you have pulled the latest container image via <code>docker compose pull</code>.
             `;
         } else if (msg.includes("audiveris") || msg.includes("omr") || tb.includes("audiveris")) {
@@ -446,10 +577,7 @@ document.addEventListener("DOMContentLoaded", () => {
             `;
         }
 
-        // Traceback content
         errorTracebackContent.textContent = score.error_traceback || score.error_message || "No full stack trace available.";
-
-        // Scroll error card into view smoothly
         errorViewerCard.scrollIntoView({ behavior: "smooth", block: "nearest" });
     }
 
@@ -527,6 +655,14 @@ document.addEventListener("DOMContentLoaded", () => {
                 loadingText.textContent = "Loading audio stems into Web Audio context...";
                 scoreDownloadXml.href = score.xml_url || "#";
                 scoreDownloadPdf.href = score.pdf_url || "#";
+
+                // Setup measures and tempo in player
+                if (score.measure_analysis) {
+                    player.setMeasureAnalysis(score.measure_analysis);
+                    populateMeasuresDropdown(score.measure_analysis.measures);
+                    updateTempoUI();
+                }
+
                 await player.loadScoreStems(score.stems);
                 renderScoreNotation(score.xml_url);
             } else if (score.status === "failed") {
@@ -588,14 +724,12 @@ document.addEventListener("DOMContentLoaded", () => {
         currentScoreStatus.className = `px-2.5 py-1 text-xs font-semibold rounded-full border ${badgeClass}`;
         currentScoreStatus.textContent = score.status.toUpperCase().replace("_", " ");
 
-        // Reprocess button visibility
         if (score.status === "ready" || score.status === "failed") {
             scoreReprocessBtn.classList.remove("hidden");
         } else {
             scoreReprocessBtn.classList.add("hidden");
         }
 
-        // Show error button in banner if failed
         if (score.status === "failed") {
             scoreShowErrorBtn.classList.remove("hidden");
         } else {
@@ -798,13 +932,10 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     });
 
-    // Tab switching in API Viewer
     function setApiTab(activeTab) {
-        // Reset button styles
         [apiTabBtnEndpoints, apiTabBtnHealth, apiTabBtnSwagger].forEach((btn) => {
             btn.className = "pb-3 text-xs font-medium text-slate-400 hover:text-slate-200 border-b-2 border-transparent transition";
         });
-        // Hide views
         apiViewEndpoints.classList.add("hidden");
         apiViewHealth.classList.add("hidden");
         apiViewSwagger.classList.add("hidden");
@@ -838,7 +969,6 @@ document.addEventListener("DOMContentLoaded", () => {
             rawHealthJson.textContent = JSON.stringify(data, null, 2);
 
             healthCardsGrid.innerHTML = `
-                <!-- Service Status -->
                 <div class="bg-slate-950/80 border border-slate-800 rounded-xl p-3.5 space-y-1">
                     <div class="flex items-center justify-between">
                         <span class="text-xs font-semibold text-slate-300">FastAPI Microservice</span>
@@ -847,7 +977,6 @@ document.addEventListener("DOMContentLoaded", () => {
                     <p class="text-[11px] text-slate-500">${data.service} v${data.version}</p>
                 </div>
 
-                <!-- Audiveris OMR -->
                 <div class="bg-slate-950/80 border border-slate-800 rounded-xl p-3.5 space-y-1">
                     <div class="flex items-center justify-between">
                         <span class="text-xs font-semibold text-slate-300">Audiveris OMR Engine</span>
@@ -860,7 +989,6 @@ document.addEventListener("DOMContentLoaded", () => {
                     </p>
                 </div>
 
-                <!-- FluidSynth -->
                 <div class="bg-slate-950/80 border border-slate-800 rounded-xl p-3.5 space-y-1">
                     <div class="flex items-center justify-between">
                         <span class="text-xs font-semibold text-slate-300">FluidSynth SoundFont Engine</span>
@@ -873,7 +1001,6 @@ document.addEventListener("DOMContentLoaded", () => {
                     </p>
                 </div>
 
-                <!-- FFmpeg -->
                 <div class="bg-slate-950/80 border border-slate-800 rounded-xl p-3.5 space-y-1">
                     <div class="flex items-center justify-between">
                         <span class="text-xs font-semibold text-slate-300">FFmpeg Audio Encoder</span>

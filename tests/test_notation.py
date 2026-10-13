@@ -210,6 +210,89 @@ def test_unnamed_parts_by_register(tmp_path):
     stems = notation_processor.process_and_extract_stems(score, xml_dir, midi_dir)
 
     stem_keys = [s.part_key for s in stems]
-    assert len(stems) == 2
+    assert len(stems) == 11
     assert "S1" in stem_keys
     assert "B1" in stem_keys
+
+
+def test_all_11_parts_guaranteed_with_bass2_mapping(tmp_path):
+    """Verify that when Bass II is missing, it automatically receives notes from Bass I, and all 11 parts exist."""
+    score = m21.stream.Score()
+    # Score has only Bass 1 and Piano
+    bass_part = m21.stream.Part()
+    bass_part.partName = "Bass 1"
+    m = m21.stream.Measure(number=1)
+    m.append(m21.note.Note("D2", quarterLength=4))
+    bass_part.append(m)
+    score.append(bass_part)
+
+    xml_dir = tmp_path / "xml"
+    midi_dir = tmp_path / "midi"
+    stems, analysis = notation_processor.process_and_extract_stems(score, xml_dir, midi_dir, return_analysis=True)
+
+    # All 11 parts must be present
+    assert len(stems) == 11
+    stem_dict = {s.part_key: s for s in stems}
+    for key in ["Piano", "S1", "S2", "A1", "A2", "T1", "T2", "Bar1", "Bar2", "B1", "B2"]:
+        assert key in stem_dict
+
+    # Bass II received notes from Bass I
+    b1_notes = [n.pitch.nameWithOctave for n in stem_dict["B1"].stream.recurse().notes]
+    b2_notes = [n.pitch.nameWithOctave for n in stem_dict["B2"].stream.recurse().notes]
+    assert "D2" in b1_notes
+    assert "D2" in b2_notes
+
+
+def test_measure_analysis_and_extended_rests(tmp_path):
+    """Test full measure-by-measure analysis, entrances, and extended rests calculation."""
+    score = m21.stream.Score()
+
+    # Soprano sings all 6 measures
+    sop_part = m21.stream.Part()
+    sop_part.partName = "Soprano 1"
+    for m_num in range(1, 7):
+        m = m21.stream.Measure(number=m_num)
+        m.append(m21.note.Note("G4", quarterLength=4))
+        sop_part.append(m)
+    score.append(sop_part)
+
+    # Tenor sings Measure 1, rests Measures 2-4 (extended rest of 3 bars), enters again at Measure 5
+    tenor_part = m21.stream.Part()
+    tenor_part.partName = "Tenor 1"
+    for m_num in range(1, 7):
+        m = m21.stream.Measure(number=m_num)
+        if m_num in [1, 5, 6]:
+            m.append(m21.note.Note("C4", quarterLength=4))
+        else:
+            m.append(m21.note.Rest(quarterLength=4))
+        tenor_part.append(m)
+    score.append(tenor_part)
+
+    xml_dir = tmp_path / "xml"
+    midi_dir = tmp_path / "midi"
+    stems, analysis = notation_processor.process_and_extract_stems(score, xml_dir, midi_dir, return_analysis=True)
+
+    assert analysis["total_measures"] == 6
+    assert len(analysis["measures"]) == 6
+
+    # Measure 1: both Soprano and Tenor active
+    assert "S1" in analysis["measures"][0]["active_parts"]
+    assert "T1" in analysis["measures"][0]["active_parts"]
+
+    # Measure 2: Tenor is resting, Soprano is active
+    assert "T1" in analysis["measures"][1]["resting_parts"]
+    assert "S1" in analysis["measures"][1]["active_parts"]
+
+    # Measure 5: Tenor entrance detected!
+    assert "T1" in analysis["measures"][4]["entrances"]
+
+    # Extended rest detected for T1 (Measures 2 to 4)
+    t1_rests = analysis["part_extended_rests"]["T1"]
+    assert len(t1_rests) >= 1
+    rest_span = t1_rests[0]
+    assert rest_span["start_measure"] == 2
+    assert rest_span["end_measure"] == 4
+    assert rest_span["rest_measures"] == 3
+    assert rest_span["next_entry_measure"] == 5
+    assert rest_span["next_entry_time"] > rest_span["start_time"]
+

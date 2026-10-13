@@ -46,6 +46,7 @@ def _score_to_response(score: Score) -> ScoreResponse:
         error_message=score.error_message,
         error_traceback=score.error_traceback,
         processing_logs=score.processing_logs or [],
+        measure_analysis=score.measure_analysis or {},
         created_at=score.created_at,
         updated_at=score.updated_at,
         stems=[_stem_to_response(st) for st in score.stems],

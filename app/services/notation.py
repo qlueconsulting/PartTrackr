@@ -5,7 +5,7 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import music21 as m21
 
@@ -24,6 +24,20 @@ STANDARD_CHORAL_PARTS = {
     "B1": "Bass I",
     "B2": "Bass II",
 }
+
+ALL_CHORAL_KEYS = [
+    "Piano",
+    "S1",
+    "S2",
+    "A1",
+    "A2",
+    "T1",
+    "T2",
+    "Bar1",
+    "Bar2",
+    "B1",
+    "B2",
+]
 
 # Preferred General MIDI instrument mappings for clear rehearsal playback
 GM_INSTRUMENTS = {
@@ -57,10 +71,13 @@ class ExtractedStem:
 
 
 class NotationProcessor:
-    """Processes MusicXML scores, splits voices and staves, and normalizes into standard choral stems."""
+    """
+    Processes MusicXML scores, performs measure-by-measure structure analysis,
+    and guarantees all 11 standard choral rehearsal parts are always available.
+    """
 
     def __init__(self):
-        pass
+        self.last_measure_analysis: Dict[str, Any] = {}
 
     def parse_score(self, file_path: Path) -> m21.stream.Score:
         """Parse MusicXML, MXL, or MIDI score using music21."""
@@ -72,7 +89,6 @@ class NotationProcessor:
         try:
             score = m21.converter.parse(str(file_path))
             if not isinstance(score, m21.stream.Score):
-                # If wrapped in an Op or Part, convert to Score
                 wrapped = m21.stream.Score()
                 if isinstance(score, m21.stream.Part):
                     wrapped.append(score)
@@ -97,12 +113,11 @@ class NotationProcessor:
             if score.metadata.composer:
                 composer = score.metadata.composer
 
-        # Clean title
         title = re.sub(r"\.[^.]+$", "", title).strip() or fallback_title
         return title, composer
 
     def _get_part_search_string(self, part: m21.stream.Part) -> str:
-        """Extract clean text representation of part name and instruments without memory ids."""
+        """Extract clean text representation of part name and instruments."""
         tokens = []
         if part.partName:
             tokens.append(str(part.partName))
@@ -132,7 +147,7 @@ class NotationProcessor:
         """
         Classifies a part into raw categories:
         'piano', 'soprano', 'alto', 'tenor', 'baritone', 'bass',
-        'soprano_alto', 'tenor_bass', 's1', 's2', 'a1', 'a2', 't1', 't2', 'bar1', 'b1', 'b2',
+        'soprano_alto', 'tenor_bass', 's1', 's2', 'a1', 'a2', 't1', 't2', 'bar1', 'bar2', 'b1', 'b2',
         or 'unknown'.
         """
         if self.is_accompaniment_part(part):
@@ -140,13 +155,11 @@ class NotationProcessor:
 
         name_str = self._get_part_search_string(part)
 
-        # Check combined staves first
         if any(term in name_str for term in ["soprano & alto", "soprano/alto", "s/a", "sa", "women", "treble 1 & 2"]):
             return "soprano_alto"
         if any(term in name_str for term in ["tenor & bass", "tenor/bass", "t/b", "tb", "men"]):
             return "tenor_bass"
 
-        # Check specific numbered parts with strict word boundaries
         if re.search(r"\bsoprano\s*(1|i)\b|\bs\s*1\b|\bdescant\b", name_str):
             return "s1"
         if re.search(r"\bsoprano\s*(2|ii)\b|\bs\s*2\b|\bmezzo\b", name_str):
@@ -188,8 +201,7 @@ class NotationProcessor:
         self, part: m21.stream.Part, upper_label: str, lower_label: str
     ) -> Tuple[m21.stream.Part, m21.stream.Part]:
         """
-        Splits a shared choral staff (e.g. Soprano & Alto or Tenor & Bass) into two independent parts
-        by analyzing voice numbers, stem directions, and chord divisi.
+        Splits a shared choral staff into two parts by analyzing voices, stem directions, and chord dyads.
         """
         upper_part = m21.stream.Part()
         upper_part.partName = upper_label
@@ -201,22 +213,18 @@ class NotationProcessor:
 
         measures = part.getElementsByClass(m21.stream.Measure)
         if not measures:
-            # Fallback if no measures found
             return copy.deepcopy(part), copy.deepcopy(part)
 
         for m in measures:
             up_m = m21.stream.Measure(number=m.number)
             low_m = m21.stream.Measure(number=m.number)
 
-            # Copy time signature, key signature, clef if present
             for header_el in m.getElementsByClass([m21.meter.TimeSignature, m21.key.KeySignature, m21.clef.Clef]):
                 up_m.append(copy.deepcopy(header_el))
                 low_m.append(copy.deepcopy(header_el))
 
-            # Inspect voices
             voices = m.voices
             if len(voices) >= 2:
-                # Direct voice separation: voice 1 to upper, voice 2 to lower
                 for el in voices[0]:
                     if isinstance(el, (m21.note.Note, m21.chord.Chord, m21.note.Rest)):
                         up_m.append(copy.deepcopy(el))
@@ -224,7 +232,6 @@ class NotationProcessor:
                     if isinstance(el, (m21.note.Note, m21.chord.Chord, m21.note.Rest)):
                         low_m.append(copy.deepcopy(el))
             else:
-                # Stem directions and chords
                 notes_and_chords = m.getElementsByClass([m21.note.Note, m21.chord.Chord, m21.note.Rest])
                 for el in notes_and_chords:
                     if isinstance(el, m21.note.Rest):
@@ -233,11 +240,9 @@ class NotationProcessor:
                     elif isinstance(el, m21.chord.Chord):
                         pitches = sorted(el.pitches)
                         if len(pitches) >= 2:
-                            # Upper note
                             up_n = m21.note.Note(pitches[-1], quarterLength=el.quarterLength)
                             up_n.offset = el.offset
                             up_m.append(up_n)
-                            # Lower note
                             low_n = m21.note.Note(pitches[0], quarterLength=el.quarterLength)
                             low_n.offset = el.offset
                             low_m.append(low_n)
@@ -250,7 +255,6 @@ class NotationProcessor:
                         elif el.stemDirection == "down":
                             low_m.append(copy.deepcopy(el))
                         else:
-                            # Both sing in unison if no stem direction specified
                             up_m.append(copy.deepcopy(el))
                             low_m.append(copy.deepcopy(el))
 
@@ -277,15 +281,12 @@ class NotationProcessor:
         """Guess vocal register from average pitch and clef."""
         pitches = [n.pitch.midi for n in part.recurse().notes if hasattr(n, "pitch")]
         if not pitches:
-            # Fallback based on clef
             clefs = list(part.recurse().getElementsByClass(m21.clef.Clef))
             if clefs and isinstance(clefs[0], m21.clef.BassClef):
                 return "bass"
             return "soprano"
 
         avg_pitch = sum(pitches) / len(pitches)
-        # MIDI note numbers:
-        # C4 = 60, C5 = 72, C3 = 48, C2 = 36
         if avg_pitch >= 68:      # ~G#4 and above
             return "soprano"
         elif avg_pitch >= 60:    # ~C4 to G4
@@ -298,7 +299,7 @@ class NotationProcessor:
             return "bass"
 
     def combine_piano_staves(self, parts: List[m21.stream.Part]) -> m21.stream.Part:
-        """Combine multiple accompaniment parts (e.g. RH + LH) into a single Piano Score part."""
+        """Combine multiple accompaniment parts into a single Piano Score part."""
         if len(parts) == 1:
             res = copy.deepcopy(parts[0])
             res.partName = "Piano Score"
@@ -309,7 +310,6 @@ class NotationProcessor:
         combined.partName = "Piano Score"
         combined.id = "Piano"
 
-        # Merge measures by measure number
         measure_nums = set()
         for p in parts:
             for m in p.getElementsByClass(m21.stream.Measure):
@@ -327,24 +327,216 @@ class NotationProcessor:
 
         return combined
 
-    def process_and_extract_stems(
-        self, score: m21.stream.Score, output_xml_dir: Path, output_midi_dir: Path
-    ) -> List[ExtractedStem]:
+    def create_choral_reduction_piano(self, vocal_parts: List[m21.stream.Part]) -> m21.stream.Part:
         """
-        Splits and normalizes the score into standard choral parts and Piano Score:
-        - Soprano I, Soprano II
-        - Alto I, Alto II
-        - Tenor I, Tenor II
-        - Baritone I, Baritone II
-        - Bass I, Bass II
-        - Piano Score
+        Creates a rehearsal piano reduction by aggregating notes from vocal parts.
+        Allows singers of a cappella scores to rehearse with piano accompaniment.
+        """
+        reduction = m21.stream.Part()
+        reduction.partName = "Piano Score (Rehearsal Reduction)"
+        reduction.id = "Piano"
 
-        Aggregates/collapses SATB, SAB, SSA, TTBB cleanly without failing.
-        Exports individual XML and MIDI for each stem.
+        if not vocal_parts:
+            return reduction
+
+        measure_nums = set()
+        for vp in vocal_parts:
+            for m in vp.getElementsByClass(m21.stream.Measure):
+                measure_nums.add(m.number)
+
+        for m_num in sorted(measure_nums):
+            new_m = m21.stream.Measure(number=m_num)
+            first_p_m = vocal_parts[0].measure(m_num)
+            if first_p_m:
+                for h in first_p_m.getElementsByClass([m21.meter.TimeSignature, m21.key.KeySignature, m21.clef.Clef]):
+                    new_m.append(copy.deepcopy(h))
+            for vp in vocal_parts:
+                vp_m = vp.measure(m_num)
+                if vp_m:
+                    for el in vp_m.notes:
+                        new_m.append(copy.deepcopy(el))
+            reduction.append(new_m)
+
+        return reduction
+
+    def analyze_measures(
+        self,
+        score: m21.stream.Score,
+        reconciled_streams: Dict[str, m21.stream.Part],
+        master_tempo_bpm: float = 100.0,
+    ) -> Dict[str, Any]:
+        """
+        Full measure-by-measure analysis of the score:
+        - Exact start time (seconds), end time, duration, BPM, time signature for every measure.
+        - Part activity (which parts have notes in each measure).
+        - Part entrances (measures where a part enters after resting).
+        - Extended rest segments for each part with precomputed jump-to entrance timestamps.
+        """
+        # Collect all tempo changes
+        tempo_points: List[Tuple[float, float]] = []
+        for el in score.recurse().getElementsByClass(m21.tempo.MetronomeMark):
+            if el.number:
+                tempo_points.append((float(el.offset), float(el.number)))
+        tempo_points.sort(key=lambda x: x[0])
+        if not tempo_points or tempo_points[0][0] > 0:
+            tempo_points.insert(0, (0.0, master_tempo_bpm))
+
+        def offset_to_seconds(offset: float) -> float:
+            total_sec = 0.0
+            cur_bpm = tempo_points[0][1]
+            last_off = 0.0
+            for tp_off, tp_bpm in tempo_points:
+                if offset <= tp_off:
+                    break
+                total_sec += (tp_off - last_off) * (60.0 / cur_bpm)
+                last_off = tp_off
+                cur_bpm = tp_bpm
+            total_sec += (offset - last_off) * (60.0 / cur_bpm)
+            return round(total_sec, 3)
+
+        # Collect all measure numbers across parts
+        all_measure_nums = set()
+        for p in reconciled_streams.values():
+            for m in p.getElementsByClass(m21.stream.Measure):
+                all_measure_nums.add(m.number)
+
+        sorted_m_nums = sorted(all_measure_nums)
+        if not sorted_m_nums:
+            sorted_m_nums = [1]
+
+        # Get initial time signature
+        ts_elements = list(score.recurse().getElementsByClass(m21.meter.TimeSignature))
+        default_ts_str = f"{ts_elements[0].numerator}/{ts_elements[0].denominator}" if ts_elements else "4/4"
+
+        measures_list = []
+        part_activity_by_measure: Dict[int, Dict[str, bool]] = {}
+
+        # Measure by measure inspection
+        for m_num in sorted_m_nums:
+            # Measure offset and duration
+            m_offset = 0.0
+            m_ql = 4.0
+            m_ts_str = default_ts_str
+
+            for p in reconciled_streams.values():
+                m_obj = p.measure(m_num)
+                if m_obj:
+                    m_offset = float(m_obj.offset)
+                    m_ql = float(m_obj.quarterLength)
+                    m_ts = m_obj.timeSignature
+                    if m_ts:
+                        m_ts_str = f"{m_ts.numerator}/{m_ts.denominator}"
+                    break
+
+            start_sec = offset_to_seconds(m_offset)
+            end_sec = offset_to_seconds(m_offset + m_ql)
+            dur_sec = round(max(0.1, end_sec - start_sec), 3)
+
+            # Check which parts have non-rest notes in this measure
+            active_parts = []
+            resting_parts = []
+            act_dict: Dict[str, bool] = {}
+
+            for key, p_stream in reconciled_streams.items():
+                p_m = p_stream.measure(m_num)
+                has_notes = False
+                if p_m:
+                    non_rest_notes = [n for n in p_m.recurse().notes if not isinstance(n, m21.note.Rest)]
+                    if non_rest_notes:
+                        has_notes = True
+
+                act_dict[key] = has_notes
+                if has_notes:
+                    active_parts.append(key)
+                else:
+                    resting_parts.append(key)
+
+            part_activity_by_measure[m_num] = act_dict
+
+            # Check entrances: active in this measure, but rested in previous measure
+            entrances = []
+            prev_m_num = m_num - 1
+            for key in active_parts:
+                prev_active = part_activity_by_measure.get(prev_m_num, {}).get(key, False)
+                if not prev_active:
+                    entrances.append(key)
+
+            measures_list.append({
+                "number": m_num,
+                "start_time": start_sec,
+                "end_time": end_sec,
+                "duration": dur_sec,
+                "time_signature": m_ts_str,
+                "bpm": master_tempo_bpm,
+                "active_parts": active_parts,
+                "resting_parts": resting_parts,
+                "entrances": entrances,
+            })
+
+        # Compute part-level entrances and extended rest spans
+        part_entrances: Dict[str, List[int]] = {k: [] for k in ALL_CHORAL_KEYS}
+        part_extended_rests: Dict[str, List[Dict[str, Any]]] = {k: [] for k in ALL_CHORAL_KEYS}
+
+        for m_info in measures_list:
+            m_num = m_info["number"]
+            for ent_key in m_info["entrances"]:
+                if ent_key in part_entrances:
+                    part_entrances[ent_key].append(m_num)
+
+        # Calculate extended rest segments for each part (rest span >= 2 measures)
+        for key in ALL_CHORAL_KEYS:
+            current_rest_start_idx = None
+
+            for idx, m_info in enumerate(measures_list):
+                is_active = key in m_info["active_parts"]
+                if not is_active:
+                    if current_rest_start_idx is None:
+                        current_rest_start_idx = idx
+                else:
+                    if current_rest_start_idx is not None:
+                        rest_len = idx - current_rest_start_idx
+                        if rest_len >= 2:
+                            start_m = measures_list[current_rest_start_idx]
+                            end_m = measures_list[idx - 1]
+                            next_entry_m = m_info
+                            part_extended_rests[key].append({
+                                "start_measure": start_m["number"],
+                                "end_measure": end_m["number"],
+                                "start_time": start_m["start_time"],
+                                "end_time": end_m["end_time"],
+                                "rest_measures": rest_len,
+                                "next_entry_measure": next_entry_m["number"],
+                                "next_entry_time": next_entry_m["start_time"],
+                            })
+                        current_rest_start_idx = None
+
+        return {
+            "total_measures": len(measures_list),
+            "default_bpm": master_tempo_bpm,
+            "time_signature": default_ts_str,
+            "total_duration_seconds": measures_list[-1]["end_time"] if measures_list else 0.0,
+            "measures": measures_list,
+            "part_entrances": part_entrances,
+            "part_extended_rests": part_extended_rests,
+        }
+
+    def process_and_extract_stems(
+        self,
+        score: m21.stream.Score,
+        output_xml_dir: Path,
+        output_midi_dir: Path,
+        return_analysis: bool = False,
+    ) -> Union[List[ExtractedStem], Tuple[List[ExtractedStem], Dict[str, Any]]]:
+        """
+        Processes the score, reconciles ALL 11 standard choral parts so every single
+        part is always available to select, generates stems, and computes measure analysis.
         """
         output_xml_dir.mkdir(parents=True, exist_ok=True)
         output_midi_dir.mkdir(parents=True, exist_ok=True)
 
+        # ------------------------------------------------------------------
+        # 1. Classify all original parts from the score
+        # ------------------------------------------------------------------
         extracted_raw: Dict[str, List[m21.stream.Part]] = {
             "piano": [],
             "s1": [],
@@ -365,7 +557,6 @@ class NotationProcessor:
             "unknown": [],
         }
 
-        # Step 1: Classify existing parts
         for part in score.parts:
             cat = self.identify_part_category(part)
             if cat == "soprano_alto":
@@ -381,135 +572,203 @@ class NotationProcessor:
             else:
                 extracted_raw["unknown"].append(part)
 
-        # Step 2: Handle unknowns by register
+        # Resolve unknowns by vocal pitch register
         if extracted_raw["unknown"]:
             for p in extracted_raw["unknown"]:
                 reg = self.guess_register_from_notes(p)
                 extracted_raw[reg].append(p)
 
-        # Step 3: Handle divisi and collapse into standard 11 parts
-        final_parts: Dict[str, Tuple[str, bool, m21.stream.Part, str]] = {}
-        # Key: stem_key (e.g. "S1", "Piano")
-        # Value: (part_name, is_accompaniment, stream, original_part_name)
+        # ------------------------------------------------------------------
+        # 2. Intelligent Choral Reconciliation: Guarantee ALL 11 Parts Exist
+        # ------------------------------------------------------------------
+        # Base vocal streams
+        s1_part: Optional[m21.stream.Part] = None
+        s2_part: Optional[m21.stream.Part] = None
+        a1_part: Optional[m21.stream.Part] = None
+        a2_part: Optional[m21.stream.Part] = None
+        t1_part: Optional[m21.stream.Part] = None
+        t2_part: Optional[m21.stream.Part] = None
+        bar1_part: Optional[m21.stream.Part] = None
+        bar2_part: Optional[m21.stream.Part] = None
+        b1_part: Optional[m21.stream.Part] = None
+        b2_part: Optional[m21.stream.Part] = None
 
-        # --- Piano / Accompaniment ---
+        # Sopranos
+        s_pool = extracted_raw["s1"] + extracted_raw["soprano"]
+        s2_pool = extracted_raw["s2"]
+        if s_pool and s2_pool:
+            s1_part = s_pool[0]
+            s2_part = s2_pool[0]
+        elif len(s_pool) >= 2:
+            s1_part = s_pool[0]
+            s2_part = s_pool[1]
+        elif s_pool:
+            if self.check_for_divisi_chords(s_pool[0]):
+                s1_part, s2_part = self.split_choral_divisi(s_pool[0], "Soprano I", "Soprano II")
+            else:
+                s1_part = s_pool[0]
+                s2_part = copy.deepcopy(s_pool[0])  # S2 plays S1 notes
+        elif s2_pool:
+            s1_part = copy.deepcopy(s2_pool[0])
+            s2_part = s2_pool[0]
+
+        # Altos
+        a_pool = extracted_raw["a1"] + extracted_raw["alto"]
+        a2_pool = extracted_raw["a2"]
+        if a_pool and a2_pool:
+            a1_part = a_pool[0]
+            a2_part = a2_pool[0]
+        elif len(a_pool) >= 2:
+            a1_part = a_pool[0]
+            a2_part = a_pool[1]
+        elif a_pool:
+            if self.check_for_divisi_chords(a_pool[0]):
+                a1_part, a2_part = self.split_choral_divisi(a_pool[0], "Alto I", "Alto II")
+            else:
+                a1_part = a_pool[0]
+                a2_part = copy.deepcopy(a_pool[0])  # A2 plays A1 notes
+        elif a2_pool:
+            a1_part = copy.deepcopy(a2_pool[0])
+            a2_part = a2_pool[0]
+
+        # Tenors
+        t_pool = extracted_raw["t1"] + extracted_raw["tenor"]
+        t2_pool = extracted_raw["t2"]
+        if t_pool and t2_pool:
+            t1_part = t_pool[0]
+            t2_part = t2_pool[0]
+        elif len(t_pool) >= 2:
+            t1_part = t_pool[0]
+            t2_part = t_pool[1]
+        elif t_pool:
+            if self.check_for_divisi_chords(t_pool[0]):
+                t1_part, t2_part = self.split_choral_divisi(t_pool[0], "Tenor I", "Tenor II")
+            else:
+                t1_part = t_pool[0]
+                t2_part = copy.deepcopy(t_pool[0])  # T2 plays T1 notes
+        elif t2_pool:
+            t1_part = copy.deepcopy(t2_pool[0])
+            t2_part = t2_pool[0]
+
+        # Basses
+        b_pool = extracted_raw["b1"] + extracted_raw["bass"]
+        b2_pool = extracted_raw["b2"]
+        if b_pool and b2_pool:
+            b1_part = b_pool[0]
+            b2_part = b2_pool[0]
+        elif len(b_pool) >= 2:
+            b1_part = b_pool[0]
+            b2_part = b_pool[1]
+        elif b_pool:
+            if self.check_for_divisi_chords(b_pool[0]):
+                b1_part, b2_part = self.split_choral_divisi(b_pool[0], "Bass I", "Bass II")
+            else:
+                b1_part = b_pool[0]
+                b2_part = copy.deepcopy(b_pool[0])  # B2 plays B1 notes!
+        elif b2_pool:
+            b1_part = copy.deepcopy(b2_pool[0])
+            b2_part = b2_pool[0]
+
+        # Baritones
+        bar_pool = extracted_raw["bar1"] + extracted_raw["baritone"]
+        bar2_pool = extracted_raw["bar2"]
+        if bar_pool and bar2_pool:
+            bar1_part = bar_pool[0]
+            bar2_part = bar2_pool[0]
+        elif len(bar_pool) >= 2:
+            bar1_part = bar_pool[0]
+            bar2_part = bar_pool[1]
+        elif bar_pool:
+            if self.check_for_divisi_chords(bar_pool[0]):
+                bar1_part, bar2_part = self.split_choral_divisi(bar_pool[0], "Baritone I", "Baritone II")
+            else:
+                bar1_part = bar_pool[0]
+                bar2_part = copy.deepcopy(bar_pool[0])
+        elif bar2_pool:
+            bar1_part = copy.deepcopy(bar2_pool[0])
+            bar2_part = bar2_pool[0]
+        else:
+            # Reconcile Baritone from Tenor & Bass if no explicit Baritone in score
+            if t2_part and b1_part:
+                bar1_part = copy.deepcopy(t2_part)
+                bar2_part = copy.deepcopy(b1_part)
+            elif b1_part:
+                bar1_part = copy.deepcopy(b1_part)
+                bar2_part = copy.deepcopy(b1_part)
+            elif t1_part:
+                bar1_part = copy.deepcopy(t1_part)
+                bar2_part = copy.deepcopy(t1_part)
+
+        # Cross-choir reconciliation fallbacks for missing registers
+        # (e.g. TTBB male choir, SSA female choir, or unison)
+        primary_vocal = s1_part or a1_part or t1_part or b1_part or (score.parts[0] if score.parts else m21.stream.Part())
+
+        if not s1_part:
+            s1_part = copy.deepcopy(t1_part or a1_part or primary_vocal)
+        if not s2_part:
+            s2_part = copy.deepcopy(s1_part)
+
+        if not a1_part:
+            a1_part = copy.deepcopy(s2_part or t1_part or primary_vocal)
+        if not a2_part:
+            a2_part = copy.deepcopy(a1_part)
+
+        if not t1_part:
+            t1_part = copy.deepcopy(a2_part or primary_vocal)
+        if not t2_part:
+            t2_part = copy.deepcopy(t1_part)
+
+        if not bar1_part:
+            bar1_part = copy.deepcopy(t2_part or primary_vocal)
+        if not bar2_part:
+            bar2_part = copy.deepcopy(bar1_part)
+
+        if not b1_part:
+            b1_part = copy.deepcopy(bar2_part or a2_part or primary_vocal)
+        if not b2_part:
+            b2_part = copy.deepcopy(b1_part)
+
+        # Piano / Accompaniment
         if extracted_raw["piano"]:
-            piano_stream = self.combine_piano_staves(extracted_raw["piano"])
-            final_parts["Piano"] = ("Piano Score", True, piano_stream, "Accompaniment")
+            piano_part = self.combine_piano_staves(extracted_raw["piano"])
+        else:
+            # Create rehearsal piano reduction from vocal parts
+            vocal_staves = [p for p in [s1_part, a1_part, t1_part, b1_part] if p is not None]
+            piano_part = self.create_choral_reduction_piano(vocal_staves)
 
-        # --- Sopranos ---
-        s_parts = extracted_raw["s1"] + extracted_raw["soprano"]
-        s2_parts = extracted_raw["s2"]
-        if s_parts and s2_parts:
-            final_parts["S1"] = ("Soprano I", False, s_parts[0], s_parts[0].partName or "Soprano 1")
-            final_parts["S2"] = ("Soprano II", False, s2_parts[0], s2_parts[0].partName or "Soprano 2")
-        elif len(s_parts) >= 2:
-            final_parts["S1"] = ("Soprano I", False, s_parts[0], s_parts[0].partName or "Soprano 1")
-            final_parts["S2"] = ("Soprano II", False, s_parts[1], s_parts[1].partName or "Soprano 2")
-        elif s2_parts and not s_parts:
-            final_parts["S2"] = ("Soprano II", False, s2_parts[0], s2_parts[0].partName or "Soprano 2")
-        elif len(s_parts) == 1:
-            # Check if this single Soprano staff has divisi chords
-            if self.check_for_divisi_chords(s_parts[0]):
-                s1, s2 = self.split_choral_divisi(s_parts[0], "Soprano I", "Soprano II")
-                final_parts["S1"] = ("Soprano I", False, s1, "Soprano (Divisi 1)")
-                final_parts["S2"] = ("Soprano II", False, s2, "Soprano (Divisi 2)")
-            else:
-                final_parts["S1"] = ("Soprano I", False, s_parts[0], s_parts[0].partName or "Soprano")
+        # Build master dictionary of all 11 reconciled parts
+        final_parts: Dict[str, Tuple[str, bool, m21.stream.Part, str]] = {
+            "Piano": ("Piano Score", True, piano_part, "Accompaniment"),
+            "S1": ("Soprano I", False, s1_part, "Soprano I"),
+            "S2": ("Soprano II", False, s2_part, "Soprano II"),
+            "A1": ("Alto I", False, a1_part, "Alto I"),
+            "A2": ("Alto II", False, a2_part, "Alto II"),
+            "T1": ("Tenor I", False, t1_part, "Tenor I"),
+            "T2": ("Tenor II", False, t2_part, "Tenor II"),
+            "Bar1": ("Baritone I", False, bar1_part, "Baritone I"),
+            "Bar2": ("Baritone II", False, bar2_part, "Baritone II"),
+            "B1": ("Bass I", False, b1_part, "Bass I"),
+            "B2": ("Bass II", False, b2_part, "Bass II"),
+        }
 
-        # --- Altos ---
-        a_parts = extracted_raw["a1"] + extracted_raw["alto"]
-        a2_parts = extracted_raw["a2"]
-        if a_parts and a2_parts:
-            final_parts["A1"] = ("Alto I", False, a_parts[0], a_parts[0].partName or "Alto 1")
-            final_parts["A2"] = ("Alto II", False, a2_parts[0], a2_parts[0].partName or "Alto 2")
-        elif len(a_parts) >= 2:
-            final_parts["A1"] = ("Alto I", False, a_parts[0], a_parts[0].partName or "Alto 1")
-            final_parts["A2"] = ("Alto II", False, a_parts[1], a_parts[1].partName or "Alto 2")
-        elif a2_parts and not a_parts:
-            final_parts["A2"] = ("Alto II", False, a2_parts[0], a2_parts[0].partName or "Alto 2")
-        elif len(a_parts) == 1:
-            if self.check_for_divisi_chords(a_parts[0]):
-                a1, a2 = self.split_choral_divisi(a_parts[0], "Alto I", "Alto II")
-                final_parts["A1"] = ("Alto I", False, a1, "Alto (Divisi 1)")
-                final_parts["A2"] = ("Alto II", False, a2, "Alto (Divisi 2)")
-            else:
-                final_parts["A1"] = ("Alto I", False, a_parts[0], a_parts[0].partName or "Alto")
-
-        # --- Tenors ---
-        t_parts = extracted_raw["t1"] + extracted_raw["tenor"]
-        t2_parts = extracted_raw["t2"]
-        if t_parts and t2_parts:
-            final_parts["T1"] = ("Tenor I", False, t_parts[0], t_parts[0].partName or "Tenor 1")
-            final_parts["T2"] = ("Tenor II", False, t2_parts[0], t2_parts[0].partName or "Tenor 2")
-        elif len(t_parts) >= 2:
-            final_parts["T1"] = ("Tenor I", False, t_parts[0], t_parts[0].partName or "Tenor 1")
-            final_parts["T2"] = ("Tenor II", False, t_parts[1], t_parts[1].partName or "Tenor 2")
-        elif t2_parts and not t_parts:
-            final_parts["T2"] = ("Tenor II", False, t2_parts[0], t2_parts[0].partName or "Tenor 2")
-        elif len(t_parts) == 1:
-            if self.check_for_divisi_chords(t_parts[0]):
-                t1, t2 = self.split_choral_divisi(t_parts[0], "Tenor I", "Tenor II")
-                final_parts["T1"] = ("Tenor I", False, t1, "Tenor (Divisi 1)")
-                final_parts["T2"] = ("Tenor II", False, t2, "Tenor (Divisi 2)")
-            else:
-                final_parts["T1"] = ("Tenor I", False, t_parts[0], t_parts[0].partName or "Tenor")
-
-        # --- Baritones ---
-        bar_parts = extracted_raw["bar1"] + extracted_raw["baritone"]
-        bar2_parts = extracted_raw["bar2"]
-        if bar_parts and bar2_parts:
-            final_parts["Bar1"] = ("Baritone I", False, bar_parts[0], bar_parts[0].partName or "Baritone 1")
-            final_parts["Bar2"] = ("Baritone II", False, bar2_parts[0], bar2_parts[0].partName or "Baritone 2")
-        elif len(bar_parts) >= 2:
-            final_parts["Bar1"] = ("Baritone I", False, bar_parts[0], bar_parts[0].partName or "Baritone 1")
-            final_parts["Bar2"] = ("Baritone II", False, bar2_parts[0], bar2_parts[0].partName or "Baritone 2")
-        elif bar2_parts and not bar_parts:
-            final_parts["Bar2"] = ("Baritone II", False, bar2_parts[0], bar2_parts[0].partName or "Baritone 2")
-        elif len(bar_parts) == 1:
-            final_parts["Bar1"] = ("Baritone I", False, bar_parts[0], bar_parts[0].partName or "Baritone")
-
-        # --- Basses ---
-        b_parts = extracted_raw["b1"] + extracted_raw["bass"]
-        b2_parts = extracted_raw["b2"]
-        if b_parts and b2_parts:
-            final_parts["B1"] = ("Bass I", False, b_parts[0], b_parts[0].partName or "Bass 1")
-            final_parts["B2"] = ("Bass II", False, b2_parts[0], b2_parts[0].partName or "Bass 2")
-        elif len(b_parts) >= 2:
-            final_parts["B1"] = ("Bass I", False, b_parts[0], b_parts[0].partName or "Bass 1")
-            final_parts["B2"] = ("Bass II", False, b_parts[1], b_parts[1].partName or "Bass 2")
-        elif b2_parts and not b_parts:
-            final_parts["B2"] = ("Bass II", False, b2_parts[0], b2_parts[0].partName or "Bass 2")
-        elif len(b_parts) == 1:
-            if self.check_for_divisi_chords(b_parts[0]):
-                b1, b2 = self.split_choral_divisi(b_parts[0], "Bass I", "Bass II")
-                final_parts["B1"] = ("Bass I", False, b1, "Bass (Divisi 1)")
-                final_parts["B2"] = ("Bass II", False, b2, "Bass (Divisi 2)")
-            else:
-                final_parts["B1"] = ("Bass I", False, b_parts[0], b_parts[0].partName or "Bass")
-
-        # Fallback safeguard: if no vocal parts were mapped at all, use score parts directly
-        if not any(k != "Piano" for k in final_parts.keys()) and score.parts:
-            for idx, p in enumerate(score.parts):
-                key = ["S1", "A1", "T1", "B1"][idx % 4]
-                name = STANDARD_CHORAL_PARTS[key]
-                final_parts[key] = (name, False, p, p.partName or f"Part {idx+1}")
-
-        # Extract master tempo mark if available
+        # ------------------------------------------------------------------
+        # 3. Master Tempo & Timing Analysis
+        # ------------------------------------------------------------------
         tempo_marks = list(score.recurse().getElementsByClass(m21.tempo.MetronomeMark))
-        master_tempo = tempo_marks[0] if tempo_marks else m21.tempo.MetronomeMark(number=100)
+        master_tempo_bpm = float(tempo_marks[0].number) if (tempo_marks and tempo_marks[0].number) else 100.0
+        master_tempo = tempo_marks[0] if tempo_marks else m21.tempo.MetronomeMark(number=master_tempo_bpm)
 
-        # Step 4: Export stems to MIDI & MusicXML
+        # Run Measure Analysis on all 11 parts
+        streams_map = {k: v[2] for k, v in final_parts.items()}
+        measure_analysis = self.analyze_measures(score, streams_map, master_tempo_bpm=master_tempo_bpm)
+        self.last_measure_analysis = measure_analysis
+
+        # ------------------------------------------------------------------
+        # 4. Export All 11 Stems to MIDI & MusicXML
+        # ------------------------------------------------------------------
         stems_result: List[ExtractedStem] = []
 
-        # Order parts logically: Piano first, then S1, S2, A1, A2, T1, T2, Bar1, Bar2, B1, B2
-        sort_order = ["Piano", "S1", "S2", "A1", "A2", "T1", "T2", "Bar1", "Bar2", "B1", "B2"]
-        sorted_keys = sorted(
-            final_parts.keys(),
-            key=lambda k: sort_order.index(k) if k in sort_order else 99
-        )
-
-        for key in sorted_keys:
+        for key in ALL_CHORAL_KEYS:
             part_name, is_acc, stream_part, orig_name = final_parts[key]
             stream_part = copy.deepcopy(stream_part)
             stream_part.partName = part_name
@@ -519,7 +778,6 @@ class NotationProcessor:
             gm_inst = GM_INSTRUMENTS.get(key, m21.instrument.Choir())
             stream_part.insert(0, copy.deepcopy(gm_inst))
 
-            # Ensure tempo is present in first measure
             first_m = stream_part.measure(1)
             if first_m:
                 if not first_m.getElementsByClass(m21.tempo.MetronomeMark):
@@ -527,7 +785,6 @@ class NotationProcessor:
             else:
                 stream_part.insert(0, copy.deepcopy(master_tempo))
 
-            # Calculate metadata: pitch range, measure count, note count
             notes = list(stream_part.recurse().notes)
             note_count = len(notes)
             measure_count = len(stream_part.getElementsByClass(m21.stream.Measure))
@@ -541,11 +798,8 @@ class NotationProcessor:
                 sorted_pitches = sorted(pitches, key=lambda p: p.midi)
                 pitch_range = f"{sorted_pitches[0].nameWithOctave} - {sorted_pitches[-1].nameWithOctave}"
 
-            # Calculate duration in seconds
-            # total quarterLength / (tempo_bpm / 60)
-            bpm = master_tempo.number if (master_tempo and master_tempo.number) else 100
             total_ql = stream_part.highestTime
-            duration_sec = (total_ql / (bpm / 60.0)) if bpm > 0 else total_ql * 0.6
+            duration_sec = (total_ql / (master_tempo_bpm / 60.0)) if master_tempo_bpm > 0 else total_ql * 0.6
             duration_sec = round(max(1.0, duration_sec), 2)
 
             stem_obj = ExtractedStem(
@@ -573,7 +827,6 @@ class NotationProcessor:
             midi_filename = f"stem_{key}.mid"
             midi_path = output_midi_dir / midi_filename
             try:
-                # Wrap part in a single-part score to ensure proper MIDI header and tempo
                 stem_score = m21.stream.Score()
                 stem_score.append(stream_part)
                 stem_score.write("midi", fp=str(midi_path))
@@ -587,6 +840,8 @@ class NotationProcessor:
                 key, part_name, note_count, duration_sec, pitch_range
             )
 
+        if return_analysis:
+            return stems_result, measure_analysis
         return stems_result
 
 

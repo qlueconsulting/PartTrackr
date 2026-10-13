@@ -53,9 +53,11 @@ def test_score_upload_and_pipeline(client: TestClient, tmp_path):
     assert detail_res.status_code == 200
     detail = detail_res.json()
     assert detail["status"] == "ready"
-    assert len(detail["stems"]) >= 1
+    assert len(detail["stems"]) == 11
+    assert "measure_analysis" in detail
+    assert detail["measure_analysis"]["total_measures"] >= 1
 
-    stem = detail["stems"][0]
+    stem = next(s for s in detail["stems"] if s["part_key"] == "S1")
     assert stem["part_key"] == "S1"
     assert stem["audio_url"] is not None
     assert stem["midi_url"] is not None
@@ -92,14 +94,13 @@ def test_load_sample_score(client: TestClient):
     assert response.status_code == 200
     data = response.json()
     assert data["status"] == "ready"
-    assert len(data["stems"]) == 5  # Piano + S1 + A1 + T1 + B1
+    assert len(data["stems"]) == 11  # All 11 parts guaranteed
+    assert "measure_analysis" in data
+    assert data["measure_analysis"]["total_measures"] >= 1
 
     stem_keys = [s["part_key"] for s in data["stems"]]
-    assert "Piano" in stem_keys
-    assert "S1" in stem_keys
-    assert "A1" in stem_keys
-    assert "T1" in stem_keys
-    assert "B1" in stem_keys
+    for k in ["Piano", "S1", "S2", "A1", "A2", "T1", "T2", "Bar1", "Bar2", "B1", "B2"]:
+        assert k in stem_keys
 
     # Verify processing_logs are recorded
     assert "processing_logs" in data
