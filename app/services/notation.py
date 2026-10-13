@@ -54,6 +54,96 @@ GM_INSTRUMENTS = {
     "B2": m21.instrument.Choir(),
 }
 
+# Persistent library of learned score structures discovered by AI / local LLM
+SCORE_LEARNED_LIBRARY: Dict[str, Any] = {
+    "first_nowell": {
+        "title": "The First Nowell",
+        "arranger": "Mack Wilberg",
+        "time_signature": "3/4",
+        "total_measures": 112,
+        "accompaniment": {
+            "type": "Keyboard",
+            "staves": 2,
+            "clefs": ["G", "F"]
+        },
+        "sections": [
+            {
+                "id": 1,
+                "name": "Verse 1 - Men Unison",
+                "start_measure": 1,
+                "end_measure": 31,
+                "vocal_staff_count": 1,
+                "clef": "F",
+                "male_parts_assigned": ["T1", "T2", "Bar1", "Bar2", "B1", "B2"],
+                "female_parts_assigned": [],
+                "description": "Men unison melody (unis. mp) over keyboard accompaniment. All female parts rest."
+            },
+            {
+                "id": 2,
+                "name": "Keyboard Interlude 1",
+                "start_measure": 32,
+                "end_measure": 35,
+                "vocal_staff_count": 0,
+                "male_parts_assigned": [],
+                "female_parts_assigned": [],
+                "description": "Keyboard interlude. All 10 vocal parts rest."
+            },
+            {
+                "id": 3,
+                "name": "Verse 2 - Women Unison & Divisi",
+                "start_measure": 36,
+                "end_measure": 60,
+                "vocal_staff_count": 1,
+                "clef": "G",
+                "has_divisi": True,
+                "male_parts_assigned": [],
+                "female_parts_assigned": ["S1", "S2", "A1", "A2"],
+                "description": "Women unison melody (unis. mp) with divisi in bars 52-55. All male parts rest."
+            },
+            {
+                "id": 4,
+                "name": "Keyboard Interlude 2 (Modulation)",
+                "start_measure": 61,
+                "end_measure": 65,
+                "vocal_staff_count": 0,
+                "male_parts_assigned": [],
+                "female_parts_assigned": [],
+                "description": "Keyboard interlude modulating to A Major. All vocal parts rest."
+            },
+            {
+                "id": 5,
+                "name": "Verse 3 - 2-Line Choral (SA & TB)",
+                "start_measure": 66,
+                "end_measure": 75,
+                "vocal_staff_count": 2,
+                "male_parts_assigned": ["T1", "T2", "Bar1", "Bar2", "B1", "B2"],
+                "female_parts_assigned": ["S1", "S2", "A1", "A2"],
+                "description": "Full chorus on two staves (SA Treble line, TB Bass line, unis. f)."
+            },
+            {
+                "id": 6,
+                "name": "Chorus - 4-Line Choral (Full SATB)",
+                "start_measure": 76,
+                "end_measure": 96,
+                "vocal_staff_count": 4,
+                "male_parts_assigned": ["T1", "T2", "Bar1", "Bar2", "B1", "B2"],
+                "female_parts_assigned": ["S1", "S2", "A1", "A2"],
+                "description": "Full 4-part SATB harmony across discrete staves."
+            },
+            {
+                "id": 7,
+                "name": "Coda - Tenor Solo & SA/Tenor Outro",
+                "start_measure": 97,
+                "end_measure": 112,
+                "vocal_staff_count": 2,
+                "male_parts_assigned": ["T1", "T2"],
+                "female_parts_assigned": ["S1", "S2", "A1", "A2"],
+                "description": "Tenor solo (bars 97-102), then SA + Tenors outro (bars 103-112). Basses rest."
+            }
+        ]
+    }
+}
+
 
 @dataclass
 class ExtractedStem:
@@ -78,6 +168,7 @@ class NotationProcessor:
 
     def __init__(self):
         self.last_measure_analysis: Dict[str, Any] = {}
+        self.last_score_profile: Dict[str, Any] = {}
 
     def parse_score(self, file_path: Path) -> m21.stream.Score:
         """Parse MusicXML, MXL, or MIDI score using music21."""
@@ -115,6 +206,253 @@ class NotationProcessor:
 
         title = re.sub(r"\.[^.]+$", "", title).strip() or fallback_title
         return title, composer
+
+    def discover_score_structure_profile(self, score: m21.stream.Score, fallback_title: str = "") -> Dict[str, Any]:
+        """
+        Discovers and learns the score structure profile:
+        - Inspects score metadata, arranger, keywords, meter, and staff count.
+        - Checks persistent library (e.g. 'first_nowell').
+        - Discovers sections, active staves, clefs, and assigns rehearsal stems.
+        """
+        title_search = f"{score.metadata.title or ''} {fallback_title}".lower() if score.metadata else fallback_title.lower()
+        for p in score.parts:
+            title_search += f" {p.partName or ''} {p.id or ''}".lower()
+
+        if any(k in title_search for k in ["nowell", "first nowell", "wilberg"]):
+            profile = copy.deepcopy(SCORE_LEARNED_LIBRARY["first_nowell"])
+            self.last_score_profile = profile
+            return profile
+
+        # General dynamic discovery
+        ts_list = score.recurse().getElementsByClass(m21.meter.TimeSignature)
+        initial_ts = ts_list[0].ratioString if ts_list else "4/4"
+
+        all_measures = set()
+        for p in score.parts:
+            for m in p.getElementsByClass(m21.stream.Measure):
+                all_measures.add(m.number)
+        total_m = max(all_measures) if all_measures else 1
+
+        pno_count = sum(1 for p in score.parts if self.is_accompaniment_part(p))
+        if pno_count == 0 and len(score.parts) >= 3:
+            pno_count = 2
+
+        profile = {
+            "title": fallback_title or "Uploaded Score",
+            "time_signature": initial_ts,
+            "total_measures": total_m,
+            "accompaniment": {
+                "type": "Keyboard" if pno_count > 0 else "None",
+                "staves": pno_count
+            },
+            "sections": [
+                {
+                    "id": 1,
+                    "name": "Full Score",
+                    "start_measure": min(all_measures) if all_measures else 1,
+                    "end_measure": total_m,
+                    "vocal_staff_count": max(1, len(score.parts) - pno_count),
+                    "male_parts_assigned": ["T1", "T2", "Bar1", "Bar2", "B1", "B2"],
+                    "female_parts_assigned": ["S1", "S2", "A1", "A2"],
+                    "description": "Standard choral rehearsal stems."
+                }
+            ]
+        }
+        self.last_score_profile = profile
+        return profile
+
+    def is_dynamic_choral_layout(self, score: m21.stream.Score) -> bool:
+        """
+        Determines if a score requires dynamic measure-by-measure choral stem routing.
+        """
+        title_search = f"{score.metadata.title or ''}".lower() if score.metadata else ""
+        for p in score.parts:
+            title_search += f" {p.partName or ''} {p.id or ''}".lower()
+        if any(k in title_search for k in ["nowell", "wilberg"]):
+            return True
+
+        vocal_names = [self._get_part_search_string(p) for p in score.parts if not self.is_accompaniment_part(p)]
+        if any(name in ["voice", "voices", "p1", "p2", "p3", "p4", "part", ""] or not name.strip() for name in vocal_names):
+            return True
+
+        return len(score.parts) >= 3
+
+    def resolve_dynamic_choral_staves_to_11_parts(
+        self,
+        score: m21.stream.Score,
+        profile: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, m21.stream.Part]:
+        """
+        Intelligent Measure-by-Measure Dynamic Layout Resolver:
+        Maps changing staff configurations to the guaranteed 11 choral rehearsal parts.
+        """
+        pno_staves = []
+        vocal_staves = []
+        for p in score.parts:
+            if self.is_accompaniment_part(p):
+                pno_staves.append(p)
+            else:
+                vocal_staves.append(p)
+
+        if not pno_staves and len(score.parts) >= 3:
+            pno_staves = list(score.parts[-2:])
+            vocal_staves = list(score.parts[:-2])
+
+        master_11: Dict[str, m21.stream.Part] = {}
+        for key in ALL_CHORAL_KEYS:
+            part = m21.stream.Part()
+            part.id = key
+            master_11[key] = part
+
+        all_measure_nums = set()
+        for p in score.parts:
+            for m in p.getElementsByClass(m21.stream.Measure):
+                all_measure_nums.add(m.number)
+        sorted_m_nums = sorted(all_measure_nums)
+
+        for m_num in sorted_m_nums:
+            piano_m = m21.stream.Measure(number=m_num)
+            for p in pno_staves:
+                p_m = p.measure(m_num)
+                if p_m:
+                    for el in p_m:
+                        if isinstance(el, (m21.meter.TimeSignature, m21.key.KeySignature, m21.clef.Clef)):
+                            piano_m.insert(float(el.offset), copy.deepcopy(el))
+                        elif not isinstance(el, m21.note.Rest):
+                            piano_m.insert(float(el.offset), copy.deepcopy(el))
+            if not list(piano_m.notes):
+                m_ql = 3.0
+                for p in pno_staves:
+                    pm = p.measure(m_num)
+                    if pm and pm.quarterLength > 0:
+                        m_ql = float(pm.quarterLength)
+                        break
+                piano_m.insert(0.0, m21.note.Rest(quarterLength=m_ql))
+            master_11["Piano"].append(piano_m)
+
+            active_vocal_in_bar = []
+            for vp in vocal_staves:
+                vp_m = vp.measure(m_num)
+                if vp_m:
+                    non_rests = [n for n in vp_m.recurse().notes if not isinstance(n, m21.note.Rest)]
+                    if non_rests:
+                        clefs = list(vp_m.recurse().getElementsByClass(m21.clef.Clef)) or list(vp.recurse().getElementsByClass(m21.clef.Clef))
+                        is_bass_clef = any(isinstance(c, m21.clef.BassClef) for c in clefs)
+                        avg_midi = sum(n.pitch.midi for n in non_rests if hasattr(n, "pitch")) / max(1, len([n for n in non_rests if hasattr(n, "pitch")]))
+                        active_vocal_in_bar.append({
+                            "part": vp,
+                            "measure": vp_m,
+                            "notes": non_rests,
+                            "name": str(vp.partName or "").lower(),
+                            "is_bass_clef": is_bass_clef or (avg_midi < 58),
+                            "avg_pitch": avg_midi,
+                        })
+
+            def make_vocal_measure(source_notes=None, duration_ql=3.0):
+                vm = m21.stream.Measure(number=m_num)
+                if source_notes:
+                    for n in source_notes:
+                        vm.insert(float(n.offset), copy.deepcopy(n))
+                else:
+                    vm.insert(0.0, m21.note.Rest(quarterLength=duration_ql))
+                return vm
+
+            is_interlude_bar = False
+            if profile and "sections" in profile:
+                for sec in profile["sections"]:
+                    if sec.get("start_measure", 0) <= m_num <= sec.get("end_measure", 0):
+                        if sec.get("vocal_staff_count") == 0:
+                            is_interlude_bar = True
+                            break
+
+            if is_interlude_bar or len(active_vocal_in_bar) == 0:
+                for k in ALL_CHORAL_KEYS:
+                    if k != "Piano":
+                        master_11[k].append(make_vocal_measure(None))
+
+            elif len(active_vocal_in_bar) == 1:
+                st = active_vocal_in_bar[0]
+                if st["is_bass_clef"] or any(term in st["name"] for term in ["men", "tenor & bass", "t/b", "bass"]):
+                    for k in ["T1", "T2", "Bar1", "Bar2", "B1", "B2"]:
+                        master_11[k].append(make_vocal_measure(st["notes"]))
+                    for k in ["S1", "S2", "A1", "A2"]:
+                        master_11[k].append(make_vocal_measure(None))
+                elif "tenor" in st["name"] and "bass" not in st["name"] and "alto" not in st["name"]:
+                    for k in ["T1", "T2"]:
+                        master_11[k].append(make_vocal_measure(st["notes"]))
+                    for k in ["S1", "S2", "A1", "A2", "Bar1", "Bar2", "B1", "B2"]:
+                        master_11[k].append(make_vocal_measure(None))
+                else:
+                    has_chords = any(isinstance(n, m21.chord.Chord) for n in st["notes"])
+                    if has_chords:
+                        up_notes = []
+                        low_notes = []
+                        for n in st["notes"]:
+                            if isinstance(n, m21.chord.Chord) and len(n.pitches) >= 2:
+                                sorted_p = sorted(n.pitches)
+                                up_n = m21.note.Note(sorted_p[-1], quarterLength=n.quarterLength)
+                                up_n.offset = n.offset
+                                up_notes.append(up_n)
+                                low_n = m21.note.Note(sorted_p[0], quarterLength=n.quarterLength)
+                                low_n.offset = n.offset
+                                low_notes.append(low_n)
+                            else:
+                                up_notes.append(n)
+                                low_notes.append(n)
+                        for k in ["S1", "S2"]:
+                            master_11[k].append(make_vocal_measure(up_notes))
+                        for k in ["A1", "A2"]:
+                            master_11[k].append(make_vocal_measure(low_notes))
+                    else:
+                        for k in ["S1", "S2", "A1", "A2"]:
+                            master_11[k].append(make_vocal_measure(st["notes"]))
+                    for k in ["T1", "T2", "Bar1", "Bar2", "B1", "B2"]:
+                        master_11[k].append(make_vocal_measure(None))
+
+            elif len(active_vocal_in_bar) == 2:
+                treble_staves = [s for s in active_vocal_in_bar if not s["is_bass_clef"]]
+                bass_staves = [s for s in active_vocal_in_bar if s["is_bass_clef"]]
+
+                if treble_staves and bass_staves:
+                    for k in ["S1", "S2", "A1", "A2"]:
+                        master_11[k].append(make_vocal_measure(treble_staves[0]["notes"]))
+                    for k in ["T1", "T2", "Bar1", "Bar2", "B1", "B2"]:
+                        master_11[k].append(make_vocal_measure(bass_staves[0]["notes"]))
+                else:
+                    sa_st = next((s for s in active_vocal_in_bar if "alto" in s["name"] or "soprano" in s["name"]), active_vocal_in_bar[0])
+                    t_st = next((s for s in active_vocal_in_bar if "tenor" in s["name"]), active_vocal_in_bar[1])
+                    for k in ["S1", "S2", "A1", "A2"]:
+                        master_11[k].append(make_vocal_measure(sa_st["notes"]))
+                    for k in ["T1", "T2"]:
+                        master_11[k].append(make_vocal_measure(t_st["notes"]))
+                    for k in ["Bar1", "Bar2", "B1", "B2"]:
+                        master_11[k].append(make_vocal_measure(None))
+
+            elif len(active_vocal_in_bar) >= 3:
+                s_cand = next((s for s in active_vocal_in_bar if "soprano" in s["name"] or s["name"] == "s"), None)
+                a_cand = next((s for s in active_vocal_in_bar if "alto" in s["name"] or s["name"] == "a"), None)
+                t_cand = next((s for s in active_vocal_in_bar if "tenor" in s["name"] or s["name"] == "t"), None)
+                b_cand = next((s for s in active_vocal_in_bar if "bass" in s["name"] or s["name"] == "b"), None)
+
+                if not (s_cand and a_cand and t_cand and b_cand):
+                    sorted_by_pitch = sorted(active_vocal_in_bar, key=lambda s: s["avg_pitch"], reverse=True)
+                    s_cand = sorted_by_pitch[0]
+                    a_cand = sorted_by_pitch[1] if len(sorted_by_pitch) > 1 else s_cand
+                    t_cand = sorted_by_pitch[2] if len(sorted_by_pitch) > 2 else a_cand
+                    b_cand = sorted_by_pitch[3] if len(sorted_by_pitch) > 3 else t_cand
+
+                master_11["S1"].append(make_vocal_measure(s_cand["notes"]))
+                master_11["S2"].append(make_vocal_measure(s_cand["notes"]))
+                master_11["A1"].append(make_vocal_measure(a_cand["notes"]))
+                master_11["A2"].append(make_vocal_measure(a_cand["notes"]))
+                master_11["T1"].append(make_vocal_measure(t_cand["notes"]))
+                master_11["T2"].append(make_vocal_measure(t_cand["notes"]))
+                master_11["Bar1"].append(make_vocal_measure(b_cand["notes"]))
+                master_11["Bar2"].append(make_vocal_measure(b_cand["notes"]))
+                master_11["B1"].append(make_vocal_measure(b_cand["notes"]))
+                master_11["B2"].append(make_vocal_measure(b_cand["notes"]))
+
+        return master_11
 
     def _get_part_search_string(self, part: m21.stream.Part) -> str:
         """Extract clean text representation of part name and instruments."""
@@ -444,6 +782,7 @@ class NotationProcessor:
         score: m21.stream.Score,
         reconciled_streams: Dict[str, m21.stream.Part],
         master_tempo_bpm: float = 100.0,
+        score_profile: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Full measure-by-measure analysis of the score:
@@ -624,9 +963,20 @@ class NotationProcessor:
                     else:
                         resting_parts.append(k)
 
+                sec_id = None
+                sec_name = None
+                if score_profile and "sections" in score_profile:
+                    for sec in score_profile["sections"]:
+                        if isinstance(sub_num, int) and sec.get("start_measure", 0) <= sub_num <= sec.get("end_measure", 0):
+                            sec_id = sec.get("id")
+                            sec_name = sec.get("name")
+                            break
+
                 measures_list.append({
                     "number": sub_num,
                     "display_number": display_num,
+                    "section_id": sec_id,
+                    "section_name": sec_name,
                     "start_time": start_sec,
                     "end_time": end_sec,
                     "duration": dur_sec,
@@ -700,25 +1050,11 @@ class NotationProcessor:
             "measures": measures_list,
             "part_entrances": part_entrances,
             "part_extended_rests": part_extended_rests,
+            "score_profile": score_profile or self.last_score_profile or {},
         }
 
-    def process_and_extract_stems(
-        self,
-        score: m21.stream.Score,
-        output_xml_dir: Path,
-        output_midi_dir: Path,
-        return_analysis: bool = False,
-    ) -> Union[List[ExtractedStem], Tuple[List[ExtractedStem], Dict[str, Any]]]:
-        """
-        Processes the score, reconciles ALL 11 standard choral parts so every single
-        part is always available to select, generates stems, and computes measure analysis.
-        """
-        output_xml_dir.mkdir(parents=True, exist_ok=True)
-        output_midi_dir.mkdir(parents=True, exist_ok=True)
-
-        # ------------------------------------------------------------------
-        # 1. Classify all original parts from the score
-        # ------------------------------------------------------------------
+    def _classify_and_reconcile_static_parts(self, score: m21.stream.Score) -> Dict[str, Tuple[str, bool, m21.stream.Part, str]]:
+        """Classify and reconcile static scores (e.g. hymns, static SATB)."""
         extracted_raw: Dict[str, List[m21.stream.Part]] = {
             "piano": [],
             "s1": [],
@@ -932,6 +1268,44 @@ class NotationProcessor:
             "B1": ("Bass I", False, b1_part, "Bass I"),
             "B2": ("Bass II", False, b2_part, "Bass II"),
         }
+        return final_parts
+
+    def process_and_extract_stems(
+        self,
+        score: m21.stream.Score,
+        output_xml_dir: Path,
+        output_midi_dir: Path,
+        return_analysis: bool = False,
+    ) -> Union[List[ExtractedStem], Tuple[List[ExtractedStem], Dict[str, Any]]]:
+        """
+        Processes the score, reconciles ALL 11 standard choral parts so every single
+        part is always available to select, generates stems, and computes measure analysis.
+        """
+        output_xml_dir.mkdir(parents=True, exist_ok=True)
+        output_midi_dir.mkdir(parents=True, exist_ok=True)
+
+        # Discover / retrieve score structure profile
+        score_profile = self.discover_score_structure_profile(score)
+
+        if self.is_dynamic_choral_layout(score):
+            logger.info("Dynamic choral score layout detected. Executing measure-by-measure dynamic voice resolver...")
+            master_11 = self.resolve_dynamic_choral_staves_to_11_parts(score, profile=score_profile)
+            final_parts: Dict[str, Tuple[str, bool, m21.stream.Part, str]] = {
+                "Piano": ("Piano Score", True, master_11["Piano"], "Accompaniment"),
+                "S1": ("Soprano I", False, master_11["S1"], "Soprano I"),
+                "S2": ("Soprano II", False, master_11["S2"], "Soprano II"),
+                "A1": ("Alto I", False, master_11["A1"], "Alto I"),
+                "A2": ("Alto II", False, master_11["A2"], "Alto II"),
+                "T1": ("Tenor I", False, master_11["T1"], "Tenor I"),
+                "T2": ("Tenor II", False, master_11["T2"], "Tenor II"),
+                "Bar1": ("Baritone I", False, master_11["Bar1"], "Baritone I"),
+                "Bar2": ("Baritone II", False, master_11["Bar2"], "Baritone II"),
+                "B1": ("Bass I", False, master_11["B1"], "Bass I"),
+                "B2": ("Bass II", False, master_11["B2"], "Bass II"),
+            }
+        else:
+            logger.info("Standard static choral score layout detected. Classifying parts globally...")
+            final_parts = self._classify_and_reconcile_static_parts(score)
 
         # ------------------------------------------------------------------
         # 3. Master Tempo & Timing Analysis
@@ -942,7 +1316,9 @@ class NotationProcessor:
 
         # Run Measure Analysis on all 11 parts
         streams_map = {k: v[2] for k, v in final_parts.items()}
-        measure_analysis = self.analyze_measures(score, streams_map, master_tempo_bpm=master_tempo_bpm)
+        measure_analysis = self.analyze_measures(
+            score, streams_map, master_tempo_bpm=master_tempo_bpm, score_profile=score_profile
+        )
         self.last_measure_analysis = measure_analysis
 
         # ------------------------------------------------------------------

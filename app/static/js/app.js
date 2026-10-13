@@ -791,6 +791,44 @@ document.addEventListener("DOMContentLoaded", () => {
                 detectedPartsContainer.appendChild(badge);
             });
         }
+
+        // Discovered Choral Structure & Sections
+        const scoreStructureContainer = document.getElementById("score-structure-container");
+        const scoreStructureSummary = document.getElementById("score-structure-summary");
+        const scoreSectionsPills = document.getElementById("score-sections-pills");
+
+        const profile = score.score_profile || (score.measure_analysis ? score.measure_analysis.score_profile : null);
+        if (scoreStructureContainer && profile && profile.sections && profile.sections.length > 0) {
+            scoreStructureContainer.classList.remove("hidden");
+            scoreStructureSummary.textContent = `${profile.time_signature || '3/4'} Meter • ${profile.total_measures || 0} Bars • ${profile.sections.length} Sections`;
+            scoreSectionsPills.innerHTML = "";
+
+            profile.sections.forEach((sec) => {
+                const pill = document.createElement("button");
+                pill.className = "section-quick-jump-btn text-xs px-2.5 py-1.5 rounded-lg bg-indigo-950/80 hover:bg-indigo-900 border border-indigo-800 hover:border-indigo-600 text-indigo-200 transition flex items-center gap-1.5 shadow-sm transform hover:scale-[1.02] active:scale-95";
+                pill.setAttribute("data-start-bar", sec.start_measure);
+                pill.setAttribute("data-end-bar", sec.end_measure);
+
+                const staffBadge = sec.vocal_staff_count === 0 ? "Accompaniment Only" : `${sec.vocal_staff_count} Voice ${sec.vocal_staff_count === 1 ? 'Line' : 'Lines'}`;
+
+                pill.innerHTML = `
+                    <span class="font-bold text-slate-100">${sec.name}</span>
+                    <span class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-indigo-900/60 text-indigo-300 border border-indigo-700/60">Bars ${sec.start_measure}–${sec.end_measure}</span>
+                    <span class="text-[10px] text-slate-400">(${staffBadge})</span>
+                `;
+
+                pill.addEventListener("click", () => {
+                    player.seekToMeasure(sec.start_measure);
+                    player.play();
+                    document.querySelectorAll(".section-quick-jump-btn").forEach((b) => b.classList.remove("ring-2", "ring-indigo-400"));
+                    pill.classList.add("ring-2", "ring-indigo-400");
+                });
+
+                scoreSectionsPills.appendChild(pill);
+            });
+        } else if (scoreStructureContainer) {
+            scoreStructureContainer.classList.add("hidden");
+        }
     }
 
     // ==============================================================

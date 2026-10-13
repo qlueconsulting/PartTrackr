@@ -23,6 +23,7 @@ class Score(Base):
     error_traceback = Column(Text, nullable=True)
     processing_logs = Column(JSON, default=list)  # List of log message objects
     measure_analysis = Column(JSON, default=dict)  # Detailed measure analysis, entrances, rests
+    score_profile = Column(JSON, default=dict)  # Discovered / learned dynamic choral structure profile
     original_path = Column(String(500), nullable=True)
     xml_path = Column(String(500), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)

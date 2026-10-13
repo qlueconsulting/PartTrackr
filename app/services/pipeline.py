@@ -175,11 +175,23 @@ def run_score_pipeline(score_id: str):
 
             score.detected_parts = [s.part_name for s in extracted_stems]
             score.measure_analysis = measure_analysis
+            score.score_profile = measure_analysis.get("score_profile", {})
+
+            # Persist learned profile to disk
+            profile_path = score_storage_dir / "profile.json"
+            try:
+                import json
+                with open(profile_path, "w", encoding="utf-8") as pf:
+                    json.dump(score.score_profile, pf, indent=2)
+            except Exception:
+                pass
+
             parts_summary = ", ".join(score.detected_parts)
             tot_measures = measure_analysis.get("total_measures", 0)
+            sec_count = len(score.score_profile.get("sections", []))
             _log_event(
                 score,
-                f"Full measure analysis complete ({tot_measures} measures). All 11 choral parts reconciled: {parts_summary}",
+                f"Full measure analysis complete ({tot_measures} measures, {sec_count} structural sections discovered). All 11 choral parts reconciled: {parts_summary}",
                 level="success",
                 stage="notation",
                 db=db,

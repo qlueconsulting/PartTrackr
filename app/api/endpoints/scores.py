@@ -47,6 +47,7 @@ def _score_to_response(score: Score) -> ScoreResponse:
         error_traceback=score.error_traceback,
         processing_logs=score.processing_logs or [],
         measure_analysis=score.measure_analysis or {},
+        score_profile=score.score_profile or {},
         created_at=score.created_at,
         updated_at=score.updated_at,
         stems=[_stem_to_response(st) for st in score.stems],
@@ -182,3 +183,58 @@ def get_score_xml(score_id: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="MusicXML file not found")
 
     return FileResponse(score.xml_path, filename=Path(score.xml_path).name, media_type="application/xml")
+
+
+@router.get("/{score_id}/profile")
+def get_score_profile(score_id: str, db: Session = Depends(get_db)):
+    """Retrieves the discovered/learned score structure profile for this piece."""
+    score = db.query(Score).filter(Score.id == score_id).first()
+    if not score:
+        raise HTTPException(status_code=404, detail="Score not found")
+    return {
+        "score_id": score.id,
+        "title": score.title,
+        "profile": score.score_profile or {},
+    }
+
+
+@router.put("/{score_id}/profile")
+def update_score_profile(score_id: str, profile_data: dict, db: Session = Depends(get_db)):
+    """Updates and saves the learned score structure profile."""
+    score = db.query(Score).filter(Score.id == score_id).first()
+    if not score:
+        raise HTTPException(status_code=404, detail="Score not found")
+    score.score_profile = profile_data
+    db.commit()
+
+    # Persist to disk as well
+    profile_path = settings.STORAGE_DIR / score_id / "profile.json"
+    try:
+        import json
+        profile_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(profile_path, "w", encoding="utf-8") as f:
+            json.dump(profile_data, f, indent=2)
+    except Exception:
+        pass
+
+    return {
+        "score_id": score.id,
+        "status": "updated",
+        "profile": score.score_profile,
+    }
+
+
+@router.get("/{score_id}/logs")
+def get_score_logs(score_id: str, db: Session = Depends(get_db)):
+    """Retrieves full processing log history and errors for diagnostics."""
+    score = db.query(Score).filter(Score.id == score_id).first()
+    if not score:
+        raise HTTPException(status_code=404, detail="Score not found")
+    return {
+        "score_id": score.id,
+        "status": score.status,
+        "error_message": score.error_message,
+        "error_traceback": score.error_traceback,
+        "logs": score.processing_logs or [],
+    }
+

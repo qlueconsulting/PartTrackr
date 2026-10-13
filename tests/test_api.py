@@ -134,3 +134,45 @@ def test_score_reprocess_endpoint(client: TestClient):
     assert detail_data["status"] == "ready"
     assert len(detail_data["processing_logs"]) > 0
 
+
+def test_score_profile_endpoints(client: TestClient):
+    """Test retrieving and updating score structure profile."""
+    sample_res = client.post("/api/v1/scores/load-sample")
+    assert sample_res.status_code == 200
+    score_id = sample_res.json()["id"]
+
+    # Get profile
+    prof_res = client.get(f"/api/v1/scores/{score_id}/profile")
+    assert prof_res.status_code == 200
+    prof_data = prof_res.json()
+    assert prof_data["score_id"] == score_id
+    assert "profile" in prof_data
+
+    # Update profile
+    new_profile = {
+        "title": "Custom Profile",
+        "time_signature": "3/4",
+        "total_measures": 10,
+        "sections": [{"id": 1, "name": "Verse 1", "start_measure": 1, "end_measure": 10}]
+    }
+    put_res = client.put(f"/api/v1/scores/{score_id}/profile", json=new_profile)
+    assert put_res.status_code == 200
+    put_data = put_res.json()
+    assert put_data["profile"]["title"] == "Custom Profile"
+
+
+def test_score_logs_endpoint(client: TestClient):
+    """Test retrieving logs from dedicated logs endpoint."""
+    sample_res = client.post("/api/v1/scores/load-sample")
+    assert sample_res.status_code == 200
+    score_id = sample_res.json()["id"]
+
+    logs_res = client.get(f"/api/v1/scores/{score_id}/logs")
+    assert logs_res.status_code == 200
+    logs_data = logs_res.json()
+    assert logs_data["score_id"] == score_id
+    assert logs_data["status"] == "ready"
+    assert isinstance(logs_data["logs"], list)
+    assert len(logs_data["logs"]) > 0
+
+

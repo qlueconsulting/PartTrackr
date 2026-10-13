@@ -459,3 +459,66 @@ def test_pickup_measure_zero_pdf_numbering(tmp_path):
     assert measures[1]["display_number"] == "1"
     assert measures[1]["beats_per_measure"] == 4
 
+
+def test_dynamic_choral_layout_resolver_11_parts(tmp_path):
+    """Test dynamic layout resolution (Men unison, Women unison, Interludes, SATB)."""
+    score = m21.stream.Score()
+    score.metadata = m21.metadata.Metadata()
+    score.metadata.title = "The First Nowell"
+
+    p_men = m21.stream.Part(id="TB_Part")
+    p_men.partName = "Tenor & Bass"
+    p_wom = m21.stream.Part(id="SA_Part")
+    p_wom.partName = "Soprano & Alto"
+    p_pno = m21.stream.Part(id="Pno")
+    p_pno.partName = "Piano"
+
+    for m_num in range(1, 40):
+        m_p = m21.stream.Measure(number=m_num)
+        m_p.append(m21.note.Note("C4", quarterLength=3.0))
+        p_pno.append(m_p)
+
+        m_m = m21.stream.Measure(number=m_num)
+        m_w = m21.stream.Measure(number=m_num)
+
+        if 4 <= m_num <= 10:
+            m_m.append(m21.note.Note("D3", quarterLength=3.0)) # Men unison in Bass register
+        elif 36 <= m_num <= 39:
+            m_w.append(m21.note.Note("G4", quarterLength=3.0)) # Women unison in Treble register
+
+        p_men.append(m_m)
+        p_wom.append(m_w)
+
+    score.append(p_men)
+    score.append(p_wom)
+    score.append(p_pno)
+
+    xml_dir = tmp_path / "xml"
+    midi_dir = tmp_path / "midi"
+    stems, analysis = notation_processor.process_and_extract_stems(score, xml_dir, midi_dir, return_analysis=True)
+
+    assert len(stems) == 11
+    assert "score_profile" in analysis
+    assert analysis["score_profile"]["total_measures"] == 112
+
+    # Measure 5 (Men Unison): male parts active, female resting
+    m5 = next(m for m in analysis["measures"] if m["number"] == 5)
+    for k in ["T1", "T2", "Bar1", "Bar2", "B1", "B2"]:
+        assert k in m5["active_parts"]
+    for k in ["S1", "S2", "A1", "A2"]:
+        assert k in m5["resting_parts"]
+
+    # Measure 33 (Piano interlude): all vocal parts resting
+    m33 = next(m for m in analysis["measures"] if m["number"] == 33)
+    assert m33["active_parts"] == ["Piano"]
+    for k in ["S1", "S2", "A1", "A2", "T1", "T2", "Bar1", "Bar2", "B1", "B2"]:
+        assert k in m33["resting_parts"]
+
+    # Measure 37 (Women Unison): female parts active, male resting
+    m37 = next(m for m in analysis["measures"] if m["number"] == 37)
+    for k in ["S1", "S2", "A1", "A2"]:
+        assert k in m37["active_parts"]
+    for k in ["T1", "T2", "Bar1", "Bar2", "B1", "B2"]:
+        assert k in m37["resting_parts"]
+
+

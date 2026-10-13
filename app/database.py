@@ -21,6 +21,7 @@ def init_db():
                 ("error_traceback", "TEXT"),
                 ("processing_logs", "JSON"),
                 ("measure_analysis", "JSON"),
+                ("score_profile", "JSON"),
             ]:
                 try:
                     conn.execute(text(f"ALTER TABLE scores ADD COLUMN {col_def[0]} {col_def[1]}"))
