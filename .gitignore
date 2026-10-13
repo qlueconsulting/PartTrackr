@@ -41,5 +41,6 @@ storage/*/*
 Thumbs.db
 .idea/
 .vscode/
-*.swp
 scratch/
+.env
+.env.*
