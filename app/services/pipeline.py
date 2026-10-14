@@ -168,6 +168,7 @@ def run_score_pipeline(score_id: str):
                 output_xml_dir=score_xml_dir,
                 output_midi_dir=score_midi_dir,
                 return_analysis=True,
+                fallback_title=score.title or score.filename or "",
             )
 
             if not extracted_stems:

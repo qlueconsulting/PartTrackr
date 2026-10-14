@@ -558,4 +558,61 @@ def test_audit_score_components_speed_and_reconciliation(tmp_path):
     assert len(audit_rep["measure_grid"]) == 19
 
 
+def test_keyboard_first_112_measure_lockstep_synchronization(tmp_path):
+    """
+    Test Keyboard-First extraction and visual-bracket guided voice routing:
+    - Master timing anchor extracted from bottom staves (curvy bracket '{') first
+    - All 11 rehearsal stems locked to exact 112 measures
+    - Every measure padded to exact 3.0 QL (zero duration drift across stems)
+    """
+    score = m21.stream.Score()
+    score.metadata = m21.metadata.Metadata()
+    score.metadata.title = "The First Nowell"
+    score.metadata.composer = "Mack Wilberg"
+
+    # 4 vocal staves (straight bracket '[')
+    for vname in ["Voice1", "Voice2", "Voice3", "Voice4"]:
+        p = m21.stream.Part()
+        p.id = vname
+        p.partName = vname
+        for m_num in range(1, 113):
+            m = m21.stream.Measure(number=m_num)
+            m.quarterLength = 3.0
+            if 4 <= m_num <= 28:
+                m.append(m21.note.Note("D3", quarterLength=3.0))
+            p.append(m)
+        score.append(p)
+
+    # 2 piano staves (curvy bracket '{', 'Keyboard')
+    for pname in ["P5-Staff1", "P5-Staff2"]:
+        p = m21.stream.Part()
+        p.id = pname
+        p.partName = "Piano"
+        for m_num in range(1, 113):
+            m = m21.stream.Measure(number=m_num)
+            m.quarterLength = 3.0
+            m.append(m21.chord.Chord(["C3", "G3", "C4"], quarterLength=3.0))
+            p.append(m)
+        score.append(p)
+
+    xml_dir = tmp_path / "xml"
+    midi_dir = tmp_path / "midi"
+    stems, analysis = notation_processor.process_and_extract_stems(
+        score, xml_dir, midi_dir, return_analysis=True, fallback_title="The First Nowell"
+    )
+
+    assert len(stems) == 11
+    assert analysis["total_measures"] == 112
+    assert len(analysis["measures"]) == 112
+
+    # Verify every single stem has exact same duration and measure count
+    expected_duration = stems[0].duration_seconds
+    for st in stems:
+        assert st.measure_count == 112
+        assert abs(st.duration_seconds - expected_duration) < 0.05
+        assert st.midi_path.exists()
+        assert st.xml_path.exists()
+
+
+
 
