@@ -1,6 +1,9 @@
 from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import create_engine, text
+from sqlalchemy.pool import StaticPool
+from app.database import run_sqlite_migrations
 
 def test_health_endpoint(client: TestClient):
     response = client.get("/health")
@@ -59,3 +62,28 @@ def test_upload_score_endpoint(client: TestClient, tmp_path: Path):
     assert data["status"] == "completed"
     assert data["measure_count"] == 6
     assert len(data["stems"]) == 11
+
+def test_sqlite_schema_migration_handles_legacy_tables():
+    """Tests that run_sqlite_migrations automatically adds missing columns to existing SQLite tables."""
+    legacy_engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool
+    )
+    with legacy_engine.connect() as conn:
+        # Create legacy table structure without original_filename, file_type, etc.
+        conn.execute(text("CREATE TABLE scores (id VARCHAR PRIMARY KEY, filename VARCHAR, title VARCHAR);"))
+        conn.execute(text("INSERT INTO scores (id, filename, title) VALUES ('1', 'legacy_choral.pdf', 'Legacy Score');"))
+        conn.commit()
+
+    # Run migration
+    run_sqlite_migrations(legacy_engine)
+
+    # Verify original_filename and other columns now exist and are populated
+    with legacy_engine.connect() as conn:
+        result = conn.execute(text("SELECT id, filename, original_filename, file_type, measure_count FROM scores WHERE id='1';")).fetchone()
+        assert result is not None
+        assert result[1] == "legacy_choral.pdf"
+        assert result[2] == "legacy_choral.pdf" # copied from legacy filename
+        assert result[3] == "pdf"
+        assert result[4] == 0

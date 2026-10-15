@@ -8,7 +8,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
 from app.config import settings
-from app.database import engine, Base
+from app.database import engine, Base, run_sqlite_migrations
 from app.api.v1 import api_router
 
 # Configure logging
@@ -20,10 +20,11 @@ logger = logging.getLogger("parttrackr")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: create DB tables
+    # Startup: create DB tables & run migrations for existing databases
     logger.info("Initializing PartTrackr database schema...")
     Base.metadata.create_all(bind=engine)
-    logger.info("Database schema initialized.")
+    run_sqlite_migrations(engine)
+    logger.info("Database schema initialized and verified.")
     yield
     # Shutdown
     logger.info("Shutting down PartTrackr...")
