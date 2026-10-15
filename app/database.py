@@ -39,9 +39,14 @@ def run_sqlite_migrations(target_engine=None):
             existing_cols = {row[1] for row in result}
 
             migrations = [
+                ("title", "TEXT DEFAULT 'Untitled Score'"),
+                ("composer", "TEXT DEFAULT 'Unknown'"),
+                ("filename", "TEXT DEFAULT ''"),
                 ("original_filename", "TEXT DEFAULT 'uploaded_score'"),
                 ("file_type", "TEXT DEFAULT 'pdf'"),
+                ("status", "TEXT DEFAULT 'ready'"),
                 ("status_message", "TEXT DEFAULT ''"),
+                ("created_at", "DATETIME DEFAULT NULL"),
                 ("measure_count", "INTEGER DEFAULT 0"),
                 ("total_duration_seconds", "REAL DEFAULT 0.0"),
                 ("time_signature", "TEXT DEFAULT '4/4'"),
@@ -53,14 +58,20 @@ def run_sqlite_migrations(target_engine=None):
 
             for col_name, col_type in migrations:
                 if col_name not in existing_cols:
-                    logger.info(f"Applying SQLite migration: adding column '{col_name}' to scores table")
-                    conn.execute(text(f"ALTER TABLE scores ADD COLUMN {col_name} {col_type};"))
-                    conn.commit()
+                    try:
+                        logger.info(f"Applying SQLite migration: adding column '{col_name}' to scores table")
+                        conn.execute(text(f"ALTER TABLE scores ADD COLUMN {col_name} {col_type};"))
+                        conn.commit()
+                    except Exception as col_err:
+                        logger.warning(f"Failed to add column '{col_name}': {col_err}")
 
             # If legacy filename column exists, populate original_filename from it
             if "filename" in existing_cols:
-                conn.execute(text("UPDATE scores SET original_filename = filename WHERE original_filename = 'uploaded_score' OR original_filename IS NULL;"))
-                conn.commit()
+                try:
+                    conn.execute(text("UPDATE scores SET original_filename = filename WHERE original_filename = 'uploaded_score' OR original_filename IS NULL;"))
+                    conn.commit()
+                except Exception:
+                    pass
 
             logger.info("SQLite schema verification completed successfully.")
     except Exception as e:

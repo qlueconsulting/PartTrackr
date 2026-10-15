@@ -175,6 +175,7 @@ async def upload_score(
     db_score = Score(
         id=score_id,
         title=Path(file.filename).stem.replace("_", " ").title(),
+        filename=file.filename,
         original_filename=file.filename,
         file_type=file_ext.lstrip("."),
         status="pending",
@@ -234,6 +235,7 @@ async def load_sample_score(
         id=score_id,
         title=title,
         composer="PartTrackr Sample Library",
+        filename=filename,
         original_filename=filename,
         file_type="musicxml",
         status="pending",

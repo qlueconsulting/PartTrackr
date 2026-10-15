@@ -9,8 +9,9 @@ class Score(Base):
     id = Column(String, primary_key=True, index=True)
     title = Column(String, nullable=False, default="Untitled Score")
     composer = Column(String, nullable=True, default="Unknown")
-    original_filename = Column(String, nullable=False)
-    file_type = Column(String, nullable=False) # pdf, musicxml, xml, mxl, mid
+    filename = Column(String, nullable=True, default="")
+    original_filename = Column(String, nullable=False, default="")
+    file_type = Column(String, nullable=False, default="pdf")
     status = Column(String, nullable=False, default="pending") # pending, processing, completed, failed
     status_message = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)

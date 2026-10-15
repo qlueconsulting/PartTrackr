@@ -19,3 +19,4 @@ test_storage/
 # Environment & Logs
 .env
 *.log
+test_server_upload.py

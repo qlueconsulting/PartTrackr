@@ -71,8 +71,8 @@ def test_sqlite_schema_migration_handles_legacy_tables():
         poolclass=StaticPool
     )
     with legacy_engine.connect() as conn:
-        # Create legacy table structure without original_filename, file_type, etc.
-        conn.execute(text("CREATE TABLE scores (id VARCHAR PRIMARY KEY, filename VARCHAR, title VARCHAR);"))
+        # Create legacy table structure with filename VARCHAR NOT NULL without original_filename, file_type, etc.
+        conn.execute(text("CREATE TABLE scores (id VARCHAR PRIMARY KEY, filename VARCHAR NOT NULL, title VARCHAR);"))
         conn.execute(text("INSERT INTO scores (id, filename, title) VALUES ('1', 'legacy_choral.pdf', 'Legacy Score');"))
         conn.commit()
 
@@ -87,3 +87,24 @@ def test_sqlite_schema_migration_handles_legacy_tables():
         assert result[2] == "legacy_choral.pdf" # copied from legacy filename
         assert result[3] == "pdf"
         assert result[4] == 0
+
+    # Verify inserting a new Score via ORM succeeds with both legacy filename and original_filename
+    from sqlalchemy.orm import sessionmaker
+    from app.models.score import Score
+    Session = sessionmaker(bind=legacy_engine)
+    session = Session()
+    new_score = Score(
+        id="2",
+        title="Caroling Final",
+        filename="Caroling_Final.pdf",
+        original_filename="Caroling_Final.pdf",
+        file_type="pdf",
+        status="pending"
+    )
+    session.add(new_score)
+    session.commit()
+    fetched = session.query(Score).filter(Score.id == "2").first()
+    assert fetched is not None
+    assert fetched.original_filename == "Caroling_Final.pdf"
+    assert fetched.filename == "Caroling_Final.pdf"
+    session.close()
