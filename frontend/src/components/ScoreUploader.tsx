@@ -61,8 +61,17 @@ export const ScoreUploader: React.FC<ScoreUploaderProps> = ({
         body: formData,
       })
       if (!res.ok) {
-        const errData = await res.json()
-        throw new Error(errData.detail || 'Upload failed')
+        let errMsg = `Upload failed (${res.status})`
+        try {
+          const errData = await res.json()
+          errMsg = errData.detail || errMsg
+        } catch {
+          const rawText = await res.text()
+          if (rawText) {
+            errMsg = rawText.replace(/<[^>]*>?/gm, '').trim() || rawText
+          }
+        }
+        throw new Error(errMsg)
       }
       const data: ScoreResponse = await res.json()
       onScoreLoaded(data)

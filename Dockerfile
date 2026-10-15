@@ -71,20 +71,18 @@ RUN mkdir -p /usr/share/sounds/sf2 && \
 
 # Install Audiveris OMR CLI for Ubuntu 22.04
 ENV AUDIVERIS_VERSION=5.11.0
-RUN mkdir -p /usr/share/desktop-directories /opt/audiveris && \
-    wget -q https://github.com/Audiveris/audiveris/releases/download/${AUDIVERIS_VERSION}/Audiveris-${AUDIVERIS_VERSION}-ubuntu22.04-x86_64.deb -O /tmp/audiveris.deb 2>/dev/null || true && \
-    if [ -f /tmp/audiveris.deb ] && [ -s /tmp/audiveris.deb ]; then \
-        dpkg-deb -x /tmp/audiveris.deb / && \
-        rm -f /tmp/audiveris.deb; \
-    fi && \
-    if [ ! -f /usr/local/bin/audiveris ] && [ ! -f /usr/bin/audiveris ]; then \
-        if [ -f /opt/audiveris/bin/Audiveris ]; then \
-            ln -sf /opt/audiveris/bin/Audiveris /usr/local/bin/audiveris; \
-        elif [ -f /opt/audiveris/bin/audiveris ]; then \
-            ln -sf /opt/audiveris/bin/audiveris /usr/local/bin/audiveris; \
-        else \
-            echo '#!/bin/bash\necho "Audiveris Headless OMR CLI wrapper: $@"' > /usr/local/bin/audiveris && chmod +x /usr/local/bin/audiveris; \
-        fi; \
+ENV _JAVA_OPTIONS="-Djava.awt.headless=true"
+ENV JAVA_TOOL_OPTIONS="-Djava.awt.headless=true"
+RUN mkdir -p /usr/share/desktop-directories /opt/audiveris /opt/Audiveris && \
+    wget -q https://github.com/Audiveris/audiveris/releases/download/${AUDIVERIS_VERSION}/Audiveris-${AUDIVERIS_VERSION}-ubuntu22.04-x86_64.deb -O /tmp/audiveris.deb && \
+    (dpkg -i /tmp/audiveris.deb || apt-get install -f -y || dpkg-deb -x /tmp/audiveris.deb /) && \
+    rm -f /tmp/audiveris.deb && \
+    REAL_BIN=$(find /opt /usr -type f \( -name "Audiveris" -o -name "audiveris" \) ! -name "*.deb" 2>/dev/null | head -n 1) && \
+    if [ -n "$REAL_BIN" ]; then \
+        chmod +x "$REAL_BIN"; \
+        ln -sfn "$REAL_BIN" /usr/local/bin/audiveris; \
+        ln -sfn "$REAL_BIN" /usr/bin/audiveris; \
+        ln -sfn "$REAL_BIN" /usr/local/bin/Audiveris; \
     fi
 
 WORKDIR /app
