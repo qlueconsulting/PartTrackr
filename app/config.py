@@ -2,39 +2,40 @@ import os
 from pathlib import Path
 from pydantic import BaseModel
 
-BASE_DIR = Path(__file__).resolve().parent.parent
-
 class Settings(BaseModel):
-    APP_NAME: str = "PartTrackr"
-    VERSION: str = "1.0.0"
-    DEBUG: bool = os.getenv("DEBUG", "true").lower() in ("true", "1", "yes")
-
-    # Storage paths
-    STORAGE_DIR: Path = Path(os.getenv("STORAGE_DIR", str(BASE_DIR / "storage")))
-    UPLOAD_DIR: Path = STORAGE_DIR / "uploads"
-    XML_DIR: Path = STORAGE_DIR / "xml"
-    STEMS_DIR: Path = STORAGE_DIR / "stems"
-    MIDI_DIR: Path = STORAGE_DIR / "midi"
-
-    # Database
-    DATABASE_URL: str = os.getenv(
-        "DATABASE_URL", f"sqlite:///{BASE_DIR / 'parttrackr_local.db'}"
-    )
-
-    # Binaries and external tools
-    AUDIVERIS_BIN: str = os.getenv("AUDIVERIS_BIN", "audiveris")
-    FLUIDSYNTH_BIN: str = os.getenv("FLUIDSYNTH_BIN", "fluidsynth")
-    FFMPEG_BIN: str = os.getenv("FFMPEG_BIN", "ffmpeg")
+    PROJECT_NAME: str = "PartTrackr"
+    API_V1_PREFIX: str = "/api/v1"
+    
+    # Base directories
+    BASE_DIR: Path = Path(__file__).resolve().parent.parent
+    STORAGE_DIR: Path = BASE_DIR / "storage"
+    SOUNDFONTS_DIR: Path = BASE_DIR / "soundfonts"
+    
+    # External tool CLI paths
+    AUDIVERIS_CMD: str = os.getenv("AUDIVERIS_CMD", "audiveris")
+    FLUIDSYNTH_CMD: str = os.getenv("FLUIDSYNTH_CMD", "fluidsynth")
+    FFMPEG_CMD: str = os.getenv("FFMPEG_CMD", "ffmpeg")
     SOUNDFONT_PATH: str = os.getenv(
         "SOUNDFONT_PATH",
-        "/usr/share/sounds/sf2/FluidR3_GM.sf2"
+        str(BASE_DIR / "soundfonts" / "GeneralUser_GS.sf2")
     )
-
-    def init_storage(self):
-        """Ensure all storage directories exist."""
-        for path in [self.STORAGE_DIR, self.UPLOAD_DIR, self.XML_DIR, self.STEMS_DIR, self.MIDI_DIR]:
-            path.mkdir(parents=True, exist_ok=True)
-
+    
+    # Fallback system soundfont paths commonly on Linux
+    SYSTEM_SOUNDFONT_PATHS: list[str] = [
+        "/usr/share/sounds/sf2/FluidR3_GM.sf2",
+        "/usr/share/sounds/sf2/default.sf2",
+        "/usr/share/soundfonts/default.sf2",
+        "/usr/share/sounds/sf2/fluid-soundfont-gm.sf2"
+    ]
+    
+    # Database URL
+    DATABASE_URL: str = os.getenv("DATABASE_URL", f"sqlite:///{BASE_DIR}/parttrackr.db")
+    
+    # CORS
+    CORS_ORIGINS: list[str] = ["*"]
 
 settings = Settings()
-settings.init_storage()
+
+# Ensure directories exist
+settings.STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+settings.SOUNDFONTS_DIR.mkdir(parents=True, exist_ok=True)

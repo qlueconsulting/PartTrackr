@@ -4,6 +4,15 @@
 # FFmpeg, Poppler, and Python 3.11
 # ==============================================================================
 
+# Stage 1: Build React Frontend
+FROM node:22-alpine AS frontend-builder
+WORKDIR /app/frontend
+COPY frontend/package*.json ./
+RUN npm ci
+COPY frontend/ ./
+RUN npm run build
+
+# Stage 2: Production Backend Microservice
 FROM ubuntu:22.04 AS base
 
 ENV DEBIAN_FRONTEND=noninteractive \
@@ -19,11 +28,6 @@ ENV DEBIAN_FRONTEND=noninteractive \
     LD_LIBRARY_PATH="/usr/lib/x86_64-linux-gnu:/usr/lib/aarch64-linux-gnu:/usr/lib"
 
 # Install system dependencies:
-# - OpenJDK 17 headless + GTK/X11 runtime libs (Audiveris OMR runtime)
-# - FluidSynth + SoundFonts (Audio synthesis)
-# - FFmpeg (Audio encoding/mixing)
-# - Poppler-utils & ImageMagick (PDF processing)
-# - Python 3.11 & build tools
 RUN apt-get update && apt-get install -y --no-install-recommends \
     software-properties-common \
     curl \
@@ -50,14 +54,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3.11-dev \
     python3-pip \
     && rm -rf /var/lib/apt/lists/*
-
-# Ensure JNA can find libgtk-3.so for Audiveris (x86_64 and arm64 compatible)
-RUN for gtk_so in $(find /usr/lib -name "libgtk-3.so.0" 2>/dev/null); do \
-        gtk_dir=$(dirname "$gtk_so"); \
-        ln -sf "$gtk_so" "$gtk_dir/libgtk-3.so"; \
-        ln -sf "$gtk_so" /usr/lib/libgtk-3.so; \
-    done && \
-    ldconfig
 
 # Symlink python3.11 as default python
 RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1 \
@@ -99,10 +95,11 @@ RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
 # Copy application source code
-COPY . .
+COPY app /app/app
+COPY storage /app/storage
 
-# Initialize storage directories
-RUN mkdir -p /app/storage/uploads /app/storage/xml /app/storage/stems /app/storage/midi
+# Copy built frontend assets from Stage 1
+COPY --from=frontend-builder /app/frontend/dist /app/frontend/dist
 
 EXPOSE 8000
 

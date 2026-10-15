@@ -2,45 +2,20 @@
 __pycache__/
 *.py[cod]
 *$py.class
-*.so
-.Python
-.venv/
 venv/
-ENV/
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-
-# Database & Local storage files
+.pytest_cache/
 *.db
-*.sqlite3
-storage/uploads/*
-!storage/uploads/.gitkeep
-storage/xml/*
-!storage/xml/.gitkeep
-storage/stems/*
-!storage/stems/.gitkeep
-storage/midi/*
-!storage/midi/.gitkeep
-storage/*/*
 
-# OS & IDE
-.DS_Store
-Thumbs.db
-.idea/
-.vscode/
-scratch/
+# Node / Frontend
+frontend/node_modules/
+frontend/dist/
+.npm/
+
+# App Storage
+storage/*
+!storage/.gitkeep
+test_storage/
+
+# Environment & Logs
 .env
-.env.*
+*.log

@@ -1,3 +1,17 @@
-from app.schemas.score import ScoreResponse, StemResponse, ScoreListResponse
+from app.schemas.score import (
+    StemInfo,
+    MeasureInfo,
+    AuditCheckItem,
+    AuditReport,
+    ScoreResponse,
+    ScoreSummary,
+)
 
-__all__ = ["ScoreResponse", "StemResponse", "ScoreListResponse"]
+__all__ = [
+    "StemInfo",
+    "MeasureInfo",
+    "AuditCheckItem",
+    "AuditReport",
+    "ScoreResponse",
+    "ScoreSummary",
+]

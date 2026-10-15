@@ -1,164 +1,190 @@
 # PartTrackr 🎵
 
-**Choral Rehearsal & Notation Processing Microservice**  
-Repository: `https://github.com/qlueconsulting/PartTrackr`  
-Deployment: Dockerized FastAPI Microservice (Local Dev -> Supabase Production Target)
+**Automated Choral OMR, Stem Isolation, & Rehearsal Player Microservice**
+
+PartTrackr is an audio-music microservice that converts scanned choral sheet music (PDF, MusicXML, XML, MXL, MIDI) into **11 standardized rehearsal stems**, provides metric lockstep audio synthesis, and serves a modern, dark-themed responsive multi-track web rehearsal player.
 
 ---
 
-## Overview
+## 🌟 Key Features
 
-**PartTrackr** is an automated choral rehearsal and notation processing microservice with a local web-based testing harness. It allows choral singers and directors to upload sheet music in PDF (or MusicXML/MXL) format, ingest and parse the score into discrete vocal and accompaniment parts via Optical Music Recognition (OMR) and symbolic notation processing, and interactively rehearse the piece via a synchronized multi-track audio web player.
+1. **The 11 Rehearsal Stem Taxonomy**:
+   Every score is analyzed and separated into 11 discrete rehearsal stems:
+   - `Piano`: Piano / Keyboard Accompaniment
+   - `S1`: Soprano I
+   - `S2`: Soprano II
+   - `A1`: Alto I
+   - `A2`: Alto II
+   - `T1`: Tenor I
+   - `T2`: Tenor II
+   - `Bar1`: Baritone I
+   - `Bar2`: Baritone II
+   - `B1`: Bass I
+   - `B2`: Bass II
 
-### Key Capabilities
-1. **Choral Score Ingestion**:
-   - Ingestion of PDF choral scores via headless **Audiveris** Optical Music Recognition (OMR).
-   - Direct ingestion of **MusicXML** (`.musicxml`, `.xml`, `.mxl`) and **MIDI** (`.mid`) files.
-2. **11-Part Standard Choral Taxonomy**:
-   - Discrete part extraction and normalization:
-     - `Piano Score` (Accompaniment)
-     - `Soprano I`, `Soprano II`
-     - `Alto I`, `Alto II`
-     - `Tenor I`, `Tenor II`
-     - `Baritone I`, `Baritone II`
-     - `Bass I`, `Bass II`
-   - **Intelligent Aggregation & Fallbacks**: Collapses and maps `SATB`, `SAB`, `SSA`, or `TTBB` scores to their primary registers without failing.
-   - **Polyphonic Voice & Divisi Splitting**: Automatically splits shared staves (e.g. Women: Soprano up-stem / Alto down-stem; Men: Tenor up-stem / Bass down-stem) and chord divisi into separate parts.
-3. **High-Quality Audio Stem Synthesis**:
-   - FluidSynth synthesis using clean GM SoundFonts (`FluidR3_GM.sf2`).
-   - Built-in additive harmonic synthesizer fallback for local dev / environments without FluidSynth installed.
-   - FFmpeg audio encoding to MP3 with native WAV streaming support.
-4. **Interactive Synchronized Multi-Track Web Rehearsal Player**:
-   - Built-in test harness served directly from FastAPI (`/`).
-   - **Sample-accurate synchronized playback** across all detected stems via Web Audio API.
-   - **Rehearsal Part Focus Engine**:
-     - Target Part Dropdown (`S1`, `S2`, `A1`, `A2`, `T1`, `T2`, `Bar1`, `Bar2`, `B1`, `B2`, `Piano`).
-     - **"Emphasize Part"** Mode: Boost target part up to 200% while attenuating background vocal parts to keep harmonic context.
-     - **"Solo / Isolate Part"** Mode: Isolate the target part while silencing other voices.
-     - **Quick Piano Toggle**: 1-click on/off switch for piano accompaniment.
-     - Master transport (Play, Pause, Stop, Seek, Master Volume).
-     - Individual stem channel strips with Volume, Pan, Mute, Solo, and direct WAV/MIDI download buttons.
-   - **Score Notation Preview**: Interactive sheet music rendering powered by OpenSheetMusicDisplay (OSMD).
+2. **Strict Musical Rules & Ground Truth Intelligence**:
+   - **Rule A: Visual Bracket Cues & Dynamic Choral Voice Routing**:
+     - Straight bracket `[`: groups vocal choral staves.
+     - Curvy bracket / brace `{`: groups piano accompaniment staves.
+     - **Rule A1a**: Accompaniment-first timing anchor — extraction anchors to the accompaniment (when available) as the foundational metric and measure grid.
+     - **Men's Unison**: Single Bass Clef (F-Clef) under straight bracket routed identically to all male parts (`T1, T2, Bar1, Bar2, B1, B2`); female parts rest.
+     - **Women's Unison**: Single Treble Clef (G-Clef) under straight bracket routed identically to all female parts (`S1, S2, A1, A2`); male parts rest.
+     - **Divisi & Polyphony Separation**: Upper stems/pitches routed to Voice 1, lower to Voice 2.
+     - **2-Staff SA + TB Routing**: Staff 1 to female voices, Staff 2 to male voices.
+     - **4-Staff Discrete SATB**: Direct section-to-stem routing.
+     - **Interlude Suppression**: When only the keyboard is active, all 10 vocal parts contain whole-measure rests, eliminating OMR voice bleed.
+     - **Rule A5 Ground Truth Integrity**: Zero hallucinated notes for the piano — accompaniment matches printed score notes verbatim.
+   - **Rule B: Metric Lockstep Synchronization & Duration Clamping**:
+     - **Bar Boundary Clamping**: Overflowing notes past the printed time signature duration (e.g., half note on beat 3 of 3/4 time) are clamped to preserve phase alignment.
+     - **Underflow Rest Padding**: Short measures are padded with precise rests up to exact bar duration.
+     - **Fractional Duration Preservation**: Native `Fraction` representations prevent tuplet rounding drift and export errors.
+     - **Zero Cumulative Drift**: All 11 stems have identical measure counts ($M$) and exact matching durations down to 0.01 seconds.
 
----
+3. **Multi-Track Web Rehearsal Player**:
+   - 11-channel console with independent Volume, Stereo Pan, Solo, and Mute per channel.
+   - Master volume, playback speed ($0.5\times$ to $1.5\times$), and A/B Loop markers.
+   - Measure timeline seek bar with printed bar annotations and vocal activity dots.
+   - "My Part" singer selection with **"Jump to Next Entrance"** navigation.
+   - Built-in Score Component Audit Modal verifying match integrity %, accompaniment continuity, and lockstep sync.
 
-## Architecture & Technology Stack
-
-| Component | Technology |
-|---|---|
-| **Backend Framework** | FastAPI (Python 3.10 / 3.11) with Uvicorn |
-| **OMR Engine** | Headless Audiveris CLI (batch mode) |
-| **Symbolic Notation** | music21 |
-| **Audio Rendering** | FluidSynth + SoundFont (`FluidR3_GM.sf2`) & Built-in Harmonic Synthesizer Fallback |
-| **Audio Encoding** | FFmpeg / pydub |
-| **Database** | SQLite (`parttrackr_local.db`) with SQLAlchemy ORM (mocking Supabase local persistence) |
-| **Frontend Test Harness** | Vanilla HTML5 / ES6 JavaScript + Tailwind CSS CDN + Web Audio API + OSMD |
-| **Containerization** | Multi-stage Dockerfile (Ubuntu 22.04 LTS, OpenJDK 17 headless, FluidSynth, FFmpeg, Python) |
+4. **Multi-Engine Audio Synthesis**:
+   - High-fidelity FluidSynth + SoundFont synthesis (`fluid-soundfont-gm` / `GeneralUser GS`).
+   - Pure-Python harmonic synthesizer fallback (zero external dependencies required for testing on any OS).
 
 ---
 
-## Quickstart & Deployment
+## 🏗️ Architecture & Tech Stack
 
-### 1. Production Server Deployment (`docker pull`)
-
-GitHub Actions automatically builds and publishes the production image to **GitHub Container Registry (GHCR)** on every push to `main` and release tag.
-
-To deploy on any server without building from source:
-
-#### Option A: Direct Docker CLI
-```bash
-# Pull prebuilt image from GHCR
-docker pull ghcr.io/qlueconsulting/parttrackr:latest
-
-# Run container with persistent storage
-docker run -d \
-  --name parttrackr \
-  --restart unless-stopped \
-  -p 8000:8000 \
-  -v $(pwd)/storage:/app/storage \
-  ghcr.io/qlueconsulting/parttrackr:latest
+```mermaid
+flowchart TD
+    A[Scanned Sheet Music / PDF / MusicXML / MIDI] --> B[FastAPI Ingestion Endpoint]
+    B --> C{File Type?}
+    C -->|PDF| D[Audiveris Headless OMR CLI]
+    C -->|MusicXML / MIDI| E[Direct MusicXML Parser]
+    D --> E
+    E --> F[NotationProcessor music21]
+    F -->|Rule A1a| G[Accompaniment Anchor Grid]
+    F -->|Rule A| H[Dynamic Choral Voice Routing]
+    F -->|Rule B| I[Bar Boundary Clamping & Fraction Safety]
+    I --> J[11 Standardized Stems MusicXML & MIDI]
+    J --> K[Audio Synthesis Engine FluidSynth / Fallback]
+    K --> L[11 Isolated WAV & MP3 Stems]
+    I --> M[Score Component Audit Service]
+    L --> N[React Vite Rehearsal Web Player]
+    M --> N
 ```
 
-#### Option B: Docker Compose (Production)
-```bash
-# Pull and start using the production compose file
-docker compose -f docker-compose.prod.yml pull
-docker compose -f docker-compose.prod.yml up -d
-```
+- **Backend**: Python 3.11+, FastAPI, SQLAlchemy, Pydantic v2, `music21`, `mido`, `numpy`, `scipy`.
+- **OMR**: Audiveris Headless CLI.
+- **Synthesis**: FluidSynth, ffmpeg, SoundFonts (`.sf2`).
+- **Frontend**: React 19, TypeScript, Vite, Tailwind CSS v4, Lucide Icons, Web Audio API.
+- **Containerization**: Multi-stage `Dockerfile`, `docker-compose.yml`.
 
 ---
 
-### 2. Local Container Build (Development)
+## 🚀 Quick Start (Docker Deployment)
+
+Launch the entire stack with a single command:
 
 ```bash
-# Clone the repository
-git clone https://github.com/qlueconsulting/PartTrackr.git
-cd PartTrackr
-
-# Build and start container locally
 docker compose up --build
 ```
-Navigate to `http://localhost:8000` in your browser.
+
+The microservice and web rehearsal player will be available at:
+`http://localhost:8000`
+
+Health check endpoint:
+`http://localhost:8000/health`
 
 ---
 
-### 3. Running Locally (Python Virtual Environment)
+## 💻 Local Development Setup
 
+### 1. Backend Setup
 ```bash
-# Create virtual environment
-python -m venv .venv
-
-# Activate virtual environment
-# Windows:
-.\.venv\Scripts\activate
-# Linux/macOS:
-source .venv/bin/activate
+# Create and activate virtual environment
+python -m venv venv
+.\venv\Scripts\activate   # Windows
+# or source venv/bin/activate # Linux/macOS
 
 # Install dependencies
 pip install -r requirements.txt
 
-# Start the development server
+# Run backend
 uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
-Open `http://localhost:8000`. You can click **"Load Bach SATB Sample"** for instant 1-click rehearsal playback!
+
+### 2. Frontend Setup
+```bash
+cd frontend
+npm install
+npm run dev
+```
+Open `http://localhost:3000` to access the Vite dev server with proxy to backend port 8000.
+
+### 3. Build Frontend for Production
+```bash
+cd frontend
+npm run build
+```
+FastAPI automatically serves the built frontend SPA from `frontend/dist`.
 
 ---
 
-## API Reference
+## 🧪 Automated Testing
 
-### Scores API (`/api/v1/scores`)
-
-- `POST /api/v1/scores/upload`: Ingest a PDF, MusicXML, MXL, or MIDI score file. Returns `202 Accepted` with initial status `queued`.
-- `GET /api/v1/scores`: List all ingested scores, statuses, and detected parts.
-- `GET /api/v1/scores/{score_id}`: Retrieve score details, status, detected parts, and generated stem metadata.
-- `POST /api/v1/scores/{score_id}/reprocess`: Re-trigger OMR, notation parsing, and synthesis.
-- `DELETE /api/v1/scores/{score_id}`: Delete a score and all generated audio/XML/MIDI storage assets.
-- `GET /api/v1/scores/{score_id}/file`: Download raw uploaded source file.
-- `GET /api/v1/scores/{score_id}/xml`: Download master MusicXML file.
-- `POST /api/v1/scores/load-sample`: Ingest and synthesize the built-in Bach SATB + Piano rehearsal sample score.
-
-### Stems API (`/api/v1/scores/{score_id}/stems`)
-
-- `GET /api/v1/scores/{score_id}/stems/{stem_id}/audio`: Stream stem audio file (WAV or MP3) with byte-range support for Web Audio API.
-- `GET /api/v1/scores/{score_id}/stems/{stem_id}/midi`: Download isolated General MIDI file for the stem.
-
-### Health Check
-
-- `GET /health`: Health and diagnostics status (checks availability of Audiveris, FluidSynth, and FFmpeg).
-
----
-
-## Running the Test Suite
+Run the comprehensive automated unit and integration test suite:
 
 ```bash
-pytest -v
+python -m pytest -v
 ```
-PartTrackr includes unit and integration tests covering:
-- Standard 11-part choral taxonomy
-- SATB + Piano part extraction
-- Polyphonic stem direction voice splitting (Treble staff: Soprano up, Alto down)
-- Choral chord divisi splitting
-- SSA, TTBB, and SAB register aggregation fallbacks
-- Unnamed parts register inference
-- 44.1kHz stereo audio stem synthesis
-- All FastAPI endpoints (upload, audio streaming, MIDI download, deletion)
+
+### Verified Test Matrix:
+- `test_extract_all_11_stems`: Verifies all 11 standardized stems extract cleanly.
+- `test_piano_ground_truth_no_hallucination`: Verifies zero hallucinated notes in accompaniment.
+- `test_zero_measure_drift`: Verifies exact lockstep quarterLength matching across all stems.
+- `test_overflow_bar_boundary_clamping`: Tests clamping of overflowing notes past bar limits.
+- `test_underflow_padding`: Tests padding of underfilled measures with rests.
+- `test_tuplet_fraction_safety`: Tests native `Fraction` tuplet durations.
+- `test_unison_voice_routing`: Tests dynamic Men's unison and Women's unison voice routing.
+- `test_interlude_cleanliness_suppression`: Tests complete suppression of OMR bleed during keyboard interludes.
+- `test_divisi_chord_separation`: Tests upper/lower voice separation of chords.
+- `test_audio_synthesizer_render_and_lockstep_duration`: Tests audio rendering and duration accuracy.
+- `test_score_audit_report`: Tests score diagnostics and match integrity %.
+- `test_health_endpoint`: Tests `/health` REST endpoint.
+- `test_load_sample_score_endpoint`: Tests instant sample score loading and processing.
+- `test_upload_score_endpoint`: Tests multipart sheet music upload pipeline.
+
+---
+
+## 📡 REST API Reference
+
+### 1. Upload Sheet Music
+`POST /api/v1/scores/upload`
+- Multipart form-data with `file`: `.pdf`, `.musicxml`, `.xml`, `.mxl`, `.mid`.
+- Returns `ScoreResponse` with measure grid, 11 stems metadata, and audit report.
+
+### 2. Load Sample Score
+`POST /api/v1/scores/sample/{sample_key}`
+- `sample_key`: `anthem` (SATB + Piano intro/interlude & divisi) or `unison` (Men/Women unison lines).
+
+### 3. List Scores
+`GET /api/v1/scores`
+- Returns list of uploaded scores with metadata.
+
+### 4. Get Score Details
+`GET /api/v1/scores/{score_id}`
+- Returns full score response, analysis JSON, and audit diagnostics.
+
+### 5. Stream Audio or Download Notation Stem
+`GET /api/v1/scores/{score_id}/stems/{file_name}`
+- Examples:
+  - `/api/v1/scores/{id}/stems/Piano.mp3`
+  - `/api/v1/scores/{id}/stems/S1.musicxml`
+  - `/api/v1/scores/{id}/stems/T1.mid`
+
+---
+
+## 📜 License
+
+MIT License. Designed and built with Google Antigravity.

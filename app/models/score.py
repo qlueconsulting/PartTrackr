@@ -1,33 +1,56 @@
-import uuid
 from datetime import datetime
-from sqlalchemy import Column, String, DateTime, Text, JSON
-from sqlalchemy.orm import relationship
+import json
+from sqlalchemy import Column, String, Integer, Float, DateTime, Text
 from app.database import Base
-
 
 class Score(Base):
     __tablename__ = "scores"
 
-    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    filename = Column(String(255), nullable=False)
-    title = Column(String(255), nullable=False, default="Untitled Score")
-    composer = Column(String(255), nullable=True)
-    status = Column(
-        String(50),
-        nullable=False,
-        default="queued",
-        comment="queued, processing_omr, parsing, synthesizing, ready, failed",
-    )
-    detected_parts = Column(JSON, default=list)  # List of part metadata
-    error_message = Column(Text, nullable=True)
-    error_traceback = Column(Text, nullable=True)
-    processing_logs = Column(JSON, default=list)  # List of log message objects
-    measure_analysis = Column(JSON, default=dict)  # Detailed measure analysis, entrances, rests
-    score_profile = Column(JSON, default=dict)  # Discovered / learned dynamic choral structure profile
-    original_path = Column(String(500), nullable=True)
-    xml_path = Column(String(500), nullable=True)
+    id = Column(String, primary_key=True, index=True)
+    title = Column(String, nullable=False, default="Untitled Score")
+    composer = Column(String, nullable=True, default="Unknown")
+    original_filename = Column(String, nullable=False)
+    file_type = Column(String, nullable=False) # pdf, musicxml, xml, mxl, mid
+    status = Column(String, nullable=False, default="pending") # pending, processing, completed, failed
+    status_message = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    measure_count = Column(Integer, default=0)
+    total_duration_seconds = Column(Float, default=0.0)
+    time_signature = Column(String, default="4/4")
+    tempo_bpm = Column(Float, default=120.0)
+    
+    # JSON serialized fields
+    _stems_metadata = Column("stems_metadata", Text, default="{}")
+    _analysis_json = Column("analysis_json", Text, default="{}")
+    _audit_report = Column("audit_report", Text, default="{}")
 
-    # Relationships
-    stems = relationship("Stem", back_populates="score", cascade="all, delete-orphan", order_by="Stem.part_key")
+    @property
+    def stems_metadata(self):
+        if self._stems_metadata:
+            return json.loads(self._stems_metadata)
+        return {}
+
+    @stems_metadata.setter
+    def stems_metadata(self, val):
+        self._stems_metadata = json.dumps(val)
+
+    @property
+    def analysis_json(self):
+        if self._analysis_json:
+            return json.loads(self._analysis_json)
+        return {}
+
+    @analysis_json.setter
+    def analysis_json(self, val):
+        self._analysis_json = json.dumps(val)
+
+    @property
+    def audit_report(self):
+        if self._audit_report:
+            return json.loads(self._audit_report)
+        return {}
+
+    @audit_report.setter
+    def audit_report(self, val):
+        self._audit_report = json.dumps(val)
