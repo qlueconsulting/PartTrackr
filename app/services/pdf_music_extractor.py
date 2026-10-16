@@ -76,6 +76,161 @@ class PDFMusicExtractor:
         return False
 
     @classmethod
+    def extract_visual_skeleton(cls, pdf_path: Path) -> Dict[str, Any]:
+        """
+        Extracts a deterministic visual/structural skeleton from ANY PDF score (vector or scanned):
+        - Header metadata (title, composer, subtitle)
+        - Systems per page, staves per system, and exact staff [y_top, y_bot] coordinates
+        - Barline counts and printed measure numbers / multi-measure rest spans per system
+        - Lyric presence below each staff and Bottom-Up Piano vs. Vocal staff classification (Rule A1a)
+        """
+        try:
+            doc = pymupdf.open(str(pdf_path))
+            title, composer, subtitle = cls._extract_header_metadata(doc, pdf_path)
+            page_count = len(doc)
+            all_systems = []
+            for p_idx, page in enumerate(doc):
+                page_systems = cls._extract_page_systems(page, p_idx + 1)
+                all_systems.extend(page_systems)
+            doc.close()
+        except Exception as e:
+            logger.warning(f"Visual skeleton extraction failed on {pdf_path}: {e}")
+            return {
+                "title": pdf_path.stem.replace("_", " ").title(),
+                "composer": "Unknown Composer",
+                "subtitle": "",
+                "page_count": 0,
+                "total_systems": 0,
+                "num_staves": 2,
+                "has_piano": False,
+                "total_measures": 0,
+                "systems_blueprint": [],
+                "measures": []
+            }
+
+        if not all_systems:
+            return {
+                "title": title,
+                "composer": composer,
+                "subtitle": subtitle,
+                "page_count": page_count,
+                "total_systems": 0,
+                "num_staves": 2,
+                "has_piano": False,
+                "total_measures": 0,
+                "systems_blueprint": [],
+                "measures": []
+            }
+
+        max_staves = max(len(s["staves"]) for s in all_systems)
+        # Determine if score has Piano accompaniment (Rule A1 / A1a):
+        # True if any system has >= 3 staves where bottom staff has no lyrics, or explicit piano label
+        has_piano = False
+        for sys in all_systems:
+            st_list = sys["staves"]
+            if any("piano" in (st.get("label", "")).lower() or "organ" in (st.get("label", "")).lower() for st in st_list):
+                has_piano = True
+                break
+            if len(st_list) >= 3 and not st_list[-1].get("has_lyrics", False):
+                has_piano = True
+                break
+
+        systems_blueprint = []
+        running_measure = 1
+        for s_idx, sys in enumerate(all_systems):
+            if sys.get("start_measure_num") is not None:
+                running_measure = sys["start_measure_num"]
+            m_start = running_measure
+            bar_x = sys.get("bar_x", [])
+            num_visual_bars = max(1, len(bar_x) - 1)
+            sys_bars = 0
+            for b_i in range(num_visual_bars):
+                if b_i in sys.get("mm_ranges", {}):
+                    r0, r1 = sys["mm_ranges"][b_i]
+                    sys_bars += (r1 - r0 + 1)
+                    running_measure = r1 + 1
+                else:
+                    sys_bars += 1
+                    running_measure += 1
+            m_end = m_start + max(1, sys_bars) - 1
+
+            n_st = len(sys["staves"])
+            if has_piano:
+                if n_st >= 3:
+                    n_vocal = n_st - 2
+                    n_piano = 2
+                elif n_st == 2:
+                    # Check if 2-staff system in accompanied score has lyrics (vocal) or not (piano intro/interlude)
+                    if any(st.get("has_lyrics", False) for st in sys["staves"]):
+                        n_vocal = 2
+                        n_piano = 0
+                    else:
+                        n_vocal = 0
+                        n_piano = 2
+                else:
+                    n_vocal = 1 if sys["staves"][0].get("has_lyrics", False) else 0
+                    n_piano = 1 - n_vocal
+            else:
+                n_vocal = n_st
+                n_piano = 0
+
+            staves_detail = []
+            for st_i, st in enumerate(sys["staves"]):
+                is_pno = has_piano and (st_i >= n_vocal)
+                if is_pno:
+                    role = "piano_rh" if (st_i == n_vocal) else "piano_lh"
+                    targets = ["Piano"]
+                else:
+                    role = "vocal"
+                    if n_vocal == 1:
+                        targets = ["T1", "T2", "Bar1", "Bar2", "B1", "B2"] if st.get("clef") == "bass" else ["S1", "S2", "A1", "A2"]
+                    elif n_vocal == 2:
+                        targets = ["S1", "S2", "A1", "A2"] if st_i == 0 else ["T1", "T2", "Bar1", "Bar2", "B1", "B2"]
+                    elif n_vocal == 3:
+                        targets = [["S1", "S2"], ["A1", "A2"], ["T1", "T2", "Bar1", "Bar2", "B1", "B2"]][min(st_i, 2)]
+                    else:
+                        targets = [["S1", "S2"], ["A1", "A2"], ["T1", "T2"], ["Bar1", "Bar2", "B1", "B2"]][min(st_i, 3)]
+                staves_detail.append({
+                    "staff_index": st_i,
+                    "y_top": st["y_top"],
+                    "y_bot": st["y_bot"],
+                    "clef": st.get("clef", "treble"),
+                    "has_lyrics": st.get("has_lyrics", False),
+                    "role": role,
+                    "targets": targets
+                })
+
+            systems_blueprint.append({
+                "system_index": s_idx + 1,
+                "page_num": sys["page_num"],
+                "y_top": sys["y_top"],
+                "y_bot": sys["y_bot"],
+                "x_left": sys["x_left"],
+                "x_right": sys["x_right"],
+                "num_staves": n_st,
+                "vocal_staves": n_vocal,
+                "piano_staves": n_piano,
+                "measure_start": m_start,
+                "measure_end": m_end,
+                "measure_count": m_end - m_start + 1,
+                "staves_detail": staves_detail
+            })
+
+        total_measures = systems_blueprint[-1]["measure_end"] if systems_blueprint else 0
+        return {
+            "title": title,
+            "composer": composer,
+            "subtitle": subtitle,
+            "page_count": page_count,
+            "total_systems": len(all_systems),
+            "num_staves": max_staves,
+            "has_piano": has_piano,
+            "total_measures": total_measures,
+            "systems_blueprint": systems_blueprint,
+            "measures": []
+        }
+
+    @classmethod
     def extract_to_musicxml(cls, pdf_path: Path, output_xml_path: Path) -> Tuple[Path, Dict[str, Any]]:
         """
         Extracts the complete multi-staff score from a vector PDF and writes it to MusicXML.
@@ -95,8 +250,11 @@ class PDFMusicExtractor:
         if not all_systems:
             raise ValueError(f"No musical systems detected in {pdf_path.name}")
 
+        skeleton = cls.extract_visual_skeleton(pdf_path)
         # Build unified MusicXML Score
         score, telemetry = cls._build_score_from_systems(title, composer, subtitle, all_systems)
+        telemetry["has_piano"] = skeleton.get("has_piano", False)
+        telemetry["systems_blueprint"] = skeleton.get("systems_blueprint", [])
         output_xml_path.parent.mkdir(parents=True, exist_ok=True)
         score.write("musicxml", fp=str(output_xml_path))
         logger.info(
@@ -212,22 +370,23 @@ class PDFMusicExtractor:
         if not staves:
             return []
 
-        # 2. Group staves into systems using left-edge system connectors or vertical proximity
+        # 2. Group staves into systems using left/right-edge system connectors
         systems = []
         idx = 0
         while idx < len(staves):
-            # Check if there is a vertical connector line joining staves[idx] to subsequent staves
             s_top = staves[idx]
             group = [s_top]
             next_idx = idx + 1
             while next_idx < len(staves):
+                prev_st = group[-1]
                 cand = staves[next_idx]
-                # Check if a vertical line at x_left connects s_top['y_top'] to cand['y_bot']
                 connected = False
                 for d in drawings:
                     r = d["rect"]
-                    if (r.x1 - r.x0) < 5.0 and abs(r.x0 - s_top["x_left"]) < 6.0:
-                        if r.y0 <= s_top["y_top"] + 2.0 and r.y1 >= cand["y_bot"] - 2.0:
+                    if (r.x1 - r.x0) < 5.0 and (
+                        abs(r.x0 - s_top["x_left"]) < 6.0 or abs(r.x0 - s_top["x_right"]) < 6.0
+                    ):
+                        if r.y0 <= prev_st["y_bot"] + 2.0 and r.y1 >= cand["y_bot"] - 2.0:
                             connected = True
                             break
                 if connected:
@@ -274,6 +433,11 @@ class PDFMusicExtractor:
                                 "x": float(s["bbox"][0]),
                                 "y": float(s["bbox"][1])
                             })
+
+        non_lyric_tokens = {
+            "p", "mp", "mf", "f", "ff", "pp", "cresc.", "cresc", "dim.", "dim",
+            "rit.", "rit", "rall.", "rall", "a tempo", "tempo primo", "unis.", "div."
+        }
 
         # 4. Populate each system with barlines, measure numbers, multi-measure rests, tempos, and glyphs
         for sys in systems:
@@ -346,14 +510,41 @@ class PDFMusicExtractor:
                         tempos.append((sp["x"], 138.0, "Tempo primo"))
             sys["tempos"] = tempos
 
-            # Assign SMuFL glyphs to each staff in the system
-            for st in sys["staves"]:
+            # Assign SMuFL glyphs, clef, label, and lyric detection to each staff in the system
+            for st_idx, st in enumerate(sys["staves"]):
                 st_top = st["y_top"] - 26.0
                 st_bot = st["y_bot"] + 28.0
                 st["glyphs"] = [
                     g for g in smufl_chars
                     if st_top <= g["y"] <= st_bot
                 ]
+                st_clef = "bass" if st_idx == len(sys["staves"]) - 1 else "treble"
+                for g in st["glyphs"]:
+                    if g["x"] < sys["x_left"] + 45.0:
+                        if g["code"] == SMUFL_G_CLEF:
+                            st_clef = "treble"
+                        elif g["code"] == SMUFL_F_CLEF:
+                            st_clef = "bass"
+                st["clef"] = st_clef
+
+                # Detect left-margin staff label
+                labels = [
+                    sp["text"] for sp in text_spans
+                    if sp["x"] < sys["x_left"] - 2.0 and (st["y_top"] - 8.0) <= sp["y"] <= (st["y_bot"] + 8.0)
+                ]
+                st["label"] = " ".join(labels)
+
+                # Detect lyrics below the staff (between y_bot - 2 and y_bot + 24, before next staff)
+                next_y_top = sys["staves"][st_idx + 1]["y_top"] - 4.0 if (st_idx + 1) < len(sys["staves"]) else st["y_bot"] + 24.0
+                lyric_y_max = min(st["y_bot"] + 24.0, next_y_top)
+                lyric_words = [
+                    sp["text"] for sp in text_spans
+                    if sp["x"] >= sys["x_left"]
+                    and (st["y_bot"] - 2.0) <= sp["y"] <= lyric_y_max
+                    and sp["text"].lower() not in non_lyric_tokens
+                    and not re.match(r"^\[?\d+(-\d+)?\]?$", sp["text"])
+                ]
+                st["has_lyrics"] = len(lyric_words) >= 2
 
         return systems
 
@@ -365,9 +556,14 @@ class PDFMusicExtractor:
         subtitle: str,
         systems: List[Dict[str, Any]]
     ) -> Tuple[music21.stream.Score, Dict[str, Any]]:
-        # Determine maximum number of staves in main systems (typically 2 for SA+TB or 4 for SATB)
         max_staves = max(len(s["staves"]) for s in systems)
-        num_parts = max(2, max_staves)
+        has_piano = any(
+            len(s["staves"]) >= 3 and not s["staves"][-1].get("has_lyrics", False)
+            for s in systems
+        ) or any(
+            "piano" in (st.get("label", "")).lower() or "organ" in (st.get("label", "")).lower()
+            for s in systems for st in s["staves"]
+        )
 
         score = stream.Score()
         score.metadata = metadata.Metadata()
@@ -375,7 +571,8 @@ class PDFMusicExtractor:
         score.metadata.composer = composer
 
         parts: List[music21.stream.Part] = []
-        if num_parts == 2:
+        if not has_piano and max_staves <= 2:
+            num_parts = 2
             p_sa = stream.Part(id="Soprano_Alto")
             p_sa.partName = "Soprano / Alto"
             p_sa.partAbbreviation = "SA"
@@ -385,7 +582,36 @@ class PDFMusicExtractor:
             parts = [p_sa, p_tb]
             vocal_group = layout.StaffGroup(parts, symbol="bracket", name="Choir")
             score.append(vocal_group)
+        elif has_piano:
+            max_vocal = max(2, max_staves - 2)
+            vocal_parts = []
+            if max_vocal == 2:
+                p_sa = stream.Part(id="Soprano_Alto")
+                p_sa.partName = "Soprano / Alto"
+                p_sa.partAbbreviation = "SA"
+                p_tb = stream.Part(id="Tenor_Bass")
+                p_tb.partName = "Tenor / Bass"
+                p_tb.partAbbreviation = "TB"
+                vocal_parts = [p_sa, p_tb]
+            else:
+                names = [("Soprano", "S"), ("Alto", "A"), ("Tenor", "T"), ("Bass", "B")]
+                for idx in range(max_vocal):
+                    nm, ab = names[idx] if idx < len(names) else (f"Vocal {idx+1}", f"V{idx+1}")
+                    vp = stream.Part(id=nm)
+                    vp.partName = nm
+                    vp.partAbbreviation = ab
+                    vocal_parts.append(vp)
+            p_rh = stream.Part(id="Piano_RH")
+            p_rh.partName = "Piano Right Hand"
+            p_lh = stream.Part(id="Piano_LH")
+            p_lh.partName = "Piano Left Hand"
+            piano_parts = [p_rh, p_lh]
+            parts = vocal_parts + piano_parts
+            num_parts = len(parts)
+            score.append(layout.StaffGroup(vocal_parts, symbol="bracket", name="Choir"))
+            score.append(layout.StaffGroup(piano_parts, symbol="brace", name="Piano"))
         else:
+            num_parts = max(2, max_staves)
             for idx in range(num_parts):
                 p = stream.Part(id=f"Part_{idx+1}")
                 p.partName = f"Staff {idx+1}"
@@ -414,13 +640,65 @@ class PDFMusicExtractor:
 
             # Detect clefs on this system's staves
             for st_i, st in enumerate(sys_staves):
+                st_clef = st.get("clef", "bass" if st_i == len(sys_staves) - 1 else "treble")
+                for g in st["glyphs"]:
+                    if g["x"] < bar_x[0] + 45.0:
+                        if g["code"] == SMUFL_G_CLEF:
+                            st_clef = "treble"
+                        elif g["code"] == SMUFL_F_CLEF:
+                            st_clef = "bass"
+                st["clef"] = st_clef
                 if st_i < len(staff_clefs):
-                    for g in st["glyphs"]:
-                        if g["x"] < bar_x[0] + 45.0:
-                            if g["code"] == SMUFL_G_CLEF:
-                                staff_clefs[st_i] = "treble"
-                            elif g["code"] == SMUFL_F_CLEF:
-                                staff_clefs[st_i] = "bass"
+                    staff_clefs[st_i] = st_clef
+
+            # Map system staves to canonical part indices (Bottom-Up Piano Anchor per Rule A1a)
+            part_to_staff_map: Dict[int, Dict[str, Any]] = {}
+            if not has_piano:
+                for p_i in range(min(len(parts), len(sys_staves))):
+                    part_to_staff_map[p_i] = sys_staves[p_i]
+            else:
+                n_vocal_parts = len(parts) - 2
+                n_sys = len(sys_staves)
+                if n_sys >= 3:
+                    # Bottom 2 staves are Piano RH and Piano LH
+                    part_to_staff_map[n_vocal_parts] = sys_staves[-2]
+                    part_to_staff_map[n_vocal_parts + 1] = sys_staves[-1]
+                    vocal_sys_staves = sys_staves[:-2]
+                elif n_sys == 2:
+                    if any(st.get("has_lyrics", False) for st in sys_staves):
+                        vocal_sys_staves = sys_staves
+                    else:
+                        part_to_staff_map[n_vocal_parts] = sys_staves[0]
+                        part_to_staff_map[n_vocal_parts + 1] = sys_staves[1]
+                        vocal_sys_staves = []
+                else:
+                    if sys_staves[0].get("has_lyrics", False):
+                        vocal_sys_staves = sys_staves
+                    else:
+                        part_to_staff_map[n_vocal_parts] = sys_staves[0]
+                        vocal_sys_staves = []
+
+                # Map vocal_sys_staves onto canonical vocal parts [0 .. n_vocal_parts - 1]
+                nv = len(vocal_sys_staves)
+                if nv == 1:
+                    vst = vocal_sys_staves[0]
+                    if vst.get("clef") == "bass":
+                        # Route to male vocal slots (bottom half of vocal parts)
+                        for vp_i in range(n_vocal_parts // 2, n_vocal_parts):
+                            part_to_staff_map[vp_i] = vst
+                    else:
+                        # Route to female vocal slots (top half of vocal parts)
+                        for vp_i in range(0, max(1, n_vocal_parts // 2)):
+                            part_to_staff_map[vp_i] = vst
+                elif nv == 2 and n_vocal_parts >= 4:
+                    # 2 vocal staves (SA + TB) mapped onto 4 canonical vocal parts (S, A, T, B)
+                    part_to_staff_map[0] = vocal_sys_staves[0]
+                    part_to_staff_map[1] = vocal_sys_staves[0]
+                    part_to_staff_map[2] = vocal_sys_staves[1]
+                    part_to_staff_map[3] = vocal_sys_staves[1]
+                else:
+                    for vp_i in range(min(n_vocal_parts, nv)):
+                        part_to_staff_map[vp_i] = vocal_sys_staves[vp_i]
 
             for b_i in range(num_visual_bars):
                 x0 = bar_x[b_i]
@@ -483,7 +761,7 @@ class PDFMusicExtractor:
                     if current_measure_num >= systems[sys_idx + 1]["start_measure_num"]:
                         continue
 
-                # Single measure: extract notes and chords for each staff
+                # Single measure: extract notes and chords for each canonical part
                 m_num = current_measure_num
                 bar_note_count = 0
                 prev_ts_emitted = measure_summary[-1]["ts"] if measure_summary else None
@@ -491,24 +769,24 @@ class PDFMusicExtractor:
 
                 for p_i, p in enumerate(parts):
                     m = stream.Measure(number=m_num)
+                    mapped_st = part_to_staff_map.get(p_i)
+                    part_clef = mapped_st.get("clef", "treble") if mapped_st else (
+                        staff_clefs[p_i] if p_i < len(staff_clefs) else "treble"
+                    )
                     if m_num == 1:
-                        if p_i == 0:
-                            m.insert(0, clef.TrebleClef() if staff_clefs[p_i] == "treble" else clef.BassClef())
-                        else:
-                            m.insert(0, clef.BassClef() if staff_clefs[p_i] == "bass" else clef.TrebleClef())
+                        m.insert(0, clef.BassClef() if part_clef == "bass" else clef.TrebleClef())
                     if m_num == 1 or current_ts_str != prev_ts_emitted:
                         m.timeSignature = meter.TimeSignature(current_ts_str)
                     if m_num == 1 or current_tempo_bpm != prev_tm_emitted:
                         m.insert(0, tempo.MetronomeMark(number=current_tempo_bpm))
 
-                    if p_i < len(sys_staves):
-                        st = sys_staves[p_i]
+                    if mapped_st is not None:
                         extracted_elems = cls._extract_measure_elements_on_staff(
-                            st=st,
+                            st=mapped_st,
                             x0=x0,
                             x1=x1,
                             is_first_bar_of_sys=(b_i == 0),
-                            clef_type=staff_clefs[p_i],
+                            clef_type=part_clef,
                             fifths=current_fifths,
                             bar_ql=current_bar_ql
                         )
@@ -544,6 +822,7 @@ class PDFMusicExtractor:
             "subtitle": subtitle,
             "total_systems": len(systems),
             "num_staves": num_parts,
+            "has_piano": has_piano,
             "total_measures": len(measure_summary),
             "total_notes": total_extracted_notes,
             "measures": measure_summary

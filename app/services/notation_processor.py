@@ -53,8 +53,9 @@ class NotationProcessor:
             Fraction safety, exact measure duration matching, zero drift).
     """
 
-    def __init__(self, score_path: Path):
+    def __init__(self, score_path: Path, llm_blueprint: Optional[Dict[str, Any]] = None):
         self.score_path = score_path
+        self.llm_blueprint = llm_blueprint or {}
         self.raw_score: music21.stream.Score = music21.converter.parse(str(score_path))
         self.title = self._extract_title()
         self.composer = self._extract_composer()
@@ -63,6 +64,7 @@ class NotationProcessor:
         self.accomp_parts: List[music21.stream.Part] = []
         self.vocal_parts: List[music21.stream.Part] = []
         self._classify_staves()
+        self._repair_alternating_vocal_piano_splits()
         
         # Foundational measure structure (Rule A1a: Accompaniment first)
         self.measure_grid: List[MeasureTemplate] = []
@@ -126,16 +128,13 @@ class NotationProcessor:
             is_brace = part.id in brace_part_ids
             is_bracket = part.id in bracket_part_ids
 
-            if is_brace:
+            if is_brace or any(k in combined_name for k in accomp_keywords):
                 self.accomp_parts.append(part)
             elif is_bracket or has_lyrics:
                 self.vocal_parts.append(part)
-            elif any(k in combined_name for k in accomp_keywords):
-                self.accomp_parts.append(part)
             elif any(k in combined_name for k in vocal_keywords):
                 self.vocal_parts.append(part)
             else:
-                # Default heuristic: if 4+ staves and bottom 2 don't have lyrics, bottom 2 are piano
                 self.vocal_parts.append(part)
 
         # If no accompaniment detected yet but we have >= 3 parts and bottom 2 have no lyrics, treat bottom 2 as piano
@@ -145,25 +144,117 @@ class NotationProcessor:
                 self.accomp_parts = list(candidate_bottom)
                 self.vocal_parts = [p for p in all_parts if p not in self.accomp_parts]
 
+    def _repair_alternating_vocal_piano_splits(self):
+        """
+        Closed-loop self-correction pass:
+        Detects if any system was split vertically into [N bars Vocal-only] followed immediately
+        by [N bars Piano-only] (with N >= 2) and folds the Piano measures back into the Vocal measures
+        so Vocal and Piano play simultaneously and measure counts are not inflated.
+        """
+        if not self.accomp_parts or not self.vocal_parts:
+            return
+
+        all_parts = self.vocal_parts + self.accomp_parts
+        max_len = max((len(p.getElementsByClass(stream.Measure)) for p in all_parts), default=0)
+        if max_len < 4:
+            return
+
+        # Ensure sequential 1..max_len measure indexing across all parts
+        part_measures: Dict[int, List[music21.stream.Measure]] = {}
+        for idx, p in enumerate(all_parts):
+            ms = list(p.getElementsByClass(stream.Measure))
+            for m_i, m in enumerate(ms):
+                m.number = m_i + 1
+            part_measures[idx] = ms
+
+        n_vocal = len(self.vocal_parts)
+        # Classify each measure index 0..max_len-1 as 'V' (vocal only), 'P' (piano only), 'VP' (both), or 'R' (rest)
+        bar_states = []
+        for m_i in range(max_len):
+            v_cnt = sum(
+                len(part_measures[p_i][m_i].flatten().notes)
+                for p_i in range(n_vocal)
+                if m_i < len(part_measures[p_i])
+            )
+            p_cnt = sum(
+                len(part_measures[p_i][m_i].flatten().notes)
+                for p_i in range(n_vocal, len(all_parts))
+                if m_i < len(part_measures[p_i])
+            )
+            if v_cnt > 0 and p_cnt == 0:
+                bar_states.append("V")
+            elif p_cnt > 0 and v_cnt == 0:
+                bar_states.append("P")
+            elif v_cnt > 0 and p_cnt > 0:
+                bar_states.append("VP")
+            else:
+                bar_states.append("R")
+
+        # Group into contiguous state runs
+        runs = []
+        for m_i, st in enumerate(bar_states):
+            if not runs or runs[-1]["state"] != st:
+                runs.append({"state": st, "start": m_i, "end": m_i})
+            else:
+                runs[-1]["end"] = m_i
+
+        # Identify (V_run followed by P_run of matching length >= 2)
+        indices_to_delete = set()
+        r_idx = 0
+        while r_idx + 1 < len(runs):
+            r1 = runs[r_idx]
+            r2 = runs[r_idx + 1]
+            len1 = r1["end"] - r1["start"] + 1
+            len2 = r2["end"] - r2["start"] + 1
+            if r1["state"] == "V" and r2["state"] == "P" and len1 >= 2 and len1 == len2:
+                # Copy piano measures from r2 into r1
+                for offset in range(len1):
+                    src_idx = r2["start"] + offset
+                    dst_idx = r1["start"] + offset
+                    for p_i in range(n_vocal, len(all_parts)):
+                        if src_idx < len(part_measures[p_i]) and dst_idx < len(part_measures[p_i]):
+                            src_m = part_measures[p_i][src_idx]
+                            dst_m = part_measures[p_i][dst_idx]
+                            for el in list(dst_m.flatten().notesAndRests):
+                                dst_m.remove(el, recurse=True)
+                            for el in src_m.flatten().notesAndRests:
+                                dst_m.insert(float(el.offset), copy.deepcopy(el))
+                    indices_to_delete.add(src_idx)
+                r_idx += 2
+            else:
+                r_idx += 1
+
+        if not indices_to_delete:
+            return
+
+        # Rebuild parts without the redundant split measures and renumber 1..N
+        for p_i, p in enumerate(all_parts):
+            ms = part_measures[p_i]
+            kept = [m for i, m in enumerate(ms) if i not in indices_to_delete]
+            for old_m in list(p.getElementsByClass(stream.Measure)):
+                p.remove(old_m)
+            for new_num, m in enumerate(kept, start=1):
+                m.number = new_num
+                p.append(m)
+
     def _build_foundational_measure_grid(self):
         """
         Rule A1a: Always start with the accompaniment (if available) to give a basis 
         for measure counts, and then apply the other parts onto the foundational measure structure.
         """
-        # Determine source stream for foundational grid
+        all_parts = list(self.raw_score.parts)
         source_parts = self.accomp_parts if self.accomp_parts else self.vocal_parts
         if not source_parts:
-            source_parts = list(self.raw_score.parts)
+            source_parts = all_parts
 
-        # Gather all unique measure numbers across parts
+        # Gather maximum contiguous measure sequence across all parts so no part is truncated
         measure_numbers = []
-        for p in source_parts:
+        for p in (source_parts + all_parts):
             m_nums = [m.number for m in p.getElementsByClass(stream.Measure)]
             if len(m_nums) > len(measure_numbers):
                 measure_numbers = m_nums
 
         if not measure_numbers:
-            # Fallback if unmeasured
             measure_numbers = [1]
 
         # Determine time signatures and tempos
@@ -182,7 +273,7 @@ class NotationProcessor:
 
         for m_num in measure_numbers:
             # Check if any part defines a new TS or tempo at this measure
-            for p in source_parts:
+            for p in (source_parts + all_parts):
                 m = p.measure(m_num)
                 if m is not None:
                     ts = m.getElementsByClass(meter.TimeSignature).first()
@@ -191,7 +282,8 @@ class NotationProcessor:
                     tm = m.getElementsByClass(tempo.MetronomeMark).first()
                     if tm and tm.number:
                         current_tempo = float(tm.number)
-                    break
+                    if ts or tm:
+                        break
 
             bar_ql = Fraction(current_ts.barDuration.quarterLength)
             template = MeasureTemplate(
@@ -564,24 +656,42 @@ class NotationProcessor:
                     results[k].parts[0].append(copy.deepcopy(m_cloned))
 
     def _route_arbitrary_vocal_staves(self, parts: List[music21.stream.Part], results: Dict[str, music21.stream.Score], interludes: set):
-        """Heuristic mapping for non-standard choral staff layouts."""
-        for i, p in enumerate(parts):
-            p_name = (p.partName or "").lower()
-            if "sop" in p_name:
-                self._route_discrete_staff(p, ["S1", "S2"], results, interludes)
-            elif "alt" in p_name:
-                self._route_discrete_staff(p, ["A1", "A2"], results, interludes)
-            elif "ten" in p_name:
-                self._route_discrete_staff(p, ["T1", "T2"], results, interludes)
-            elif "bar" in p_name:
-                self._route_discrete_staff(p, ["Bar1", "Bar2"], results, interludes)
-            elif "bass" in p_name:
-                self._route_discrete_staff(p, ["B1", "B2"], results, interludes)
+        """Heuristic mapping for 3-part (SAB / SSA / TBB) and 5+-part choral staff layouts."""
+        if len(parts) == 3 and not any(
+            any(k in (p.partName or "").lower() for k in ["sop", "alt", "ten", "bar", "bass"])
+            for p in parts
+        ):
+            # 3 unnamed vocal staves: check if middle staff is treble (S, A, Men) or bass (SA, T, B)
+            if not self._is_bass_part(parts[1]):
+                self._route_discrete_staff(parts[0], ["S1", "S2"], results, interludes)
+                self._route_discrete_staff(parts[1], ["A1", "A2"], results, interludes)
+                self._route_discrete_staff(parts[2], ["T1", "T2", "Bar1", "Bar2", "B1", "B2"], results, interludes)
             else:
-                # Distribute evenly
-                targets = ["S1", "A1", "T1", "B1"]
-                t = targets[min(i, len(targets) - 1)]
-                self._route_discrete_staff(p, [t], results, interludes)
+                self._route_discrete_staff(parts[0], ["S1", "S2", "A1", "A2"], results, interludes)
+                self._route_discrete_staff(parts[1], ["T1", "T2"], results, interludes)
+                self._route_discrete_staff(parts[2], ["Bar1", "Bar2", "B1", "B2"], results, interludes)
+        else:
+            default_groups = [
+                ["S1", "S2"],
+                ["A1", "A2"],
+                ["T1", "T2"],
+                ["Bar1", "Bar2", "B1", "B2"]
+            ]
+            for i, p in enumerate(parts):
+                p_name = (p.partName or "").lower()
+                if "sop" in p_name:
+                    self._route_discrete_staff(p, ["S1", "S2"], results, interludes)
+                elif "alt" in p_name:
+                    self._route_discrete_staff(p, ["A1", "A2"], results, interludes)
+                elif "ten" in p_name:
+                    self._route_discrete_staff(p, ["T1", "T2"], results, interludes)
+                elif "bar" in p_name:
+                    self._route_discrete_staff(p, ["Bar1", "Bar2"], results, interludes)
+                elif "bass" in p_name:
+                    self._route_discrete_staff(p, ["B1", "B2"], results, interludes)
+                else:
+                    targets = default_groups[min(i, len(default_groups) - 1)]
+                    self._route_discrete_staff(p, targets, results, interludes)
 
         # Fill any unassigned stems with rests
         for k in results:

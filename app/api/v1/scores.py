@@ -58,7 +58,7 @@ def _process_score_pipeline(score_id: str, original_file_path: Path, filename: s
         db_score.status_message = "Analyzing score notation, applying dynamic bracket routing, and clamping measures..."
         db.commit()
 
-        processor = NotationProcessor(musicxml_path)
+        processor = NotationProcessor(musicxml_path, llm_blueprint=omr_engine.last_llm_blueprint)
         stem_scores, analysis = processor.extract_all_stems()
 
         total_measures = len(analysis)

@@ -92,11 +92,15 @@ class LLMScoreAnalyzer:
         Executes real-time choral topology & metric analysis on an uploaded PDF.
         Combines deterministic visual/SMuFL telemetry with Local GPU Vision LLM / MCP reasoning.
         """
+        if not telemetry:
+            from app.services.pdf_music_extractor import PDFMusicExtractor
+            telemetry = PDFMusicExtractor.extract_visual_skeleton(pdf_path)
+
         # 1. Build deterministic ground-truth blueprint from PDF visual/SMuFL layout
         blueprint = cls._build_topological_blueprint(pdf_path, telemetry)
 
-        # 2. Render first 2 pages as base64 PNGs for Vision LLM / MCP inspection
-        page_images_b64 = cls._render_pdf_pages_b64(pdf_path, max_pages=2)
+        # 2. Render first 2 pages with Set-of-Mark (SoM) system/staff overlays as base64 PNGs for Vision LLM / MCP
+        page_images_b64 = cls._render_pdf_pages_b64(pdf_path, max_pages=2, telemetry=telemetry)
 
         # 3. Try External MCP Server if configured
         if settings.MCP_SERVER_URL:
@@ -136,6 +140,9 @@ class LLMScoreAnalyzer:
                 "llm_provider": "PartTrackr Built-in Topological Engine",
                 "title": pdf_path.stem.replace("_", " ").title(),
                 "composer": "Unknown Composer",
+                "has_piano": False,
+                "expected_total_measures": 0,
+                "systems_blueprint": [],
                 "bracket_topology": "Standard Choral Layout",
                 "voice_routing_rules": [
                     "Rule A: Straight bracket choral staves routed to S1, S2, A1, A2, T1, T2, Bar1, Bar2, B1, B2.",
@@ -150,6 +157,8 @@ class LLMScoreAnalyzer:
         total_measures = telemetry.get("total_measures", 0)
         total_systems = telemetry.get("total_systems", 0)
         num_staves = telemetry.get("num_staves", 2)
+        has_piano = telemetry.get("has_piano", False)
+        systems_blueprint = telemetry.get("systems_blueprint", [])
         measures = telemetry.get("measures", [])
 
         # Identify meter changes, tempo changes, and multi-measure rest spans
@@ -188,22 +197,30 @@ class LLMScoreAnalyzer:
         if rest_run_start is not None:
             mm_rest_spans.append(f"mm.{rest_run_start}–{rest_run_end} ({rest_run_end - rest_run_start + 1} bars)")
 
-        bracket_desc = (
-            f"Straight Bracket `[` spanning {num_staves} Choral Staves across {total_systems} systems "
-            f"(Staff 1: Soprano/Alto in Treble Clef; Staff 2: Tenor/Bass in Bass Clef). "
-            f"No curvy-brace `{{` Piano staff printed in PDF -> Piano stem rests cleanly per Rule A5."
-            if num_staves == 2
-            else f"Multi-staff choral layout ({num_staves} staves across {total_systems} systems)."
-        )
+        if not has_piano and num_staves == 2:
+            bracket_desc = (
+                f"Straight Bracket `[` spanning {num_staves} Choral Staves across {total_systems} systems "
+                f"(Staff 1: Soprano/Alto in Treble Clef; Staff 2: Tenor/Bass in Bass Clef). "
+                f"No curvy-brace `{{` Piano staff printed in PDF -> Piano stem rests cleanly per Rule A5."
+            )
+        elif has_piano:
+            bracket_desc = (
+                f"Accompanied Choral Layout ({total_systems} systems, up to {num_staves} staves/system): "
+                f"Bottom 2 staves anchored to Piano Grand Staff `{{` (Rule A1a); upper staves routed dynamically per system to Choir `[`."
+            )
+        else:
+            bracket_desc = f"Multi-staff choral layout ({num_staves} staves across {total_systems} systems)."
 
         routing_rules = [
             f"Identified '{title}' ({composer}) — {total_measures} lockstep measures across {total_systems} engraved systems.",
             bracket_desc,
-            "Divisi & Polyphony Routing (Rule A2): Upper notes on Staff 1 -> S1, S2; Lower notes on Staff 1 -> A1, A2.",
-            "Male Staff Routing (Rule A2): Upper notes on Staff 2 -> T1, T2; Lower notes on Staff 2 -> Bar1, Bar2, B1, B2.",
-            f"Meter Transitions (Rule B1): {', '.join(meter_changes) if meter_changes else 'Constant meter'}.",
-            f"Tempo Map: {', '.join(tempo_changes) if tempo_changes else '120 BPM'}.",
+            "Divisi & Polyphony Routing (Rule A2): Upper notes on Female/SA staves -> S1, S2; Lower notes -> A1, A2.",
+            "Male Staff Routing (Rule A2): Upper notes on Male/TB staves -> T1, T2; Lower notes -> Bar1, Bar2, B1, B2.",
         ]
+        if meter_changes:
+            routing_rules.append(f"Meter Transitions (Rule B1): {', '.join(meter_changes)}.")
+        if tempo_changes:
+            routing_rules.append(f"Tempo Map: {', '.join(tempo_changes)}.")
         if mm_rest_spans:
             routing_rules.append(
                 f"Multi-Measure Tacet / Interlude Spans Expanded: {', '.join(mm_rest_spans)} (all 10 vocal stems rest cleanly with zero OMR bleed)."
@@ -213,6 +230,9 @@ class LLMScoreAnalyzer:
             "llm_provider": "PartTrackr SMuFL + Topological Intelligence Engine",
             "title": title,
             "composer": composer,
+            "has_piano": has_piano,
+            "expected_total_measures": total_measures,
+            "systems_blueprint": systems_blueprint,
             "bracket_topology": bracket_desc,
             "voice_routing_rules": routing_rules,
             "metric_and_rest_verification": (
@@ -223,12 +243,44 @@ class LLMScoreAnalyzer:
         }
 
     @classmethod
-    def _render_pdf_pages_b64(cls, pdf_path: Path, max_pages: int = 2) -> List[str]:
+    def _render_pdf_pages_b64(
+        cls,
+        pdf_path: Path,
+        max_pages: int = 2,
+        telemetry: Optional[Dict[str, Any]] = None
+    ) -> List[str]:
+        """
+        Renders the first N pages of the PDF with Set-of-Mark (SoM) visual system and staff
+        annotations so the Vision LLM has explicit spatial and measure-number grounding.
+        """
         images = []
+        sys_bp = (telemetry or {}).get("systems_blueprint", [])
         try:
             doc = pymupdf.open(str(pdf_path))
             for i in range(min(len(doc), max_pages)):
-                pix = doc[i].get_pixmap(dpi=120)
+                page = doc[i]
+                page_num = i + 1
+                # Draw Set-of-Mark annotations for systems on this page
+                page_systems = [s for s in sys_bp if s.get("page_num") == page_num]
+                for s in page_systems:
+                    try:
+                        rect = pymupdf.Rect(
+                            max(2.0, s["x_left"] - 35.0),
+                            max(2.0, s["y_top"] - 10.0),
+                            min(page.rect.width - 2.0, s["x_right"] + 4.0),
+                            min(page.rect.height - 2.0, s["y_bot"] + 10.0)
+                        )
+                        page.draw_rect(rect, color=(0.15, 0.35, 0.85), width=0.8)
+                        label = f"SYS {s['system_index']} (m.{s['measure_start']}-{s['measure_end']})"
+                        page.insert_text(
+                            pymupdf.Point(max(4.0, s["x_left"] - 34.0), max(10.0, s["y_top"] - 2.0)),
+                            label,
+                            fontsize=6.5,
+                            color=(0.1, 0.25, 0.75)
+                        )
+                    except Exception:
+                        pass
+                pix = page.get_pixmap(dpi=120)
                 png_bytes = pix.tobytes("png")
                 images.append(base64.b64encode(png_bytes).decode("ascii"))
             doc.close()
