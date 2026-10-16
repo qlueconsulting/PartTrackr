@@ -86,11 +86,13 @@ class LLMScoreAnalyzer:
     def analyze_pdf_score(
         cls,
         pdf_path: Path,
-        telemetry: Optional[Dict[str, Any]] = None
+        telemetry: Optional[Dict[str, Any]] = None,
+        custom_instructions: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Executes real-time choral topology & metric analysis on an uploaded PDF.
         Combines deterministic visual/SMuFL telemetry with Local GPU Vision LLM / MCP reasoning.
+        Incorporates user-provided measure directives & instructions into the prompt.
         """
         if not telemetry:
             from app.services.pdf_music_extractor import PDFMusicExtractor
@@ -98,13 +100,16 @@ class LLMScoreAnalyzer:
 
         # 1. Build deterministic ground-truth blueprint from PDF visual/SMuFL layout
         blueprint = cls._build_topological_blueprint(pdf_path, telemetry)
+        if custom_instructions:
+            blueprint["custom_instructions"] = custom_instructions
+            blueprint["notes"].insert(0, f"[User Score Directive]: {custom_instructions}")
 
         # 2. Render first 2 pages with Set-of-Mark (SoM) system/staff overlays as base64 PNGs for Vision LLM / MCP
         page_images_b64 = cls._render_pdf_pages_b64(pdf_path, max_pages=2, telemetry=telemetry)
 
         # 3. Try External MCP Server if configured
         if settings.MCP_SERVER_URL:
-            mcp_res = cls._call_external_mcp(pdf_path, blueprint, page_images_b64)
+            mcp_res = cls._call_external_mcp(pdf_path, blueprint, page_images_b64, custom_instructions=custom_instructions)
             if mcp_res:
                 blueprint["llm_provider"] = f"MCP Server ({settings.MCP_SERVER_URL})"
                 blueprint["llm_insights"] = mcp_res
@@ -113,7 +118,7 @@ class LLMScoreAnalyzer:
         # 4. Try Local GPU Ollama Server (RTX 2060 Super + RTX 2060)
         ollama_url, models = cls._probe_ollama()
         if ollama_url and models:
-            ollama_res = cls._call_ollama(ollama_url, models, blueprint, page_images_b64)
+            ollama_res = cls._call_ollama(ollama_url, models, blueprint, page_images_b64, custom_instructions=custom_instructions)
             if ollama_res:
                 blueprint["llm_provider"] = f"Local GPU Ollama ({ollama_res.get('model')})"
                 blueprint["llm_insights"] = ollama_res.get("analysis")
@@ -121,7 +126,7 @@ class LLMScoreAnalyzer:
 
         # 5. Try Google Gemini API if configured
         if settings.GEMINI_API_KEY:
-            gemini_res = cls._call_gemini(blueprint, page_images_b64)
+            gemini_res = cls._call_gemini(blueprint, page_images_b64, custom_instructions=custom_instructions)
             if gemini_res:
                 blueprint["llm_provider"] = "Google Gemini Multimodal API"
                 blueprint["llm_insights"] = gemini_res
@@ -294,7 +299,8 @@ class LLMScoreAnalyzer:
         ollama_url: str,
         models: List[str],
         blueprint: Dict[str, Any],
-        images_b64: List[str]
+        images_b64: List[str],
+        custom_instructions: Optional[str] = None
     ) -> Optional[Dict[str, Any]]:
         # Select preferred vision model or first available model
         vision_keywords = ["vl", "vision", "llava", "minicpm", "gemma3"]
@@ -312,9 +318,11 @@ class LLMScoreAnalyzer:
         if not selected_model:
             return None
 
+        user_prompt_addon = f"\n\nUSER DIRECTIVES & MEASURE INSTRUCTIONS:\n\"{custom_instructions}\"" if custom_instructions else ""
         prompt = (
             f"{CHORAL_ANALYSIS_SYSTEM_PROMPT}\n\n"
             f"Extracted Symbolic Telemetry:\n{json.dumps(blueprint, indent=2)}"
+            f"{user_prompt_addon}"
         )
 
         payload: Dict[str, Any] = {
@@ -349,20 +357,25 @@ class LLMScoreAnalyzer:
         cls,
         pdf_path: Path,
         blueprint: Dict[str, Any],
-        images_b64: List[str]
+        images_b64: List[str],
+        custom_instructions: Optional[str] = None
     ) -> Optional[Dict[str, Any]]:
         try:
+            args: Dict[str, Any] = {
+                "filename": pdf_path.name,
+                "telemetry": blueprint,
+                "page_images_b64": images_b64[:1],
+            }
+            if custom_instructions:
+                args["custom_instructions"] = custom_instructions
+
             payload = {
                 "jsonrpc": "2.0",
                 "id": 1,
                 "method": "tools/call",
                 "params": {
                     "name": "analyze_choral_score",
-                    "arguments": {
-                        "filename": pdf_path.name,
-                        "telemetry": blueprint,
-                        "page_images_b64": images_b64[:1],
-                    }
+                    "arguments": args
                 }
             }
             resp = requests.post(settings.MCP_SERVER_URL, json=payload, timeout=20)
@@ -378,15 +391,17 @@ class LLMScoreAnalyzer:
     def _call_gemini(
         cls,
         blueprint: Dict[str, Any],
-        images_b64: List[str]
+        images_b64: List[str],
+        custom_instructions: Optional[str] = None
     ) -> Optional[Dict[str, Any]]:
         try:
             url = (
                 "https://generativelanguage.googleapis.com/v1beta/models/"
                 f"gemini-2.5-flash:generateContent?key={settings.GEMINI_API_KEY}"
             )
+            user_prompt_addon = f"\n\nUSER DIRECTIVES & MEASURE INSTRUCTIONS:\n\"{custom_instructions}\"" if custom_instructions else ""
             parts: List[Dict[str, Any]] = [
-                {"text": f"{CHORAL_ANALYSIS_SYSTEM_PROMPT}\n\nTelemetry:\n{json.dumps(blueprint)}"}
+                {"text": f"{CHORAL_ANALYSIS_SYSTEM_PROMPT}\n\nTelemetry:\n{json.dumps(blueprint)}{user_prompt_addon}"}
             ]
             for img in images_b64[:2]:
                 parts.append({"inline_data": {"mime_type": "image/png", "data": img}})
@@ -401,3 +416,60 @@ class LLMScoreAnalyzer:
         except Exception as e:
             logger.warning(f"Gemini API call failed: {e}")
         return None
+
+    @classmethod
+    def analyze_instructions(
+        cls,
+        custom_instructions: str,
+        blueprint: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """
+        Processes user score directives and measure instructions using Local GPU Ollama, MCP, or Gemini.
+        Returns updated blueprint and audit notes reflecting the AI's understanding of the instructions.
+        """
+        bp = blueprint or {
+            "title": "Choral Score",
+            "notes": [],
+            "expected_total_measures": 0
+        }
+        if not custom_instructions or not custom_instructions.strip():
+            return bp
+
+        text = custom_instructions.strip()
+        bp["custom_instructions"] = text
+        directive_note = f"[User Score Directive]: {text}"
+        if directive_note not in bp.get("notes", []):
+            bp.setdefault("notes", []).insert(0, directive_note)
+
+        # Query Local Ollama GPU probe if available
+        ollama_url, models = cls._probe_ollama()
+        if ollama_url and models:
+            selected_model = settings.OLLAMA_MODEL if settings.OLLAMA_MODEL in models else models[0]
+            prompt = (
+                f"{CHORAL_ANALYSIS_SYSTEM_PROMPT}\n\n"
+                f"User-entered measure directives and music discovery instructions:\n"
+                f"\"{text}\"\n\n"
+                f"Score Metadata:\n{json.dumps(bp, indent=2)}\n\n"
+                "Return a JSON object with 'summary' explaining how these instructions guide voice routing and measures."
+            )
+            payload = {
+                "model": selected_model,
+                "prompt": prompt,
+                "stream": False,
+                "format": "json"
+            }
+            try:
+                resp = requests.post(f"{ollama_url}/api/generate", json=payload, timeout=12)
+                if resp.status_code == 200:
+                    raw_resp = resp.json().get("response", "")
+                    try:
+                        parsed = json.loads(raw_resp)
+                        if "summary" in parsed and isinstance(parsed["summary"], str):
+                            bp["notes"].insert(0, f"[Local GPU LLM ({selected_model}) Directives Analysis]: {parsed['summary']}")
+                    except Exception:
+                        pass
+            except Exception as e:
+                logger.warning(f"Ollama directive analysis failed: {e}")
+
+        return bp
+

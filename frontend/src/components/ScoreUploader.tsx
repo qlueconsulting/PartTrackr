@@ -33,6 +33,7 @@ export const ScoreUploader: React.FC<ScoreUploaderProps> = ({
   const [accompanimentType, setAccompanimentType] = useState<string>('piano')
   const [timeSignature, setTimeSignature] = useState<string>('')
   const [tempoBpm, setTempoBpm] = useState<string>('')
+  const [customInstructions, setCustomInstructions] = useState<string>('')
 
   useEffect(() => {
     if (isOpen) {
@@ -89,6 +90,7 @@ export const ScoreUploader: React.FC<ScoreUploaderProps> = ({
     if (accompanimentType) hintsPayload.accompaniment_type = accompanimentType
     if (timeSignature.trim()) hintsPayload.time_signature = timeSignature.trim()
     if (tempoBpm.trim()) hintsPayload.tempo_bpm = parseFloat(tempoBpm.trim())
+    if (customInstructions.trim()) hintsPayload.custom_instructions = customInstructions.trim()
 
     if (Object.keys(hintsPayload).length > 0) {
       formData.append('hints', JSON.stringify(hintsPayload))
@@ -238,6 +240,19 @@ export const ScoreUploader: React.FC<ScoreUploaderProps> = ({
                     />
                   </div>
                 </div>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-medium text-slate-400 mb-1">
+                  Custom AI Directives / Measure Instructions (Optional)
+                </label>
+                <textarea
+                  rows={2}
+                  value={customInstructions}
+                  onChange={(e) => setCustomInstructions(e.target.value)}
+                  placeholder="e.g. bars 1-4 are a piano prelude; m.25 soprano solo; men rest bars 1-8"
+                  className="w-full px-2.5 py-1.5 bg-slate-900 border border-slate-700 rounded-lg text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 text-xs resize-none font-mono"
+                />
               </div>
             </div>
           )}

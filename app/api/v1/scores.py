@@ -26,6 +26,7 @@ from app.services.omr_service import OMREngine
 from app.services.notation_processor import NotationProcessor, STEM_TAXONOMY, STEM_METADATA
 from app.services.audio_synthesizer import AudioSynthesizer
 from app.services.audit_service import ScoreAuditService
+from app.services.llm_analyzer import LLMScoreAnalyzer
 from app.services.sample_scores import create_sample_satb_with_piano, create_sample_unison_choral
 
 logger = logging.getLogger(__name__)
@@ -113,6 +114,9 @@ def _run_notation_and_synthesis(
     stems_dir.mkdir(parents=True, exist_ok=True)
 
     hints_dict = user_hints.model_dump() if user_hints else db_score.score_hints
+    if hints_dict and hints_dict.get("custom_instructions"):
+        instr = hints_dict["custom_instructions"]
+        llm_blueprint = LLMScoreAnalyzer.analyze_instructions(instr, blueprint=llm_blueprint)
 
     try:
         # Step 2: Notation Analysis & Dynamic Choral Voice Routing
@@ -239,6 +243,20 @@ def _run_notation_and_synthesis(
                 )
             )
 
+        if hints_dict and hints_dict.get("custom_instructions"):
+            custom_text = str(hints_dict["custom_instructions"]).strip()
+            audit_report.checks.append(
+                AuditCheckItem(
+                    name="User Custom Measure Directives Applied",
+                    passed=True,
+                    score_pct=100.0,
+                    details=f"Directives: {custom_text}"
+                )
+            )
+            note_str = f"[User Score Directive]: {custom_text}"
+            if note_str not in audit_report.notes:
+                audit_report.notes.insert(0, note_str)
+
         # Finalize DB Score
         db_score.status = "completed"
         db_score.status_message = "Processing completed successfully."
@@ -281,7 +299,8 @@ def _process_score_pipeline(
     db.commit()
 
     # Step 1: OMR / Ingestion
-    musicxml_path = omr_engine.process_file(original_file_path, omr_dir)
+    custom_instr = user_hints.custom_instructions if user_hints else None
+    musicxml_path = omr_engine.process_file(original_file_path, omr_dir, custom_instructions=custom_instr)
 
     if (omr_engine.last_telemetry or {}).get("title"):
         db_score.title = omr_engine.last_telemetry["title"]

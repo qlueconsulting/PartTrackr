@@ -66,7 +66,7 @@ class OMREngine:
             return False
         return shutil.which(bin_path) is not None or Path(bin_path).exists()
 
-    def process_file(self, input_path: Path, output_dir: Path) -> Path:
+    def process_file(self, input_path: Path, output_dir: Path, custom_instructions: Optional[str] = None) -> Path:
         """
         Processes (.pdf, .musicxml, .xml, .mxl, .mid) into a MusicXML file
         and runs real-time AI/LLM choral topology analysis on PDF uploads.
@@ -88,12 +88,12 @@ class OMREngine:
             return dest
 
         elif ext == ".pdf":
-            return self._process_pdf(input_path, output_dir)
+            return self._process_pdf(input_path, output_dir, custom_instructions=custom_instructions)
 
         else:
             raise ValueError(f"Unsupported file format: {ext}. Expected .pdf, .musicxml, .xml, .mxl, or .mid")
 
-    def _process_pdf(self, pdf_path: Path, output_dir: Path) -> Path:
+    def _process_pdf(self, pdf_path: Path, output_dir: Path, custom_instructions: Optional[str] = None) -> Path:
         """
         Multi-stage PDF processing:
         Stage 1: Direct SMuFL / Vector PDF Extraction if embedded music glyphs exist.
@@ -108,14 +108,14 @@ class OMREngine:
                 logger.info(f"Detected embedded SMuFL vector music notation in {pdf_path.name}. Extracting directly...")
                 xml_path, telemetry = PDFMusicExtractor.extract_to_musicxml(pdf_path, dest_xml)
                 self.last_telemetry = telemetry
-                self.last_llm_blueprint = LLMScoreAnalyzer.analyze_pdf_score(pdf_path, telemetry)
+                self.last_llm_blueprint = LLMScoreAnalyzer.analyze_pdf_score(pdf_path, telemetry, custom_instructions=custom_instructions)
                 return xml_path
             except Exception as e:
                 logger.warning(f"Direct vector extraction encountered an issue on {pdf_path.name}: {e}. Falling back to Audiveris OMR.")
 
         # Stage 2: Extract Pre-OMR PDF Visual Skeleton & Vision LLM Blueprint BEFORE Audiveris stitching
         self.last_telemetry = PDFMusicExtractor.extract_visual_skeleton(pdf_path)
-        self.last_llm_blueprint = LLMScoreAnalyzer.analyze_pdf_score(pdf_path, self.last_telemetry)
+        self.last_llm_blueprint = LLMScoreAnalyzer.analyze_pdf_score(pdf_path, self.last_telemetry, custom_instructions=custom_instructions)
 
         # Stage 3: Audiveris Headless OMR CLI (for scanned/non-SMuFL PDFs)
         xml_path = self._run_audiveris(pdf_path, output_dir)

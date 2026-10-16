@@ -48,6 +48,7 @@ class ScoreHints(BaseModel):
     accompaniment_type: Optional[str] = "piano" # piano, a_cappella, reduction, auto
     time_signature: Optional[str] = None
     tempo_bpm: Optional[float] = None
+    custom_instructions: Optional[str] = None
 
 class ScoreResponse(BaseModel):
     id: str

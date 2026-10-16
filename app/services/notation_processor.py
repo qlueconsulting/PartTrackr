@@ -69,6 +69,12 @@ class NotationProcessor:
         self.title = self._extract_title()
         self.composer = self._extract_composer()
         
+        # Custom directives from user instructions
+        self.custom_directives = self._parse_custom_instructions()
+        self.custom_solos = self.custom_directives["solos"]
+        self.custom_tacet = self.custom_directives["tacet"]
+        self.custom_interludes = self.custom_directives["interludes"]
+
         # Identified parts
         self.accomp_parts: List[music21.stream.Part] = []
         self.vocal_parts: List[music21.stream.Part] = []
@@ -92,6 +98,81 @@ class NotationProcessor:
         if self.raw_score.metadata and self.raw_score.metadata.composer:
             return self.raw_score.metadata.composer
         return "Unknown Composer"
+
+    def _parse_custom_instructions(self) -> Dict[str, Any]:
+        """
+        Parses user score directives and measure instructions into structured constraints:
+        - solos: Dict[int, str] (measure -> voice letter 'S', 'A', 'T', 'B')
+        - tacet: Dict[str, Set[int]] (part group -> set of measure numbers)
+        - interludes: Set[int] (instrumental prelude/interlude measures where vocal parts rest)
+        """
+        res = {
+            "solos": {},
+            "tacet": {
+                "piano": set(), "vocal": set(), "men": set(), "women": set(),
+                "soprano": set(), "alto": set(), "tenor": set(), "bass": set()
+            },
+            "interludes": set()
+        }
+        instr = str(self.user_hints.get("custom_instructions") or "").strip()
+        if not instr:
+            return res
+
+        def _parse_measure_ranges(text: str) -> set:
+            measures = set()
+            for s, e in re.findall(r'(\d+)\s*(?:-|to)\s*(\d+)', text, re.I):
+                s_i, e_i = int(s), int(e)
+                measures.update(range(min(s_i, e_i), max(s_i, e_i) + 1))
+            cleaned = re.sub(r'(\d+)\s*(?:-|to)\s*(\d+)', '', text)
+            for s in re.findall(r'\b(\d+)\b', cleaned):
+                measures.add(int(s))
+            return measures
+
+        normalized = re.sub(r'\bmm?\.\s*', 'm ', instr, flags=re.I)
+        normalized = re.sub(r'\bbars?\.\s*', 'bar ', normalized, flags=re.I)
+        clauses = re.split(r'[\n;]+|(?:\.\s+)|,', normalized)
+
+        for clause in clauses:
+            c = clause.strip().lower()
+            if not c:
+                continue
+            ms = _parse_measure_ranges(c)
+            if not ms:
+                continue
+            if any(w in c for w in ["prelude", "interlude", "intro", "instrumental"]):
+                res["interludes"].update(ms)
+            if "solo" in c:
+                target = None
+                if "sop" in c:
+                    target = "S"
+                elif "alt" in c:
+                    target = "A"
+                elif "ten" in c:
+                    target = "T"
+                elif "bass" in c or "bar" in c:
+                    target = "B"
+                if target:
+                    for m in ms:
+                        res["solos"][m] = target
+            if any(w in c for w in ["tacet", "rest", "rests", "silent", "silence"]):
+                if any(w in c for w in ["piano", "pno", "accomp", "keyboard"]):
+                    res["tacet"]["piano"].update(ms)
+                if any(w in c for w in ["men", "male"]):
+                    res["tacet"]["men"].update(ms)
+                if any(w in c for w in ["women", "female"]):
+                    res["tacet"]["women"].update(ms)
+                if any(w in c for w in ["soprano", "sopranos"]):
+                    res["tacet"]["soprano"].update(ms)
+                if any(w in c for w in ["alto", "altos"]):
+                    res["tacet"]["alto"].update(ms)
+                if any(w in c for w in ["tenor", "tenors"]):
+                    res["tacet"]["tenor"].update(ms)
+                if any(w in c for w in ["bass", "basses", "baritone"]):
+                    res["tacet"]["bass"].update(ms)
+                if any(w in c for w in ["vocal", "voices", "choir", "chorus", "all voices"]):
+                    res["tacet"]["vocal"].update(ms)
+
+        return res
 
     def _classify_staves(self):
         """
@@ -411,6 +492,12 @@ class NotationProcessor:
             m_out.timeSignature = meter.TimeSignature(t.time_signature)
             m_out.append(tempo.MetronomeMark(number=t.tempo_bpm))
 
+            # Check if piano is explicitly tacet in this measure per user directive
+            if t.number in getattr(self, "custom_tacet", {}).get("piano", set()):
+                m_out.append(note.Rest(quarterLength=t.quarter_length))
+                pno_part.append(m_out)
+                continue
+
             notes_in_measure = []
             for p in self.accomp_parts:
                 src_m = p.measure(t.number)
@@ -465,34 +552,38 @@ class NotationProcessor:
             if not has_vocal_notes:
                 interlude_measures.add(m_num)
 
+        # Incorporate user-specified custom interlude measures from directives
+        if getattr(self, "custom_interludes", None):
+            interlude_measures.update(self.custom_interludes)
+
         if n_vocal == 0:
             # No vocal staves (pure instrumental score), all vocal parts rest
             for k in results:
                 for t in self.measure_grid:
                     m = self._create_rest_measure(t)
                     results[k].parts[0].append(m)
-            return results
+            return self._finalize_vocal_routing(results)
 
         # Explicit choral voicing hints
         voicing = str(self.user_hints.get("choral_voicing") or "auto").strip().upper()
         if voicing == "TTBB":
             self._route_ttbb_voices(results, interlude_measures)
-            return results
+            return self._finalize_vocal_routing(results)
         elif voicing == "SSAA":
             self._route_ssaa_voices(results, interlude_measures)
-            return results
+            return self._finalize_vocal_routing(results)
         elif voicing == "UNISON":
             self._route_unison_voices(results, interlude_measures)
-            return results
+            return self._finalize_vocal_routing(results)
         elif voicing == "SA_TB" and n_vocal == 2:
             self._route_sa_staff(self.vocal_parts[0], results, interlude_measures)
             self._route_tb_staff(self.vocal_parts[1], results, interlude_measures)
-            return results
+            return self._finalize_vocal_routing(results)
         elif voicing == "SAB" and n_vocal == 3:
             self._route_discrete_staff(self.vocal_parts[0], ["S1", "S2"], results, interlude_measures)
             self._route_discrete_staff(self.vocal_parts[1], ["A1", "A2"], results, interlude_measures)
             self._route_discrete_staff(self.vocal_parts[2], ["Bar1", "Bar2", "B1", "B2", "T1", "T2"], results, interlude_measures)
-            return results
+            return self._finalize_vocal_routing(results)
 
         elif n_vocal == 1:
             # Single vocal staff: inspect clef, labels, divisi
@@ -520,6 +611,84 @@ class NotationProcessor:
         else:
             # Flexible mapping for 3, 5, or more staves
             self._route_arbitrary_vocal_staves(self.vocal_parts, results, interlude_measures)
+
+        return self._finalize_vocal_routing(results)
+
+    def _finalize_vocal_routing(self, results: Dict[str, music21.stream.Score]) -> Dict[str, music21.stream.Score]:
+        """
+        Applies post-routing filters including custom tacet directives and custom solos across vocal parts.
+        """
+        results = self._apply_custom_solos(results)
+        return self._apply_custom_tacet(results)
+
+    def _apply_custom_solos(self, results: Dict[str, music21.stream.Score]) -> Dict[str, music21.stream.Score]:
+        if not hasattr(self, "custom_solos") or not self.custom_solos:
+            return results
+
+        grid_by_num = {t.number: t for t in self.measure_grid}
+
+        for m_num, solo_target in self.custom_solos.items():
+            t = grid_by_num.get(m_num)
+            if not t:
+                continue
+
+            for stem_name, score in results.items():
+                if not score.parts:
+                    continue
+                # If this stem is NOT the solo target, silence it in measure m_num
+                if not stem_name.startswith(solo_target):
+                    part = score.parts[0]
+                    m = part.measure(m_num)
+                    if m is not None:
+                        part.replace(m, self._create_rest_measure(t))
+
+        return results
+
+    def _apply_custom_tacet(self, results: Dict[str, music21.stream.Score]) -> Dict[str, music21.stream.Score]:
+        if not hasattr(self, "custom_tacet") or not self.custom_tacet:
+            return results
+
+        men_stems = {"T1", "T2", "Bar1", "Bar2", "B1", "B2"}
+        women_stems = {"S1", "S2", "A1", "A2"}
+        sop_stems = {"S1", "S2"}
+        alto_stems = {"A1", "A2"}
+        tenor_stems = {"T1", "T2"}
+        bass_stems = {"Bar1", "Bar2", "B1", "B2"}
+
+        grid_by_num = {t.number: t for t in self.measure_grid}
+
+        for stem_name, score in results.items():
+            if not score.parts:
+                continue
+            part = score.parts[0]
+
+            # Determine measures that should be silenced for this stem
+            silence_measures = set()
+            if "vocal" in self.custom_tacet:
+                silence_measures.update(self.custom_tacet["vocal"])
+            if stem_name in men_stems and "men" in self.custom_tacet:
+                silence_measures.update(self.custom_tacet["men"])
+            if stem_name in women_stems and "women" in self.custom_tacet:
+                silence_measures.update(self.custom_tacet["women"])
+            if stem_name in sop_stems and "soprano" in self.custom_tacet:
+                silence_measures.update(self.custom_tacet["soprano"])
+            if stem_name in alto_stems and "alto" in self.custom_tacet:
+                silence_measures.update(self.custom_tacet["alto"])
+            if stem_name in tenor_stems and "tenor" in self.custom_tacet:
+                silence_measures.update(self.custom_tacet["tenor"])
+            if stem_name in bass_stems and "bass" in self.custom_tacet:
+                silence_measures.update(self.custom_tacet["bass"])
+
+            if not silence_measures:
+                continue
+
+            # Replace silenced measures with rest measures matching the grid
+            for m_num in silence_measures:
+                m = part.measure(m_num)
+                if m is not None:
+                    t = grid_by_num.get(m_num)
+                    if t:
+                        part.replace(m, self._create_rest_measure(t))
 
         return results
 
@@ -588,7 +757,7 @@ class NotationProcessor:
                 continue
 
             # Check for Solo text expression
-            is_solo, solo_target = self._check_solo(src_m)
+            is_solo, solo_target = self._check_solo(src_m, m_num)
 
             # Check for divisi / chords
             has_chords = any(isinstance(n, chord.Chord) for n in src_m.flatten().notes)
@@ -936,19 +1105,23 @@ class NotationProcessor:
         sc.append(p)
         return sc
 
-    def _check_solo(self, m: music21.stream.Measure) -> Tuple[bool, Optional[str]]:
-        for text in m.flatten().getElementsByClass(music21.expressions.TextExpression):
-            content = (text.content or "").lower()
-            if "solo" in content:
-                if "sop" in content:
-                    return True, "S"
-                elif "alt" in content:
-                    return True, "A"
-                elif "ten" in content:
-                    return True, "T"
-                elif "bass" in content or "bar" in content:
-                    return True, "B"
-                return True, None
+    def _check_solo(self, m: Optional[music21.stream.Measure], m_num: Optional[int] = None) -> Tuple[bool, Optional[str]]:
+        if m_num is not None and hasattr(self, "custom_solos") and m_num in self.custom_solos:
+            return True, self.custom_solos[m_num]
+
+        if m is not None:
+            for text in m.flatten().getElementsByClass(music21.expressions.TextExpression):
+                content = (text.content or "").lower()
+                if "solo" in content:
+                    if "sop" in content:
+                        return True, "S"
+                    elif "alt" in content:
+                        return True, "A"
+                    elif "ten" in content:
+                        return True, "T"
+                    elif "bass" in content or "bar" in content:
+                        return True, "B"
+                    return True, None
         return False, None
 
     def _enforce_metric_lockstep(self, stem_name: str, score: music21.stream.Score) -> music21.stream.Score:

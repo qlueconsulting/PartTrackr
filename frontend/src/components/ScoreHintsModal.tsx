@@ -20,6 +20,7 @@ export const ScoreHintsModal: React.FC<ScoreHintsModalProps> = ({
   const [accompanimentType, setAccompanimentType] = useState<string>('piano')
   const [timeSignature, setTimeSignature] = useState<string>('')
   const [tempoBpm, setTempoBpm] = useState<string>('')
+  const [customInstructions, setCustomInstructions] = useState<string>('')
 
   const [isReprocessing, setIsReprocessing] = useState<boolean>(false)
   const [error, setError] = useState<string | null>(null)
@@ -45,6 +46,7 @@ export const ScoreHintsModal: React.FC<ScoreHintsModalProps> = ({
           ? String(Math.round(score.tempo_bpm))
           : '120'
       )
+      setCustomInstructions(hints.custom_instructions || '')
       setError(null)
       setSuccessMsg(null)
     }
@@ -64,6 +66,7 @@ export const ScoreHintsModal: React.FC<ScoreHintsModalProps> = ({
       accompaniment_type: accompanimentType,
       time_signature: timeSignature.trim() || null,
       tempo_bpm: tempoBpm.trim() ? parseFloat(tempoBpm.trim()) : null,
+      custom_instructions: customInstructions.trim() || null,
     }
 
     try {
@@ -239,6 +242,23 @@ export const ScoreHintsModal: React.FC<ScoreHintsModalProps> = ({
                 className="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-lg text-sm text-white focus:outline-none focus:border-indigo-500"
               />
             </div>
+          </div>
+
+          {/* Parameter 5: Custom AI Instructions & Directives */}
+          <div>
+            <label className="block text-xs font-semibold text-slate-300 mb-1">
+              5. Custom AI Instructions & Measure Directives (Optional)
+            </label>
+            <textarea
+              rows={3}
+              value={customInstructions}
+              onChange={(e) => setCustomInstructions(e.target.value)}
+              placeholder="e.g. bars 1-4 are a piano prelude; m.25 soprano solo; men rest bars 1-8; piano tacet bars 5-8"
+              className="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-lg text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 resize-none font-mono"
+            />
+            <p className="text-[11px] text-slate-500 mt-1">
+              Provides measure directives (e.g. preludes, interludes, solos, or section tacets) to guide AI topology and voice routing.
+            </p>
           </div>
 
           {/* Reprocess Button */}

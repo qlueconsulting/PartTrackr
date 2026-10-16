@@ -73,6 +73,7 @@ export interface ScoreHints {
   accompaniment_type?: 'piano' | 'a_cappella' | 'reduction' | 'auto' | string
   time_signature?: string | null
   tempo_bpm?: number | null
+  custom_instructions?: string | null
 }
 
 export interface ScoreSummary {

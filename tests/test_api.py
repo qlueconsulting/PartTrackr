@@ -154,3 +154,21 @@ def test_reprocess_score_endpoint_with_hints(client: TestClient):
     assert ac_data["stems"]["Piano"]["is_active_in_score"] is False
     assert ac_data["stems"]["S1"]["note_count"] > 0
 
+    # 4. Reprocess score with custom measure directives
+    directives_payload = {
+        "total_measures": 5,
+        "choral_voicing": "SATB",
+        "accompaniment_type": "piano",
+        "custom_instructions": "bars 1-2 prelude; m.3 soprano solo; men rest bars 1-4"
+    }
+    dir_res = client.post(f"/api/v1/scores/{score_id}/reprocess", json=directives_payload)
+    assert dir_res.status_code == 200
+    dir_data = dir_res.json()
+    assert dir_data["score_hints"]["custom_instructions"] == "bars 1-2 prelude; m.3 soprano solo; men rest bars 1-4"
+
+    # Audit checks must include user custom directives check
+    check_names = [c["name"] for c in dir_data["audit"]["checks"]]
+    assert "User Custom Measure Directives Applied" in check_names
+    # Notes in audit report include custom directive note
+    assert any("[User Score Directive]" in n for n in dir_data["audit"]["notes"])
+
