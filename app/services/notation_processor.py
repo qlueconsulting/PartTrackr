@@ -53,9 +53,18 @@ class NotationProcessor:
             Fraction safety, exact measure duration matching, zero drift).
     """
 
-    def __init__(self, score_path: Path, llm_blueprint: Optional[Dict[str, Any]] = None):
+    def __init__(self, score_path: Path, llm_blueprint: Optional[Dict[str, Any]] = None, user_hints: Optional[Any] = None):
         self.score_path = score_path
         self.llm_blueprint = llm_blueprint or {}
+        if isinstance(user_hints, dict):
+            self.user_hints = user_hints
+        elif hasattr(user_hints, "model_dump"):
+            self.user_hints = user_hints.model_dump()
+        elif hasattr(user_hints, "dict"):
+            self.user_hints = user_hints.dict()
+        else:
+            self.user_hints = {}
+
         self.raw_score: music21.stream.Score = music21.converter.parse(str(score_path))
         self.title = self._extract_title()
         self.composer = self._extract_composer()
@@ -98,6 +107,13 @@ class NotationProcessor:
                 part.append(el)
             all_parts = [part]
 
+        accomp_hint = str(self.user_hints.get("accompaniment_type") or "").strip().lower()
+        if accomp_hint == "a_cappella":
+            # Explicit user hint: Pure a cappella score, no piano accompaniment
+            self.accomp_parts = []
+            self.vocal_parts = list(all_parts)
+            return
+
         # Check for StaffGroups (braces vs brackets)
         brace_part_ids = set()
         bracket_part_ids = set()
@@ -137,8 +153,15 @@ class NotationProcessor:
             else:
                 self.vocal_parts.append(part)
 
-        # If no accompaniment detected yet but we have >= 3 parts and bottom 2 have no lyrics, treat bottom 2 as piano
-        if not self.accomp_parts and len(all_parts) >= 3:
+        # Apply accompaniment_type hints or bottom-up heuristics
+        if accomp_hint in ["piano", "reduction"] and not self.accomp_parts:
+            if len(all_parts) >= 3:
+                self.accomp_parts = list(all_parts[-2:])
+                self.vocal_parts = [p for p in all_parts if p not in self.accomp_parts]
+            elif len(all_parts) == 2:
+                self.vocal_parts = [all_parts[0]]
+                self.accomp_parts = [all_parts[1]]
+        elif not self.accomp_parts and len(all_parts) >= 3:
             candidate_bottom = all_parts[-2:]
             if not any(any(bool(n.lyrics) for n in p.flatten().notes) for p in candidate_bottom):
                 self.accomp_parts = list(candidate_bottom)
@@ -261,28 +284,44 @@ class NotationProcessor:
         current_ts = meter.TimeSignature("4/4")
         current_tempo = 120.0
 
-        # Scan for initial time signature or tempo in score
+        hint_ts = self.user_hints.get("time_signature")
+        if hint_ts:
+            try:
+                current_ts = meter.TimeSignature(str(hint_ts).strip())
+            except Exception:
+                pass
+
+        hint_bpm = self.user_hints.get("tempo_bpm")
+        if hint_bpm:
+            try:
+                current_tempo = float(hint_bpm)
+            except Exception:
+                pass
+
+        # Scan for initial time signature or tempo in score if not explicitly set by hints
         first_ts = self.raw_score.flatten().getElementsByClass(meter.TimeSignature).first()
-        if first_ts:
+        if first_ts and not hint_ts:
             current_ts = first_ts
         first_tempo = self.raw_score.flatten().getElementsByClass(tempo.MetronomeMark).first()
-        if first_tempo and first_tempo.number:
+        if first_tempo and first_tempo.number and not hint_bpm:
             current_tempo = float(first_tempo.number)
 
         cumulative_seconds = 0.0
 
         for m_num in measure_numbers:
-            # Check if any part defines a new TS or tempo at this measure
+            # Check if any part defines a new TS or tempo at this measure (if not overridden by hint)
             for p in (source_parts + all_parts):
                 m = p.measure(m_num)
                 if m is not None:
-                    ts = m.getElementsByClass(meter.TimeSignature).first()
-                    if ts:
-                        current_ts = ts
-                    tm = m.getElementsByClass(tempo.MetronomeMark).first()
-                    if tm and tm.number:
-                        current_tempo = float(tm.number)
-                    if ts or tm:
+                    if not hint_ts:
+                        ts = m.getElementsByClass(meter.TimeSignature).first()
+                        if ts:
+                            current_ts = ts
+                    if not hint_bpm:
+                        tm = m.getElementsByClass(tempo.MetronomeMark).first()
+                        if tm and tm.number:
+                            current_tempo = float(tm.number)
+                    if (ts if not hint_ts else None) or (tm if not hint_bpm else None):
                         break
 
             bar_ql = Fraction(current_ts.barDuration.quarterLength)
@@ -295,6 +334,26 @@ class NotationProcessor:
             template.start_seconds = cumulative_seconds
             cumulative_seconds += template.duration_seconds
             self.measure_grid.append(template)
+
+        # Enforce user hint for total_measures (Rule B: Exact measure count guarantee)
+        hint_total_m = self.user_hints.get("total_measures")
+        if hint_total_m and isinstance(hint_total_m, int) and hint_total_m > 0:
+            if len(self.measure_grid) > hint_total_m:
+                self.measure_grid = self.measure_grid[:hint_total_m]
+            elif len(self.measure_grid) < hint_total_m:
+                last_tpl = self.measure_grid[-1] if self.measure_grid else MeasureTemplate(1, Fraction(4, 1), "4/4", 120.0)
+                cumulative_seconds = self.measure_grid[-1].start_seconds + self.measure_grid[-1].duration_seconds if self.measure_grid else 0.0
+                start_num = len(self.measure_grid) + 1
+                for m_idx in range(start_num, hint_total_m + 1):
+                    pad_tpl = MeasureTemplate(
+                        number=m_idx,
+                        quarter_length=last_tpl.quarter_length,
+                        time_signature=last_tpl.time_signature,
+                        tempo_bpm=last_tpl.tempo_bpm
+                    )
+                    pad_tpl.start_seconds = cumulative_seconds
+                    cumulative_seconds += pad_tpl.duration_seconds
+                    self.measure_grid.append(pad_tpl)
 
     def extract_all_stems(self) -> Tuple[Dict[str, music21.stream.Score], List[Dict[str, Any]]]:
         """
@@ -412,6 +471,27 @@ class NotationProcessor:
                 for t in self.measure_grid:
                     m = self._create_rest_measure(t)
                     results[k].parts[0].append(m)
+            return results
+
+        # Explicit choral voicing hints
+        voicing = str(self.user_hints.get("choral_voicing") or "auto").strip().upper()
+        if voicing == "TTBB":
+            self._route_ttbb_voices(results, interlude_measures)
+            return results
+        elif voicing == "SSAA":
+            self._route_ssaa_voices(results, interlude_measures)
+            return results
+        elif voicing == "UNISON":
+            self._route_unison_voices(results, interlude_measures)
+            return results
+        elif voicing == "SA_TB" and n_vocal == 2:
+            self._route_sa_staff(self.vocal_parts[0], results, interlude_measures)
+            self._route_tb_staff(self.vocal_parts[1], results, interlude_measures)
+            return results
+        elif voicing == "SAB" and n_vocal == 3:
+            self._route_discrete_staff(self.vocal_parts[0], ["S1", "S2"], results, interlude_measures)
+            self._route_discrete_staff(self.vocal_parts[1], ["A1", "A2"], results, interlude_measures)
+            self._route_discrete_staff(self.vocal_parts[2], ["Bar1", "Bar2", "B1", "B2", "T1", "T2"], results, interlude_measures)
             return results
 
         elif n_vocal == 1:
@@ -698,6 +778,109 @@ class NotationProcessor:
             while len(results[k].parts[0].getElementsByClass(stream.Measure)) < len(self.measure_grid):
                 idx = len(results[k].parts[0].getElementsByClass(stream.Measure))
                 results[k].parts[0].append(self._create_rest_measure(self.measure_grid[idx]))
+
+    def _route_ttbb_voices(self, results: Dict[str, music21.stream.Score], interludes: set):
+        """Routes vocal staves strictly to Men's voices (T1, T2, Bar1, Bar2, B1, B2). Female stems rest."""
+        for k in ["S1", "S2", "A1", "A2"]:
+            for t in self.measure_grid:
+                results[k].parts[0].append(self._create_rest_measure(t))
+
+        men_keys = ["T1", "T2", "Bar1", "Bar2", "B1", "B2"]
+        n_v = len(self.vocal_parts)
+        if n_v == 1:
+            staff = self.vocal_parts[0]
+            for t in self.measure_grid:
+                m_num = t.number
+                src_m = staff.measure(m_num)
+                if m_num in interludes or src_m is None or len(src_m.flatten().notes) == 0:
+                    for k in men_keys:
+                        results[k].parts[0].append(self._create_rest_measure(t))
+                    continue
+                has_chords = any(isinstance(n, chord.Chord) for n in src_m.flatten().notes)
+                if has_chords:
+                    m_up, m_low = self._separate_divisi(src_m, t)
+                    for k in ["T1", "T2"]:
+                        results[k].parts[0].append(copy.deepcopy(m_up))
+                    for k in ["Bar1", "Bar2", "B1", "B2"]:
+                        results[k].parts[0].append(copy.deepcopy(m_low))
+                else:
+                    m_cloned = self._clone_measure(src_m, t)
+                    for k in men_keys:
+                        results[k].parts[0].append(copy.deepcopy(m_cloned))
+        elif n_v == 2:
+            self._route_discrete_staff(self.vocal_parts[0], ["T1", "T2"], results, interludes)
+            self._route_discrete_staff(self.vocal_parts[1], ["Bar1", "Bar2", "B1", "B2"], results, interludes)
+        elif n_v == 3:
+            self._route_discrete_staff(self.vocal_parts[0], ["T1"], results, interludes)
+            self._route_discrete_staff(self.vocal_parts[1], ["T2"], results, interludes)
+            self._route_discrete_staff(self.vocal_parts[2], ["Bar1", "Bar2", "B1", "B2"], results, interludes)
+        else:
+            self._route_discrete_staff(self.vocal_parts[0], ["T1"], results, interludes)
+            self._route_discrete_staff(self.vocal_parts[1], ["T2"], results, interludes)
+            self._route_discrete_staff(self.vocal_parts[2], ["Bar1", "Bar2"], results, interludes)
+            self._route_discrete_staff(self.vocal_parts[3], ["B1", "B2"], results, interludes)
+
+    def _route_ssaa_voices(self, results: Dict[str, music21.stream.Score], interludes: set):
+        """Routes vocal staves strictly to Women's voices (S1, S2, A1, A2). Male stems rest."""
+        for k in ["T1", "T2", "Bar1", "Bar2", "B1", "B2"]:
+            for t in self.measure_grid:
+                results[k].parts[0].append(self._create_rest_measure(t))
+
+        women_keys = ["S1", "S2", "A1", "A2"]
+        n_v = len(self.vocal_parts)
+        if n_v == 1:
+            staff = self.vocal_parts[0]
+            for t in self.measure_grid:
+                m_num = t.number
+                src_m = staff.measure(m_num)
+                if m_num in interludes or src_m is None or len(src_m.flatten().notes) == 0:
+                    for k in women_keys:
+                        results[k].parts[0].append(self._create_rest_measure(t))
+                    continue
+                has_chords = any(isinstance(n, chord.Chord) for n in src_m.flatten().notes)
+                if has_chords:
+                    m_up, m_low = self._separate_divisi(src_m, t)
+                    for k in ["S1", "S2"]:
+                        results[k].parts[0].append(copy.deepcopy(m_up))
+                    for k in ["A1", "A2"]:
+                        results[k].parts[0].append(copy.deepcopy(m_low))
+                else:
+                    m_cloned = self._clone_measure(src_m, t)
+                    for k in women_keys:
+                        results[k].parts[0].append(copy.deepcopy(m_cloned))
+        elif n_v == 2:
+            self._route_discrete_staff(self.vocal_parts[0], ["S1", "S2"], results, interludes)
+            self._route_discrete_staff(self.vocal_parts[1], ["A1", "A2"], results, interludes)
+        elif n_v == 3:
+            self._route_discrete_staff(self.vocal_parts[0], ["S1"], results, interludes)
+            self._route_discrete_staff(self.vocal_parts[1], ["S2"], results, interludes)
+            self._route_discrete_staff(self.vocal_parts[2], ["A1", "A2"], results, interludes)
+        else:
+            self._route_discrete_staff(self.vocal_parts[0], ["S1"], results, interludes)
+            self._route_discrete_staff(self.vocal_parts[1], ["S2"], results, interludes)
+            self._route_discrete_staff(self.vocal_parts[2], ["A1"], results, interludes)
+            self._route_discrete_staff(self.vocal_parts[3], ["A2"], results, interludes)
+
+    def _route_unison_voices(self, results: Dict[str, music21.stream.Score], interludes: set):
+        """Routes vocal staves across all 10 vocal parts (S1..B2)."""
+        all_vocal_keys = [k for k in STEM_TAXONOMY if k != "Piano"]
+        staff = self.vocal_parts[0] if self.vocal_parts else None
+        if not staff:
+            for k in all_vocal_keys:
+                for t in self.measure_grid:
+                    results[k].parts[0].append(self._create_rest_measure(t))
+            return
+
+        for t in self.measure_grid:
+            m_num = t.number
+            src_m = staff.measure(m_num)
+            if m_num in interludes or src_m is None or len(src_m.flatten().notes) == 0:
+                for k in all_vocal_keys:
+                    results[k].parts[0].append(self._create_rest_measure(t))
+                continue
+            m_cloned = self._clone_measure(src_m, t)
+            for k in all_vocal_keys:
+                results[k].parts[0].append(copy.deepcopy(m_cloned))
 
     def _separate_divisi(self, src_m: music21.stream.Measure, t: MeasureTemplate) -> Tuple[music21.stream.Measure, music21.stream.Measure]:
         """Separates chordal/polyphonic staff into upper line (Voice 1) and lower line (Voice 2)."""

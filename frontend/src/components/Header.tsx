@@ -1,5 +1,5 @@
 import React from 'react'
-import { Music2, ShieldCheck, Upload, Sparkles } from 'lucide-react'
+import { Music2, ShieldCheck, Upload, Sparkles, Sliders } from 'lucide-react'
 
 interface HeaderProps {
   scoreTitle: string
@@ -9,6 +9,7 @@ interface HeaderProps {
   onOpenAudit: () => void
   onOpenUpload: () => void
   onOpenSamples: () => void
+  onOpenHints?: () => void
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -19,6 +20,7 @@ export const Header: React.FC<HeaderProps> = ({
   onOpenAudit,
   onOpenUpload,
   onOpenSamples,
+  onOpenHints,
 }) => {
   const formatTime = (secs: number) => {
     const mins = Math.floor(secs / 60)
@@ -62,6 +64,17 @@ export const Header: React.FC<HeaderProps> = ({
             <Sparkles className="w-4 h-4 text-amber-400" />
             <span>Sample Scores</span>
           </button>
+
+          {onOpenHints && (
+            <button
+              onClick={onOpenHints}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg bg-violet-950/60 hover:bg-violet-900/60 text-violet-300 border border-violet-800/60 transition"
+              title="Edit AI score hints & reprocess notation/routing without re-running OCR"
+            >
+              <Sliders className="w-4 h-4 text-violet-400" />
+              <span>AI Hints & Reprocess</span>
+            </button>
+          )}
 
           <button
             onClick={onOpenAudit}

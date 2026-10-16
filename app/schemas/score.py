@@ -42,6 +42,13 @@ class AuditReport(BaseModel):
     warnings: List[str] = Field(default_factory=list)
     notes: List[str] = Field(default_factory=list)
 
+class ScoreHints(BaseModel):
+    total_measures: Optional[int] = None
+    choral_voicing: Optional[str] = "SATB" # SATB, SA_TB, SSAA, TTBB, SAB, Unison, Auto
+    accompaniment_type: Optional[str] = "piano" # piano, a_cappella, reduction, auto
+    time_signature: Optional[str] = None
+    tempo_bpm: Optional[float] = None
+
 class ScoreResponse(BaseModel):
     id: str
     title: str
@@ -58,6 +65,7 @@ class ScoreResponse(BaseModel):
     stems: Dict[str, StemInfo] = Field(default_factory=dict)
     analysis: List[MeasureInfo] = Field(default_factory=list)
     audit: Optional[AuditReport] = None
+    score_hints: Optional[ScoreHints] = None
 
 class ScoreSummary(BaseModel):
     id: str

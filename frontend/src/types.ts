@@ -64,6 +64,15 @@ export interface ScoreResponse {
   stems: Record<string, StemInfo>
   analysis: MeasureInfo[]
   audit?: AuditReport
+  score_hints?: ScoreHints
+}
+
+export interface ScoreHints {
+  total_measures?: number | null
+  choral_voicing?: 'SATB' | 'SA_TB' | 'SSAA' | 'TTBB' | 'SAB' | 'Unison' | 'Auto' | string
+  accompaniment_type?: 'piano' | 'a_cappella' | 'reduction' | 'auto' | string
+  time_signature?: string | null
+  tempo_bpm?: number | null
 }
 
 export interface ScoreSummary {

@@ -54,6 +54,7 @@ def run_sqlite_migrations(target_engine=None):
                 ("stems_metadata", "TEXT DEFAULT '{}'"),
                 ("analysis_json", "TEXT DEFAULT '[]'"),
                 ("audit_report", "TEXT DEFAULT '{}'"),
+                ("score_hints", "TEXT DEFAULT '{}'"),
             ]
 
             for col_name, col_type in migrations:

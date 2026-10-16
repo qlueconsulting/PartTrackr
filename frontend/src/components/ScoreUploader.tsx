@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react'
-import { Upload, FileMusic, Sparkles, X, AlertCircle, Loader2, Cpu } from 'lucide-react'
+import { Upload, FileMusic, Sparkles, X, AlertCircle, Loader2, Cpu, ChevronDown, ChevronUp, Sliders } from 'lucide-react'
 import type { ScoreResponse } from '../types'
 
 interface ScoreUploaderProps {
@@ -25,6 +25,14 @@ export const ScoreUploader: React.FC<ScoreUploaderProps> = ({
   const [error, setError] = useState<string | null>(null)
   const [aiStatus, setAiStatus] = useState<{ ollama_connected?: boolean; ollama_models?: string[] } | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+
+  // Optional Score Hints State
+  const [showHints, setShowHints] = useState<boolean>(false)
+  const [totalMeasures, setTotalMeasures] = useState<string>('')
+  const [choralVoicing, setChoralVoicing] = useState<string>('SATB')
+  const [accompanimentType, setAccompanimentType] = useState<string>('piano')
+  const [timeSignature, setTimeSignature] = useState<string>('')
+  const [tempoBpm, setTempoBpm] = useState<string>('')
 
   useEffect(() => {
     if (isOpen) {
@@ -75,6 +83,17 @@ export const ScoreUploader: React.FC<ScoreUploaderProps> = ({
     const formData = new FormData()
     formData.append('file', file)
 
+    const hintsPayload: Record<string, unknown> = {}
+    if (totalMeasures.trim()) hintsPayload.total_measures = parseInt(totalMeasures.trim(), 10)
+    if (choralVoicing) hintsPayload.choral_voicing = choralVoicing
+    if (accompanimentType) hintsPayload.accompaniment_type = accompanimentType
+    if (timeSignature.trim()) hintsPayload.time_signature = timeSignature.trim()
+    if (tempoBpm.trim()) hintsPayload.tempo_bpm = parseFloat(tempoBpm.trim())
+
+    if (Object.keys(hintsPayload).length > 0) {
+      formData.append('hints', JSON.stringify(hintsPayload))
+    }
+
     try {
       const res = await fetch('/api/v1/scores/upload', {
         method: 'POST',
@@ -107,7 +126,7 @@ export const ScoreUploader: React.FC<ScoreUploaderProps> = ({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
-      <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-lg w-full p-6 shadow-2xl relative">
+      <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-lg w-full p-6 shadow-2xl relative max-h-[92vh] overflow-y-auto">
         <button
           onClick={onClose}
           disabled={busy}
@@ -125,7 +144,7 @@ export const ScoreUploader: React.FC<ScoreUploaderProps> = ({
         </p>
 
         {/* Real-Time AI & OMR Engine Badge */}
-        <div className="mb-4 px-3 py-2 rounded-lg bg-slate-950/80 border border-slate-800 flex items-center justify-between text-xs">
+        <div className="mb-3 px-3 py-2 rounded-lg bg-slate-950/80 border border-slate-800 flex items-center justify-between text-xs">
           <span className="flex items-center gap-1.5 text-slate-300 font-medium">
             <Cpu className="w-3.5 h-3.5 text-emerald-400" />
             Real-Time SMuFL + AI Topology Analyzer
@@ -135,6 +154,93 @@ export const ScoreUploader: React.FC<ScoreUploaderProps> = ({
               ? `Local GPU Ollama (${aiStatus.ollama_models?.[0] || 'Ready'})`
               : 'Embedded SMuFL + OMR Ready'}
           </span>
+        </div>
+
+        {/* Collapsible Score Hints Accordion */}
+        <div className="mb-4 border border-slate-800 rounded-xl bg-slate-950/60 overflow-hidden">
+          <button
+            type="button"
+            onClick={() => setShowHints(!showHints)}
+            className="w-full px-3 py-2 text-xs font-semibold text-slate-300 hover:text-white flex items-center justify-between bg-slate-900/60 transition"
+          >
+            <span className="flex items-center gap-1.5">
+              <Sliders className="w-3.5 h-3.5 text-violet-400" />
+              Optional Score Hints (Measures, Voicing, Accompaniment)
+            </span>
+            {showHints ? <ChevronUp className="w-4 h-4 text-slate-400" /> : <ChevronDown className="w-4 h-4 text-slate-400" />}
+          </button>
+
+          {showHints && (
+            <div className="p-3 border-t border-slate-800 space-y-3 text-xs">
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="block text-[11px] font-medium text-slate-400 mb-1">Total Measures</label>
+                  <input
+                    type="number"
+                    min="1"
+                    value={totalMeasures}
+                    onChange={(e) => setTotalMeasures(e.target.value)}
+                    placeholder="e.g. 123"
+                    className="w-full px-2.5 py-1.5 bg-slate-900 border border-slate-700 rounded-lg text-white focus:outline-none focus:border-indigo-500 text-xs"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-medium text-slate-400 mb-1">Voicing</label>
+                  <select
+                    value={choralVoicing}
+                    onChange={(e) => setChoralVoicing(e.target.value)}
+                    className="w-full px-2.5 py-1.5 bg-slate-900 border border-slate-700 rounded-lg text-white focus:outline-none focus:border-indigo-500 text-xs"
+                  >
+                    <option value="SATB">SATB</option>
+                    <option value="SA_TB">SA + TB (2-Staff)</option>
+                    <option value="SSAA">SSAA (Women)</option>
+                    <option value="TTBB">TTBB (Men)</option>
+                    <option value="SAB">SAB</option>
+                    <option value="Unison">Unison</option>
+                    <option value="Auto">Auto Detect</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="block text-[11px] font-medium text-slate-400 mb-1">Accompaniment</label>
+                  <select
+                    value={accompanimentType}
+                    onChange={(e) => setAccompanimentType(e.target.value)}
+                    className="w-full px-2.5 py-1.5 bg-slate-900 border border-slate-700 rounded-lg text-white focus:outline-none focus:border-indigo-500 text-xs"
+                  >
+                    <option value="piano">Piano Accompaniment</option>
+                    <option value="a_cappella">A Cappella (0 note piano)</option>
+                    <option value="reduction">Piano Reduction</option>
+                    <option value="auto">Auto Detect</option>
+                  </select>
+                </div>
+                <div className="grid grid-cols-2 gap-1.5">
+                  <div>
+                    <label className="block text-[11px] font-medium text-slate-400 mb-1">Meter</label>
+                    <input
+                      type="text"
+                      value={timeSignature}
+                      onChange={(e) => setTimeSignature(e.target.value)}
+                      placeholder="4/4"
+                      className="w-full px-2 py-1.5 bg-slate-900 border border-slate-700 rounded-lg text-white focus:outline-none focus:border-indigo-500 text-xs"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-medium text-slate-400 mb-1">BPM</label>
+                    <input
+                      type="number"
+                      value={tempoBpm}
+                      onChange={(e) => setTempoBpm(e.target.value)}
+                      placeholder="120"
+                      className="w-full px-2 py-1.5 bg-slate-900 border border-slate-700 rounded-lg text-white focus:outline-none focus:border-indigo-500 text-xs"
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
 
         {error && (

@@ -108,3 +108,49 @@ def test_sqlite_schema_migration_handles_legacy_tables():
     assert fetched.original_filename == "Caroling_Final.pdf"
     assert fetched.filename == "Caroling_Final.pdf"
     session.close()
+
+def test_reprocess_score_endpoint_with_hints(client: TestClient):
+    # 1. Load baseline sample score (anthem has 8 measures)
+    res = client.post("/api/v1/scores/sample/anthem")
+    assert res.status_code == 200
+    data = res.json()
+    score_id = data["id"]
+    assert data["measure_count"] == 8
+
+    # 2. Reprocess score with TTBB voicing and total_measures clamped to 5
+    reprocess_payload = {
+        "total_measures": 5,
+        "choral_voicing": "TTBB",
+        "accompaniment_type": "piano",
+        "tempo_bpm": 96.0
+    }
+    rep_res = client.post(f"/api/v1/scores/{score_id}/reprocess", json=reprocess_payload)
+    assert rep_res.status_code == 200
+    rep_data = rep_res.json()
+
+    assert rep_data["status"] == "completed"
+    assert rep_data["measure_count"] == 5
+    assert len(rep_data["analysis"]) == 5
+    assert rep_data["score_hints"]["total_measures"] == 5
+    assert rep_data["score_hints"]["choral_voicing"] == "TTBB"
+
+    # In TTBB, female stems (S1, S2, A1, A2) must have 0 notes (rests)
+    assert rep_data["stems"]["S1"]["note_count"] == 0
+    assert rep_data["stems"]["A1"]["note_count"] == 0
+    # Male stems (T1, B1, etc.) and Piano must have active notes
+    assert rep_data["stems"]["T1"]["note_count"] > 0
+    assert rep_data["stems"]["Piano"]["note_count"] > 0
+
+    # 3. Reprocess score with a_cappella hint: Piano stem must have 0 notes
+    acappella_payload = {
+        "total_measures": 5,
+        "choral_voicing": "SATB",
+        "accompaniment_type": "a_cappella"
+    }
+    acappella_res = client.post(f"/api/v1/scores/{score_id}/reprocess", json=acappella_payload)
+    assert acappella_res.status_code == 200
+    ac_data = acappella_res.json()
+    assert ac_data["stems"]["Piano"]["note_count"] == 0
+    assert ac_data["stems"]["Piano"]["is_active_in_score"] is False
+    assert ac_data["stems"]["S1"]["note_count"] > 0
+

@@ -6,6 +6,7 @@ import { ActivePartIndicator } from './components/ActivePartIndicator'
 import { StemMixer } from './components/StemMixer'
 import { ScoreUploader } from './components/ScoreUploader'
 import { AuditModal } from './components/AuditModal'
+import { ScoreHintsModal } from './components/ScoreHintsModal'
 import { MultiTrackPlayer } from './audio/MultiTrackPlayer'
 import type { ScoreResponse, ChannelState, MeasureInfo } from './types'
 
@@ -35,6 +36,7 @@ export const App: React.FC = () => {
   // Modals
   const [isUploadOpen, setIsUploadOpen] = useState<boolean>(false)
   const [isAuditOpen, setIsAuditOpen] = useState<boolean>(false)
+  const [isHintsOpen, setIsHintsOpen] = useState<boolean>(false)
 
   // Initialize Player
   useEffect(() => {
@@ -229,6 +231,7 @@ export const App: React.FC = () => {
         onOpenAudit={() => setIsAuditOpen(true)}
         onOpenUpload={() => setIsUploadOpen(true)}
         onOpenSamples={() => setIsUploadOpen(true)}
+        onOpenHints={() => setIsHintsOpen(true)}
       />
 
       {/* Transport Bar */}
@@ -307,6 +310,13 @@ export const App: React.FC = () => {
         audit={score?.audit}
         analysis={score?.analysis || []}
         scoreTitle={score?.title || ''}
+      />
+
+      <ScoreHintsModal
+        isOpen={isHintsOpen}
+        onClose={() => setIsHintsOpen(false)}
+        score={score}
+        onScoreUpdated={handleScoreLoaded}
       />
     </div>
   )

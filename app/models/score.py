@@ -25,6 +25,7 @@ class Score(Base):
     _stems_metadata = Column("stems_metadata", Text, default="{}")
     _analysis_json = Column("analysis_json", Text, default="{}")
     _audit_report = Column("audit_report", Text, default="{}")
+    _score_hints = Column("score_hints", Text, default="{}")
 
     @property
     def stems_metadata(self):
@@ -55,3 +56,16 @@ class Score(Base):
     @audit_report.setter
     def audit_report(self, val):
         self._audit_report = json.dumps(val)
+
+    @property
+    def score_hints(self):
+        if self._score_hints:
+            try:
+                return json.loads(self._score_hints)
+            except Exception:
+                return {}
+        return {}
+
+    @score_hints.setter
+    def score_hints(self, val):
+        self._score_hints = json.dumps(val or {})
