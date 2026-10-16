@@ -2,13 +2,13 @@ version: '3.8'
 
 services:
   parttrackr:
+    image: ghcr.io/qlueconsulting/parttrackr:backend-only
     build:
       context: .
       dockerfile: Dockerfile
-    image: parttrackr:latest
     container_name: parttrackr_service
     ports:
-      - "8000:8000"
+      - "8001:8000"
     volumes:
       - ./storage:/app/storage
     environment:
@@ -17,6 +17,8 @@ services:
       - FFMPEG_CMD=ffmpeg
       - SOUNDFONT_PATH=/usr/share/sounds/sf2/FluidR3_GM.sf2
       - DATABASE_URL=sqlite:////app/storage/parttrackr.db
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - OLLAMA_MODEL=qwen2.5vl:7b
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
@@ -24,3 +26,20 @@ services:
       timeout: 10s
       retries: 3
       start_period: 10s
+
+  # Optional Local GPU Vision LLM Service (Dual NVIDIA RTX 2060 Super 8GB + RTX 2060 6GB = 14GB VRAM)
+  ollama:
+    image: ollama/ollama:latest
+    container_name: parttrackr_ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ./ollama_models:/root/.ollama
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped

@@ -40,6 +40,7 @@ class AuditReport(BaseModel):
     time_drift_max_seconds: float
     checks: List[AuditCheckItem] = Field(default_factory=list)
     warnings: List[str] = Field(default_factory=list)
+    notes: List[str] = Field(default_factory=list)
 
 class ScoreResponse(BaseModel):
     id: str

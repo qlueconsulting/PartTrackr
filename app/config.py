@@ -31,6 +31,13 @@ class Settings(BaseModel):
     # Database URL
     DATABASE_URL: str = os.getenv("DATABASE_URL", f"sqlite:///{BASE_DIR}/parttrackr.db")
     
+    # Real-Time LLM & MCP Sheet Music Intelligence Settings
+    OLLAMA_BASE_URL: str = os.getenv("OLLAMA_BASE_URL", "http://192.168.2.4:11434")
+    OLLAMA_MODEL: str = os.getenv("OLLAMA_MODEL", "qwen2.5vl:7b")
+    MCP_SERVER_URL: str = os.getenv("MCP_SERVER_URL", "")
+    GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
+    OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
+    
     # CORS
     CORS_ORIGINS: list[str] = ["*"]
 

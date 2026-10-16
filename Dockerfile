@@ -49,6 +49,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     poppler-utils \
     imagemagick \
     tesseract-ocr \
+    tesseract-ocr-eng \
+    xdg-utils \
+    libfreetype6 \
+    libxext6 \
     python3.11 \
     python3.11-venv \
     python3.11-dev \
@@ -73,17 +77,16 @@ RUN mkdir -p /usr/share/sounds/sf2 && \
 ENV AUDIVERIS_VERSION=5.11.0
 ENV _JAVA_OPTIONS="-Djava.awt.headless=true"
 ENV JAVA_TOOL_OPTIONS="-Djava.awt.headless=true"
-RUN mkdir -p /usr/share/desktop-directories /opt/audiveris /opt/Audiveris && \
+RUN mkdir -p /usr/share/desktop-directories /opt/audiveris && \
     wget -q https://github.com/Audiveris/audiveris/releases/download/${AUDIVERIS_VERSION}/Audiveris-${AUDIVERIS_VERSION}-ubuntu22.04-x86_64.deb -O /tmp/audiveris.deb && \
-    (dpkg -i /tmp/audiveris.deb || apt-get install -f -y || dpkg-deb -x /tmp/audiveris.deb /) && \
+    dpkg-deb -x /tmp/audiveris.deb / && \
     rm -f /tmp/audiveris.deb && \
-    REAL_BIN=$(find /opt /usr -type f \( -name "Audiveris" -o -name "audiveris" \) ! -name "*.deb" 2>/dev/null | head -n 1) && \
-    if [ -n "$REAL_BIN" ]; then \
-        chmod +x "$REAL_BIN"; \
-        ln -sfn "$REAL_BIN" /usr/local/bin/audiveris; \
-        ln -sfn "$REAL_BIN" /usr/bin/audiveris; \
-        ln -sfn "$REAL_BIN" /usr/local/bin/Audiveris; \
-    fi
+    REAL_BIN=$(find /opt -type f -name "Audiveris" 2>/dev/null | head -n 1) && \
+    chmod +x "$REAL_BIN" && \
+    ln -sfn "$REAL_BIN" /usr/local/bin/audiveris && \
+    ln -sfn "$REAL_BIN" /usr/bin/audiveris && \
+    ln -sfn "$REAL_BIN" /usr/local/bin/Audiveris && \
+    test -x /usr/local/bin/audiveris
 
 WORKDIR /app
 

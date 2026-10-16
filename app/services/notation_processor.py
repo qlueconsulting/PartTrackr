@@ -709,8 +709,10 @@ class NotationProcessor:
 
             # Rebuild clean measure
             clean_m = stream.Measure(number=t.number)
-            clean_m.timeSignature = meter.TimeSignature(t.time_signature)
-            clean_m.insert(0, tempo.MetronomeMark(number=t.tempo_bpm))
+            if i == 0 or t.time_signature != self.measure_grid[i - 1].time_signature:
+                clean_m.timeSignature = meter.TimeSignature(t.time_signature)
+            if i == 0 or t.tempo_bpm != self.measure_grid[i - 1].tempo_bpm:
+                clean_m.insert(0, tempo.MetronomeMark(number=t.tempo_bpm))
 
             if not valid_elements:
                 clean_m.append(note.Rest(quarterLength=target_ql))
