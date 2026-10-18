@@ -1,4 +1,5 @@
 import logging
+import traceback
 from typing import Dict, Any, Optional
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
@@ -34,8 +35,9 @@ def route_voices(req: RouteRequest) -> ScoreCISM:
         routed_cism = VoiceRouterEngine.route_score(req.cism, overrides=req.overrides)
         return routed_cism
     except Exception as e:
+        tb = traceback.format_exc()
         logger.exception(f"Voice routing failed for job {req.job_id}: {e}")
-        raise HTTPException(status_code=500, detail=f"Voice routing error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Voice routing error: {str(e)}\n\nTraceback:\n{tb}")
 
 
 if __name__ == "__main__":

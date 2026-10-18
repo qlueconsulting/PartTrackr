@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react'
+import React, { useState, useRef, useEffect, useMemo } from 'react'
 import {
   Terminal,
   Trash2,
@@ -12,21 +12,54 @@ import {
   CheckCircle2,
   Info,
   AlertTriangle,
+  RefreshCw,
+  Search,
+  Maximize2,
+  Minimize2,
 } from 'lucide-react'
 import type { ApiLogEntry } from '../types'
 
 interface ApiLogViewerProps {
   logs: ApiLogEntry[]
   onClearLogs: () => void
+  onRefreshLogs?: () => void
+  isLoading?: boolean
 }
 
-export const ApiLogViewer: React.FC<ApiLogViewerProps> = ({ logs, onClearLogs }) => {
+export const ApiLogViewer: React.FC<ApiLogViewerProps> = ({
+  logs,
+  onClearLogs,
+  onRefreshLogs,
+  isLoading = false,
+}) => {
   const [filterLevel, setFilterLevel] = useState<string>('all')
+  const [filterService, setFilterService] = useState<string>('all')
+  const [searchQuery, setSearchQuery] = useState<string>('')
   const [copied, setCopied] = useState<boolean>(false)
+  const [copiedId, setCopiedId] = useState<string | null>(null)
   const [autoScroll, setAutoScroll] = useState<boolean>(true)
   const [expandedLogIds, setExpandedLogIds] = useState<Set<string>>(new Set())
   const logEndRef = useRef<HTMLDivElement | null>(null)
 
+  // Auto-expand any error logs as they arrive
+  useEffect(() => {
+    const errorIds = logs.filter((l) => l.level === 'error').map((l) => l.id)
+    if (errorIds.length > 0) {
+      setExpandedLogIds((prev) => {
+        const next = new Set(prev)
+        let changed = false
+        for (const id of errorIds) {
+          if (!next.has(id)) {
+            next.add(id)
+            changed = true
+          }
+        }
+        return changed ? next : prev
+      })
+    }
+  }, [logs])
+
+  // Auto-scroll to bottom when new logs appear
   useEffect(() => {
     if (autoScroll && logEndRef.current) {
       logEndRef.current.scrollIntoView({ behavior: 'smooth' })
@@ -42,12 +75,20 @@ export const ApiLogViewer: React.FC<ApiLogViewerProps> = ({ logs, onClearLogs })
     })
   }
 
+  const expandAll = () => {
+    setExpandedLogIds(new Set(logs.map((l) => l.id)))
+  }
+
+  const collapseAll = () => {
+    setExpandedLogIds(new Set())
+  }
+
   const handleCopyLogs = () => {
     const text = logs
       .map(
         (l) =>
           `[${l.timestamp}] [${l.level.toUpperCase()}] [${l.service}] ${l.message}${
-            l.details ? '\n' + JSON.stringify(l.details, null, 2) : ''
+            l.details ? '\n' + (typeof l.details === 'object' ? JSON.stringify(l.details, null, 2) : l.details) : ''
           }`
       )
       .join('\n')
@@ -56,10 +97,42 @@ export const ApiLogViewer: React.FC<ApiLogViewerProps> = ({ logs, onClearLogs })
     setTimeout(() => setCopied(false), 2000)
   }
 
-  const filteredLogs = logs.filter((l) => {
-    if (filterLevel === 'all') return true
-    return l.level === filterLevel
-  })
+  const handleCopySingle = (entry: ApiLogEntry) => {
+    const text = `[${entry.timestamp}] [${entry.level.toUpperCase()}] [${entry.service}] ${entry.message}${
+      entry.details ? '\n' + (typeof entry.details === 'object' ? JSON.stringify(entry.details, null, 2) : entry.details) : ''
+    }`
+    navigator.clipboard.writeText(text)
+    setCopiedId(entry.id)
+    setTimeout(() => setCopiedId(null), 1500)
+  }
+
+  // Extract unique services from logs for the dropdown
+  const availableServices = useMemo(() => {
+    const set = new Set<string>()
+    logs.forEach((l) => {
+      if (l.service) set.add(l.service)
+    })
+    return Array.from(set).sort()
+  }, [logs])
+
+  // Filter logs by level, service, and search query
+  const filteredLogs = useMemo(() => {
+    return logs.filter((l) => {
+      if (filterLevel !== 'all' && l.level !== filterLevel) return false
+      if (filterService !== 'all' && l.service !== filterService) return false
+      if (searchQuery.trim()) {
+        const q = searchQuery.toLowerCase()
+        const matchMsg = l.message.toLowerCase().includes(q)
+        const matchSvc = l.service.toLowerCase().includes(q)
+        const matchDetails = l.details ? JSON.stringify(l.details).toLowerCase().includes(q) : false
+        if (!matchMsg && !matchSvc && !matchDetails) return false
+      }
+      return true
+    })
+  }, [logs, filterLevel, filterService, searchQuery])
+
+  const errorCount = useMemo(() => logs.filter((l) => l.level === 'error').length, [logs])
+  const warnCount = useMemo(() => logs.filter((l) => l.level === 'warn').length, [logs])
 
   const getLevelBadge = (level: string) => {
     switch (level) {
@@ -90,21 +163,88 @@ export const ApiLogViewer: React.FC<ApiLogViewerProps> = ({ logs, onClearLogs })
     }
   }
 
+  const getServiceColor = (service: string) => {
+    switch (service) {
+      case 'gateway-svc':
+        return 'bg-blue-950 text-blue-300 border-blue-800'
+      case 'pdf-layout-svc':
+        return 'bg-indigo-950 text-indigo-300 border-indigo-800'
+      case 'omr-ai-svc':
+        return 'bg-purple-950 text-purple-300 border-purple-800'
+      case 'voice-router-svc':
+        return 'bg-teal-950 text-teal-300 border-teal-800'
+      case 'decoder-xml-svc':
+        return 'bg-cyan-950 text-cyan-300 border-cyan-800'
+      case 'client':
+        return 'bg-slate-800 text-slate-300 border-slate-700'
+      default:
+        return 'bg-slate-800 text-slate-300 border-slate-700'
+    }
+  }
+
   return (
     <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-xl flex flex-col h-full font-mono text-xs">
       {/* Top Console Bar */}
-      <div className="bg-slate-950/80 px-4 py-2 border-b border-slate-800 flex items-center justify-between">
+      <div className="bg-slate-950/90 px-3 py-2 border-b border-slate-800 flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2">
           <Terminal className="w-4 h-4 text-emerald-400" />
           <span className="text-xs uppercase tracking-wider font-semibold text-slate-200">
-            API & Pipeline Telemetry Live Logs
+            API & Microservices Telemetry
           </span>
           <span className="text-[10px] px-2 py-0.5 rounded-full bg-slate-800 text-slate-400 font-mono">
-            {logs.length} events
+            {filteredLogs.length} / {logs.length}
           </span>
+          {errorCount > 0 && (
+            <span className="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full bg-rose-950 text-rose-300 border border-rose-800 font-bold animate-pulse">
+              <AlertCircle className="w-3 h-3 text-rose-400" />
+              {errorCount} error{errorCount > 1 ? 's' : ''}
+            </span>
+          )}
+          {warnCount > 0 && (
+            <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-950 text-amber-300 border border-amber-800 font-semibold">
+              {warnCount} warn
+            </span>
+          )}
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          {/* Search Box */}
+          <div className="flex items-center gap-1 bg-slate-900 px-2 py-1 rounded border border-slate-800 text-[10px]">
+            <Search className="w-3 h-3 text-slate-400" />
+            <input
+              type="text"
+              placeholder="Search logs..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="bg-transparent text-slate-200 placeholder-slate-500 focus:outline-none w-24 sm:w-32"
+            />
+            {searchQuery && (
+              <button
+                onClick={() => setSearchQuery('')}
+                className="text-slate-400 hover:text-slate-200 text-xs px-0.5"
+              >
+                ×
+              </button>
+            )}
+          </div>
+
+          {/* Microservice Filter */}
+          <div className="flex items-center gap-1 bg-slate-900 px-2 py-1 rounded border border-slate-800 text-[10px]">
+            <span className="text-slate-400">Svc:</span>
+            <select
+              value={filterService}
+              onChange={(e) => setFilterService(e.target.value)}
+              className="bg-transparent text-slate-300 focus:outline-none cursor-pointer"
+            >
+              <option value="all">All Services</option>
+              {availableServices.map((svc) => (
+                <option key={svc} value={svc}>
+                  {svc}
+                </option>
+              ))}
+            </select>
+          </div>
+
           {/* Level Filter */}
           <div className="flex items-center gap-1 bg-slate-900 px-2 py-1 rounded border border-slate-800 text-[10px]">
             <Filter className="w-3 h-3 text-slate-400" />
@@ -121,25 +261,48 @@ export const ApiLogViewer: React.FC<ApiLogViewerProps> = ({ logs, onClearLogs })
             </select>
           </div>
 
+          {/* Expand/Collapse All */}
+          <button
+            onClick={expandedLogIds.size > 0 ? collapseAll : expandAll}
+            className="p-1.5 hover:bg-slate-800 text-slate-300 rounded border border-slate-800 transition"
+            title={expandedLogIds.size > 0 ? 'Collapse All' : 'Expand All'}
+          >
+            {expandedLogIds.size > 0 ? <Minimize2 className="w-3 h-3" /> : <Maximize2 className="w-3 h-3" />}
+          </button>
+
           {/* Auto-scroll toggle */}
           <button
             onClick={() => setAutoScroll((a) => !a)}
-            className={`p-1 rounded text-[10px] flex items-center gap-1 border ${
+            className={`p-1.5 rounded text-[10px] flex items-center gap-1 border transition ${
               autoScroll
-                ? 'bg-emerald-950/50 text-emerald-400 border-emerald-800'
+                ? 'bg-emerald-950/60 text-emerald-400 border-emerald-800'
                 : 'bg-slate-800 text-slate-400 border-slate-700'
             }`}
             title="Toggle Auto-Scroll"
           >
             <ArrowDown className="w-3 h-3" />
-            <span>Auto</span>
+            <span className="hidden sm:inline">Auto</span>
           </button>
 
-          {/* Copy Logs */}
+          {/* Refresh backend logs */}
+          {onRefreshLogs && (
+            <button
+              onClick={onRefreshLogs}
+              disabled={isLoading}
+              className={`p-1.5 hover:bg-slate-800 text-slate-300 rounded border border-slate-800 transition ${
+                isLoading ? 'opacity-50 animate-spin text-sky-400' : ''
+              }`}
+              title="Refresh Logs from Gateway"
+            >
+              <RefreshCw className="w-3 h-3" />
+            </button>
+          )}
+
+          {/* Copy All Logs */}
           <button
             onClick={handleCopyLogs}
             className="p-1.5 hover:bg-slate-800 text-slate-300 rounded border border-slate-800 transition"
-            title="Copy Logs"
+            title="Copy All Logs"
           >
             {copied ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
           </button>
@@ -158,42 +321,94 @@ export const ApiLogViewer: React.FC<ApiLogViewerProps> = ({ logs, onClearLogs })
       {/* Log Feed */}
       <div className="flex-1 p-3 overflow-auto bg-slate-950 space-y-2 select-text">
         {filteredLogs.length === 0 ? (
-          <div className="h-full flex items-center justify-center text-slate-600 italic">
-            No telemetry events recorded yet. Upload a PDF or trigger a pipeline action.
+          <div className="h-full flex flex-col items-center justify-center text-slate-500 italic p-6 gap-2">
+            <Terminal className="w-8 h-8 text-slate-700 mb-1" />
+            <span>No telemetry events matching the current filter.</span>
+            {logs.length > 0 && (
+              <button
+                onClick={() => {
+                  setFilterLevel('all')
+                  setFilterService('all')
+                  setSearchQuery('')
+                }}
+                className="text-xs text-sky-400 hover:underline not-italic mt-1"
+              >
+                Reset filters
+              </button>
+            )}
           </div>
         ) : (
           filteredLogs.map((entry) => {
             const isExpanded = expandedLogIds.has(entry.id)
             const hasDetails = entry.details !== undefined && entry.details !== null
+            const isError = entry.level === 'error'
 
             return (
               <div
                 key={entry.id}
-                className="p-2 rounded bg-slate-900/60 border border-slate-850 hover:border-slate-700 transition"
+                className={`p-2.5 rounded transition ${
+                  isError
+                    ? 'bg-rose-950/30 border border-rose-800/80 shadow-sm'
+                    : 'bg-slate-900/60 border border-slate-800/70 hover:border-slate-700'
+                }`}
               >
                 <div className="flex items-start justify-between gap-2">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className="text-[10px] text-slate-500 font-mono">{entry.timestamp}</span>
+                  <div className="flex items-center gap-2 flex-wrap flex-1">
+                    <span className="text-[10px] text-slate-500 font-mono select-none">{entry.timestamp}</span>
                     {getLevelBadge(entry.level)}
-                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 border border-slate-700">
+                    <span
+                      className={`text-[10px] px-1.5 py-0.5 rounded border font-mono ${getServiceColor(
+                        entry.service
+                      )}`}
+                    >
                       {entry.service}
                     </span>
-                    <span className="text-slate-200 text-xs font-sans break-all">{entry.message}</span>
+                    <span
+                      className={`text-xs font-sans break-all ${
+                        isError ? 'text-rose-200 font-medium' : 'text-slate-200'
+                      }`}
+                    >
+                      {entry.message}
+                    </span>
                   </div>
 
-                  {hasDetails && (
+                  <div className="flex items-center gap-1 shrink-0">
                     <button
-                      onClick={() => toggleExpand(entry.id)}
-                      className="text-slate-400 hover:text-sky-400 p-0.5"
+                      onClick={() => handleCopySingle(entry)}
+                      className="text-slate-500 hover:text-slate-300 p-1 rounded hover:bg-slate-800/60 transition"
+                      title="Copy Entry"
                     >
-                      {isExpanded ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
+                      {copiedId === entry.id ? (
+                        <Check className="w-3 h-3 text-emerald-400" />
+                      ) : (
+                        <Copy className="w-3 h-3" />
+                      )}
                     </button>
-                  )}
+                    {hasDetails && (
+                      <button
+                        onClick={() => toggleExpand(entry.id)}
+                        className="text-slate-400 hover:text-sky-400 p-1 rounded hover:bg-slate-800/60 transition"
+                        title={isExpanded ? 'Collapse' : 'Expand'}
+                      >
+                        {isExpanded ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
+                      </button>
+                    )}
+                  </div>
                 </div>
 
                 {hasDetails && isExpanded && (
-                  <div className="mt-2 p-2 bg-slate-950 rounded border border-slate-800 overflow-x-auto text-[11px] text-slate-300 leading-relaxed font-mono">
-                    <pre>{typeof entry.details === 'object' ? JSON.stringify(entry.details, null, 2) : entry.details}</pre>
+                  <div
+                    className={`mt-2 p-2.5 rounded border overflow-x-auto text-[11px] leading-relaxed font-mono ${
+                      isError
+                        ? 'bg-black/80 border-rose-900/80 text-rose-300'
+                        : 'bg-slate-950 border-slate-850 text-slate-300'
+                    }`}
+                  >
+                    <pre className="whitespace-pre-wrap break-all">
+                      {typeof entry.details === 'object'
+                        ? JSON.stringify(entry.details, null, 2)
+                        : entry.details}
+                    </pre>
                   </div>
                 )}
               </div>

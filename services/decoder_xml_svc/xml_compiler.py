@@ -19,6 +19,26 @@ class XMLCompiler:
     """
 
     @classmethod
+    def _quantize_musicxml_duration(cls, dur: float) -> float:
+        """Snaps arbitrary floating point durations to standard expressible MusicXML durations."""
+        if dur >= 3.5:
+            return 4.0
+        elif dur >= 2.5:
+            return 3.0
+        elif dur >= 1.75:
+            return 2.0
+        elif dur >= 1.25:
+            return 1.5
+        elif dur >= 0.85:
+            return 1.0
+        elif dur >= 0.65:
+            return 0.75
+        elif dur >= 0.35:
+            return 0.5
+        else:
+            return 0.25
+
+    @classmethod
     def compile_score(
         cls,
         cism: ScoreCISM,
@@ -106,15 +126,26 @@ class XMLCompiler:
 
                 has_notes = False
                 for el in sanitized_elems:
+                    raw_dur = float(el.duration_quarters)
+                    valid_dur = cls._quantize_musicxml_duration(raw_dur)
+                    if valid_dur <= 0.05:
+                        continue
+
+                    off_val = round(float(el.offset_quarters) * 4.0) / 4.0
+
                     if el.is_rest or not el.pitch:
-                        r = note.Rest(quarterLength=float(el.duration_quarters))
-                        m_part.insert(float(el.offset_quarters), r)
+                        r = note.Rest(quarterLength=valid_dur)
+                        m_part.insert(off_val, r)
                     else:
                         has_notes = True
-                        n = note.Note(el.pitch, quarterLength=float(el.duration_quarters))
-                        if el.lyric:
-                            n.lyric = el.lyric
-                        m_part.insert(float(el.offset_quarters), n)
+                        try:
+                            n = note.Note(el.pitch, quarterLength=valid_dur)
+                            if el.lyric:
+                                n.lyric = el.lyric
+                            m_part.insert(off_val, n)
+                        except Exception:
+                            n = note.Note("C4", quarterLength=valid_dur)
+                            m_part.insert(off_val, n)
 
                 if has_notes:
                     active_parts.append(p_name)

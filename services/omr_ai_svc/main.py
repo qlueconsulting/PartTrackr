@@ -1,6 +1,7 @@
 import logging
 import os
 from pathlib import Path
+import traceback
 from typing import Dict, Any, Optional
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
@@ -61,8 +62,9 @@ def process_omr(req: OMRRequest) -> ScoreCISM:
         return score_cism
 
     except Exception as e:
+        tb = traceback.format_exc()
         logger.exception(f"OMR processing failed for job {req.job_id}: {e}")
-        raise HTTPException(status_code=500, detail=f"OMR processing error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"OMR processing error: {str(e)}\n\nTraceback:\n{tb}")
 
 
 if __name__ == "__main__":

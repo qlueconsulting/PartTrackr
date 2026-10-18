@@ -1,5 +1,6 @@
 import logging
 from pathlib import Path
+import traceback
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from typing import Optional, Dict, Any
@@ -42,8 +43,9 @@ def process_layout(req: LayoutRequest) -> Dict[str, Any]:
         result["job_id"] = req.job_id
         return result
     except Exception as e:
+        tb = traceback.format_exc()
         logger.exception(f"Layout processing failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Layout processing error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Layout processing error: {str(e)}\n\nTraceback:\n{tb}")
 
 
 if __name__ == "__main__":

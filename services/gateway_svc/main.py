@@ -153,6 +153,7 @@ async def job_events_sse(job_id: str):
                     "status": job.status,
                     "stage_message": job.stage_message,
                     "total_measures": job.total_measures,
+                    "error_message": job.error_message,
                 }
                 yield f"data: {json.dumps(payload)}\n\n"
                 last_status = curr_status
@@ -164,6 +165,34 @@ async def job_events_sse(job_id: str):
             await asyncio.sleep(0.8)
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+@app.get("/api/v1/jobs/{job_id}/logs")
+def get_job_logs(job_id: str, db: Session = Depends(get_db)):
+    job = db.query(Job).filter(Job.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    job_dir = STORAGE_DIR / "jobs" / job_id
+    log_file = job_dir / "pipeline_telemetry.jsonl"
+    logs = []
+    if log_file.exists():
+        try:
+            with open(log_file, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        logs.append(json.loads(line))
+        except Exception as e:
+            logger.warning(f"Error reading job logs for {job_id}: {e}")
+
+    return {
+        "job_id": job_id,
+        "status": job.status,
+        "stage_message": job.stage_message,
+        "error_message": job.error_message,
+        "logs": logs,
+    }
 
 
 @app.post("/api/v1/jobs/{job_id}/override")

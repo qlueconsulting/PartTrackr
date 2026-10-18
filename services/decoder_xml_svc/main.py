@@ -1,5 +1,6 @@
 import logging
 from pathlib import Path
+import traceback
 from typing import Dict, Any
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
@@ -67,8 +68,9 @@ def compile_score(req: DecodeRequest) -> Dict[str, Any]:
         }
 
     except Exception as e:
+        tb = traceback.format_exc()
         logger.exception(f"Decoder compilation failed for job {req.job_id}: {e}")
-        raise HTTPException(status_code=500, detail=f"Compilation error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Compilation error: {str(e)}\n\nTraceback:\n{tb}")
 
 
 if __name__ == "__main__":

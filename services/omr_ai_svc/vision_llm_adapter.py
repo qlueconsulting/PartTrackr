@@ -334,14 +334,25 @@ class VisionLLMAdapter:
                     ]
                 else:
                     n_cnt = len(dedup_notes)
-                    dur_q = max(0.5, 4.0 / float(n_cnt))
+                    if n_cnt == 1:
+                        note_specs = [(0.0, 4.0, "whole")]
+                    elif n_cnt == 2:
+                        note_specs = [(0.0, 2.0, "half"), (2.0, 2.0, "half")]
+                    elif n_cnt == 3:
+                        note_specs = [(0.0, 2.0, "half"), (2.0, 1.0, "quarter"), (3.0, 1.0, "quarter")]
+                    elif n_cnt == 4:
+                        note_specs = [(0.0, 1.0, "quarter"), (1.0, 1.0, "quarter"), (2.0, 1.0, "quarter"), (3.0, 1.0, "quarter")]
+                    else:
+                        note_specs = [(float(k * 0.5), 0.5, "eighth") for k in range(min(8, n_cnt))]
+
                     matched_elements = []
-                    for idx_n, n_item in enumerate(dedup_notes):
+                    for idx_n, n_item in enumerate(dedup_notes[:len(note_specs)]):
+                        off_q, dur_q, dur_t = note_specs[idx_n]
                         matched_elements.append(NoteElement(
                             pitch=n_item["pitch"],
                             duration_quarters=dur_q,
-                            duration_type="quarter" if dur_q <= 1.0 else ("half" if dur_q <= 2.0 else "whole"),
-                            offset_quarters=float(idx_n * dur_q),
+                            duration_type=dur_t,
+                            offset_quarters=off_q,
                             stem_direction=n_item["stem"],
                             is_rest=False
                         ))

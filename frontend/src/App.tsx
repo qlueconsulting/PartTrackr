@@ -59,6 +59,36 @@ export const App: React.FC = () => {
     []
   )
 
+  const [isLoadingLogs, setIsLoadingLogs] = useState<boolean>(false)
+
+  const fetchJobLogs = useCallback(async (jobId: string) => {
+    try {
+      setIsLoadingLogs(true)
+      const res = await fetch(`/api/v1/jobs/${jobId}/logs`)
+      if (res.ok) {
+        const data = await res.json()
+        const backendLogs: ApiLogEntry[] = data.logs || []
+        if (backendLogs.length > 0) {
+          setApiLogs((prev) => {
+            const existingIds = new Set(prev.map((l) => l.id))
+            const newLogs = backendLogs.filter((l) => !existingIds.has(l.id))
+            if (newLogs.length === 0) return prev
+            return [...prev, ...newLogs]
+          })
+        }
+        if (data.status === 'failed') {
+          const errMsg = data.error_message || data.stage_message || 'Pipeline processing failed'
+          setErrorMessage(errMsg)
+          setBottomTab('logs')
+        }
+      }
+    } catch (e: any) {
+      console.warn('Could not fetch backend logs:', e)
+    } finally {
+      setIsLoadingLogs(false)
+    }
+  }, [])
+
   // Audio Playback State
   const audioEngineRef = useRef<MidiAudioEngine | null>(null)
   const [isPlaying, setIsPlaying] = useState<boolean>(false)
@@ -117,6 +147,7 @@ export const App: React.FC = () => {
   const loadJobDetails = async (jobId: string) => {
     try {
       addLog('info', 'client', `GET /api/v1/jobs/${jobId} - Querying job status...`)
+      fetchJobLogs(jobId)
       const res = await fetch(`/api/v1/jobs/${jobId}`)
       if (res.ok) {
         const jobData: JobData = await res.json()
@@ -126,7 +157,12 @@ export const App: React.FC = () => {
           status: jobData.status,
         })
 
-        if (jobData.status === 'completed' && jobData.decoder_result) {
+        if (jobData.status === 'failed') {
+          const failErr = jobData.error_message || jobData.stage_message || 'Pipeline processing failed'
+          setErrorMessage(failErr)
+          setBottomTab('logs')
+          addLog('error', 'pipeline', `Job ${jobId} failed: ${failErr}`)
+        } else if (jobData.status === 'completed' && jobData.decoder_result) {
           addLog('success', 'decoder-xml-svc', `MusicXML and MIDI ready. Measures: ${jobData.total_measures}`)
           const syncMapUrl = `/api/v1/jobs/${jobId}/files/compiled/sync_map.json`
           const scoreCism = jobData.routed_cism || jobData.raw_cism
@@ -146,7 +182,7 @@ export const App: React.FC = () => {
           if (channelStates) {
             audioEngineRef.current?.setAllChannelStates(channelStates)
           }
-        } else if (jobData.status !== 'completed' && jobData.status !== 'failed') {
+        } else if (jobData.status !== 'completed') {
           listenToJobEvents(jobId)
         }
       }
@@ -163,6 +199,7 @@ export const App: React.FC = () => {
     // Polling fallback every 2s in case SSE is buffered
     const pollInterval = setInterval(async () => {
       try {
+        fetchJobLogs(jobId)
         const res = await fetch(`/api/v1/jobs/${jobId}`)
         if (res.ok) {
           const latest: JobData = await res.json()
@@ -170,10 +207,14 @@ export const App: React.FC = () => {
           if (latest.status === 'completed' || latest.status === 'failed') {
             clearInterval(pollInterval)
             evtSource.close()
+            fetchJobLogs(jobId)
             if (latest.status === 'completed') {
               addLog('success', 'pipeline', `Job ${jobId} successfully completed!`)
             } else {
-              addLog('error', 'pipeline', `Job ${jobId} failed: ${latest.error_message}`)
+              const failMsg = latest.error_message || latest.stage_message || 'Pipeline failed'
+              addLog('error', 'pipeline', `Job ${jobId} failed: ${failMsg}`)
+              setErrorMessage(failMsg)
+              setBottomTab('logs')
             }
           }
         }
@@ -195,6 +236,12 @@ export const App: React.FC = () => {
           clearInterval(pollInterval)
           evtSource.close()
           loadJobDetails(jobId)
+          fetchJobLogs(jobId)
+          if (data.status === 'failed') {
+            const failMsg = data.error_message || data.stage_message || 'Pipeline stage failed'
+            setErrorMessage(failMsg)
+            setBottomTab('logs')
+          }
         }
       } catch (err) {
         console.warn('SSE parse error:', err)
@@ -408,7 +455,12 @@ export const App: React.FC = () => {
                     <span>CISM JSON Editor</span>
                   </button>
                   <button
-                    onClick={() => setBottomTab('logs')}
+                    onClick={() => {
+                      setBottomTab('logs')
+                      if (currentJob?.job_id) {
+                        fetchJobLogs(currentJob.job_id)
+                      }
+                    }}
                     className={`flex items-center gap-1.5 px-3 py-1 rounded text-xs font-semibold transition cursor-pointer ${
                       bottomTab === 'logs'
                         ? 'bg-slate-800 text-emerald-400 shadow-sm'
@@ -457,7 +509,12 @@ export const App: React.FC = () => {
                       </div>
                     )
                   ) : (
-                    <ApiLogViewer logs={apiLogs} onClearLogs={() => setApiLogs([])} />
+                    <ApiLogViewer
+                      logs={apiLogs}
+                      onClearLogs={() => setApiLogs([])}
+                      onRefreshLogs={() => currentJob && fetchJobLogs(currentJob.job_id)}
+                      isLoading={isLoadingLogs}
+                    />
                   )}
                 </div>
               </div>
