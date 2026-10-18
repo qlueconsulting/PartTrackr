@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react'
+import React, { useState, useEffect, useRef, useCallback } from 'react'
 import {
   Upload,
   Play,
@@ -8,11 +8,16 @@ import {
   Sliders,
   Music,
   Layout,
+  Code,
+  Terminal,
+  AlertCircle,
+  X,
 } from 'lucide-react'
 
 import { PipelineStepper } from './components/PipelineStepper'
 import { VisualDiffViewer } from './components/VisualDiffViewer'
 import { CISMEditor } from './components/CISMEditor'
+import { ApiLogViewer } from './components/ApiLogViewer'
 import { WebAudioMixer } from './components/WebAudioMixer'
 import { MidiAudioEngine } from './audio/MidiAudioEngine'
 import {
@@ -20,16 +25,39 @@ import {
   PART_DISPLAY_NAMES,
   type JobData,
   type ChannelState,
+  type ApiLogEntry,
 } from './types'
 
 export const App: React.FC = () => {
   // Mode Toggle: 'diagnostic' vs 'rehearsal'
   const [viewMode, setViewMode] = useState<'diagnostic' | 'rehearsal'>('diagnostic')
 
+  // Bottom Pane Sub-Tab: 'cism' vs 'logs'
+  const [bottomTab, setBottomTab] = useState<'cism' | 'logs'>('cism')
+
   // Job & Pipeline State
   const [currentJob, setCurrentJob] = useState<JobData | null>(null)
   const [selectedMeasureNumber, setSelectedMeasureNumber] = useState<number | null>(1)
   const [isUploading, setIsUploading] = useState<boolean>(false)
+  const [errorMessage, setErrorMessage] = useState<string | null>(null)
+
+  // API & Pipeline Telemetry Logs
+  const [apiLogs, setApiLogs] = useState<ApiLogEntry[]>([])
+
+  const addLog = useCallback(
+    (level: 'info' | 'success' | 'warn' | 'error', service: string, message: string, details?: any) => {
+      const entry: ApiLogEntry = {
+        id: Math.random().toString(36).substring(2, 9),
+        timestamp: new Date().toLocaleTimeString(),
+        level,
+        service,
+        message,
+        details,
+      }
+      setApiLogs((prev) => [...prev, entry])
+    },
+    []
+  )
 
   // Audio Playback State
   const audioEngineRef = useRef<MidiAudioEngine | null>(null)
@@ -46,7 +74,7 @@ export const App: React.FC = () => {
     return initial
   })
 
-  // Initialize Audio Engine
+  // Initialize Audio Engine & Initial Job Query
   useEffect(() => {
     const engine = new MidiAudioEngine()
     audioEngineRef.current = engine
@@ -59,36 +87,46 @@ export const App: React.FC = () => {
       setIsPlaying(playing)
     }
 
-    // Auto-fetch latest jobs or load default sample
+    addLog('info', 'client', 'Diagnostic Studio v2.0 initialized. Connecting to gateway-svc:8005...')
     fetchLatestJobs()
 
     return () => {
       engine.destroy()
     }
-  }, [])
+  }, [addLog])
 
   const fetchLatestJobs = async () => {
     try {
+      addLog('info', 'client', 'GET /api/v1/jobs - Fetching existing pipeline jobs...')
       const res = await fetch('/api/v1/jobs')
       if (res.ok) {
         const jobs = await res.json()
+        addLog('success', 'gateway-svc', `Found ${jobs.length} existing job records`, jobs)
         if (jobs && jobs.length > 0) {
           loadJobDetails(jobs[0].job_id)
         }
+      } else {
+        addLog('warn', 'gateway-svc', `Failed to fetch jobs HTTP ${res.status}`)
       }
-    } catch (e) {
-      console.warn('Could not fetch jobs:', e)
+    } catch (e: any) {
+      addLog('error', 'client', `Gateway connection failed: ${e.message}`)
     }
   }
 
   const loadJobDetails = async (jobId: string) => {
     try {
+      addLog('info', 'client', `GET /api/v1/jobs/${jobId} - Querying job status...`)
       const res = await fetch(`/api/v1/jobs/${jobId}`)
       if (res.ok) {
         const jobData: JobData = await res.json()
         setCurrentJob(jobData)
+        addLog('info', 'gateway-svc', `Job ${jobId} status: ${jobData.status.toUpperCase()} - ${jobData.stage_message}`, {
+          total_measures: jobData.total_measures,
+          status: jobData.status,
+        })
 
         if (jobData.status === 'completed' && jobData.decoder_result) {
+          addLog('success', 'decoder-xml-svc', `MusicXML and MIDI ready. Measures: ${jobData.total_measures}`)
           const midiUrl = `/api/v1/jobs/${jobId}/files/compiled/score_11ch.mid`
           const syncMapUrl = `/api/v1/jobs/${jobId}/files/compiled/sync_map.json`
           audioEngineRef.current?.loadScore(
@@ -97,26 +135,52 @@ export const App: React.FC = () => {
             jobData.total_duration_seconds || 60
           )
         } else if (jobData.status !== 'completed' && jobData.status !== 'failed') {
-          // Listen to SSE updates
           listenToJobEvents(jobId)
         }
       }
-    } catch (e) {
-      console.error('Error loading job details:', e)
+    } catch (e: any) {
+      addLog('error', 'client', `Error loading job ${jobId}: ${e.message}`)
     }
   }
 
+  // Active Polling & Server-Sent Events Fallback
   const listenToJobEvents = (jobId: string) => {
+    addLog('info', 'client', `SSE: Connecting to /api/v1/jobs/${jobId}/events for real-time stepper updates...`)
     const evtSource = new EventSource(`/api/v1/jobs/${jobId}/events`)
+
+    // Polling fallback every 2s in case SSE is buffered
+    const pollInterval = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/v1/jobs/${jobId}`)
+        if (res.ok) {
+          const latest: JobData = await res.json()
+          setCurrentJob(latest)
+          if (latest.status === 'completed' || latest.status === 'failed') {
+            clearInterval(pollInterval)
+            evtSource.close()
+            if (latest.status === 'completed') {
+              addLog('success', 'pipeline', `Job ${jobId} successfully completed!`)
+            } else {
+              addLog('error', 'pipeline', `Job ${jobId} failed: ${latest.error_message}`)
+            }
+          }
+        }
+      } catch (err) {
+        // silent poll catch
+      }
+    }, 2000)
+
     evtSource.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data)
         if (data.status) {
+          addLog('info', 'pipeline', `[Stage Transition]: ${data.status.toUpperCase()} — ${data.stage_message}`)
           setCurrentJob((prev) =>
             prev ? { ...prev, status: data.status, stage_message: data.stage_message } : null
           )
         }
         if (data.status === 'completed' || data.status === 'failed') {
+          clearInterval(pollInterval)
           evtSource.close()
           loadJobDetails(jobId)
         }
@@ -124,7 +188,9 @@ export const App: React.FC = () => {
         console.warn('SSE parse error:', err)
       }
     }
+
     evtSource.onerror = () => {
+      addLog('warn', 'client', 'SSE connection closed or switched to fallback polling.')
       evtSource.close()
     }
   }
@@ -134,6 +200,10 @@ export const App: React.FC = () => {
     if (!file) return
 
     setIsUploading(true)
+    setErrorMessage(null)
+    const fileSizeMB = (file.size / 1024 / 1024).toFixed(2)
+    addLog('info', 'client', `POST /api/v1/jobs/upload - Uploading "${file.name}" (${fileSizeMB} MB)...`)
+
     const formData = new FormData()
     formData.append('file', file)
 
@@ -142,14 +212,33 @@ export const App: React.FC = () => {
         method: 'POST',
         body: formData,
       })
-      if (!res.ok) throw new Error('Upload failed')
-      const data = await res.json()
 
+      if (!res.ok) {
+        let errDetails = ''
+        try {
+          const errJson = await res.json()
+          errDetails = errJson.detail || JSON.stringify(errJson)
+        } catch {
+          errDetails = await res.text()
+        }
+        const failMsg = `Upload failed with HTTP ${res.status}: ${errDetails}`
+        addLog('error', 'gateway-svc', failMsg)
+        setErrorMessage(failMsg)
+        setBottomTab('logs') // Switch to logs so user sees it
+        throw new Error(failMsg)
+      }
+
+      const data = await res.json()
+      addLog('success', 'gateway-svc', `Upload accepted! Job ID: ${data.job_id}`, data)
       loadJobDetails(data.job_id)
-    } catch (err) {
+    } catch (err: any) {
       console.error('Upload error:', err)
+      setErrorMessage(err.message || 'PDF upload failed')
+      setBottomTab('logs')
     } finally {
       setIsUploading(false)
+      // reset file input
+      e.target.value = ''
     }
   }
 
@@ -184,6 +273,8 @@ export const App: React.FC = () => {
     return m?.active_parts || []
   }, [currentJob, currentMeasure])
 
+  const errorLogCount = apiLogs.filter((l) => l.level === 'error').length
+
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans">
       {/* Top Navbar */}
@@ -210,7 +301,7 @@ export const App: React.FC = () => {
           <div className="flex bg-slate-950 p-1 rounded-lg border border-slate-800 text-xs font-semibold">
             <button
               onClick={() => setViewMode('diagnostic')}
-              className={`flex items-center gap-1.5 px-3 py-1 rounded-md transition-all ${
+              className={`flex items-center gap-1.5 px-3 py-1 rounded-md transition-all cursor-pointer ${
                 viewMode === 'diagnostic'
                   ? 'bg-sky-600 text-white shadow-sm'
                   : 'text-slate-400 hover:text-slate-200'
@@ -221,7 +312,7 @@ export const App: React.FC = () => {
             </button>
             <button
               onClick={() => setViewMode('rehearsal')}
-              className={`flex items-center gap-1.5 px-3 py-1 rounded-md transition-all ${
+              className={`flex items-center gap-1.5 px-3 py-1 rounded-md transition-all cursor-pointer ${
                 viewMode === 'rehearsal'
                   ? 'bg-sky-600 text-white shadow-sm'
                   : 'text-slate-400 hover:text-slate-200'
@@ -246,6 +337,19 @@ export const App: React.FC = () => {
         </div>
       </header>
 
+      {/* Error Alert Banner */}
+      {errorMessage && (
+        <div className="bg-rose-950/90 border-b border-rose-800 px-6 py-2 flex items-center justify-between text-xs text-rose-200">
+          <div className="flex items-center gap-2">
+            <AlertCircle className="w-4 h-4 text-rose-400" />
+            <span className="font-semibold font-mono">{errorMessage}</span>
+          </div>
+          <button onClick={() => setErrorMessage(null)} className="hover:text-white">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
       {/* Main Container */}
       <main className="flex-1 p-4 flex flex-col gap-4 max-w-[1700px] w-full mx-auto">
         {/* Pipeline Stepper Component */}
@@ -256,41 +360,90 @@ export const App: React.FC = () => {
         />
 
         {/* Mode 1: Diagnostic Studio */}
-        {viewMode === 'diagnostic' && currentJob && (
+        {viewMode === 'diagnostic' && (
           <div className="flex flex-col gap-4 flex-1">
-            {/* Visual Diff: PDF vs OSMD */}
-            <VisualDiffViewer
-              job={currentJob}
-              selectedMeasureNumber={selectedMeasureNumber}
-              onSelectMeasure={(mNum) => {
-                setSelectedMeasureNumber(mNum)
-                audioEngineRef.current?.seek(
-                  currentJob.decoder_result?.measure_summary?.find((m) => m.measure_number === mNum)
-                    ?.start_time_seconds || 0
-                )
-              }}
-              currentPlayingMeasure={currentMeasure}
-            />
+            {/* Visual Diff: PDF vs OSMD (if job loaded) */}
+            {currentJob && (
+              <VisualDiffViewer
+                job={currentJob}
+                selectedMeasureNumber={selectedMeasureNumber}
+                onSelectMeasure={(mNum) => {
+                  setSelectedMeasureNumber(mNum)
+                  audioEngineRef.current?.seek(
+                    currentJob.decoder_result?.measure_summary?.find((m) => m.measure_number === mNum)
+                      ?.start_time_seconds || 0
+                  )
+                }}
+                currentPlayingMeasure={currentMeasure}
+              />
+            )}
 
-            {/* Bottom Split: CISM JSON Editor (Left) & WebAudio Mixer (Right) */}
-            <div className="grid grid-cols-12 gap-4 h-[340px]">
-              <div className="col-span-5 h-full">
-                <CISMEditor
-                  job={currentJob}
-                  selectedMeasureNumber={selectedMeasureNumber}
-                  onOverrideSaved={(updated) => {
-                    if (currentJob) {
-                      setCurrentJob({
-                        ...currentJob,
-                        routed_cism: updated.result.routed_cism,
-                        decoder_result: updated.result.decoder_result,
-                      })
-                    }
-                  }}
-                />
+            {/* Bottom Split: [CISM Editor OR API Log Viewer] (Left) & WebAudio Mixer (Right) */}
+            <div className="grid grid-cols-12 gap-4 h-[380px]">
+              {/* Left Column: Tabbed Inspector */}
+              <div className="col-span-6 h-full flex flex-col">
+                {/* Tab Switcher */}
+                <div className="flex items-center gap-1 bg-slate-900 border-t border-x border-slate-800 rounded-t-xl px-3 py-1.5 w-fit">
+                  <button
+                    onClick={() => setBottomTab('cism')}
+                    className={`flex items-center gap-1.5 px-3 py-1 rounded text-xs font-semibold transition cursor-pointer ${
+                      bottomTab === 'cism'
+                        ? 'bg-slate-800 text-sky-400 shadow-sm'
+                        : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    <Code className="w-3.5 h-3.5" />
+                    <span>CISM JSON Editor</span>
+                  </button>
+                  <button
+                    onClick={() => setBottomTab('logs')}
+                    className={`flex items-center gap-1.5 px-3 py-1 rounded text-xs font-semibold transition cursor-pointer ${
+                      bottomTab === 'logs'
+                        ? 'bg-slate-800 text-emerald-400 shadow-sm'
+                        : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    <Terminal className="w-3.5 h-3.5" />
+                    <span>API Telemetry Live Logs</span>
+                    {errorLogCount > 0 && (
+                      <span className="w-4 h-4 rounded-full bg-rose-600 text-white text-[10px] flex items-center justify-center font-bold">
+                        {errorLogCount}
+                      </span>
+                    )}
+                  </button>
+                </div>
+
+                {/* Tab Content */}
+                <div className="flex-1 overflow-hidden">
+                  {bottomTab === 'cism' ? (
+                    currentJob ? (
+                      <CISMEditor
+                        job={currentJob}
+                        selectedMeasureNumber={selectedMeasureNumber}
+                        onOverrideSaved={(updated) => {
+                          addLog('success', 'voice-router-svc', 'Measure override compiled successfully')
+                          if (currentJob) {
+                            setCurrentJob({
+                              ...currentJob,
+                              routed_cism: updated.result.routed_cism,
+                              decoder_result: updated.result.decoder_result,
+                            })
+                          }
+                        }}
+                      />
+                    ) : (
+                      <div className="h-full bg-slate-900 border border-slate-800 rounded-b-xl rounded-tr-xl flex items-center justify-center text-slate-500 italic text-xs">
+                        Upload a score to inspect and edit CISM JSON
+                      </div>
+                    )
+                  ) : (
+                    <ApiLogViewer logs={apiLogs} onClearLogs={() => setApiLogs([])} />
+                  )}
+                </div>
               </div>
 
-              <div className="col-span-7 h-full flex flex-col justify-between">
+              {/* Right Column: WebAudio Mixer */}
+              <div className="col-span-6 h-full flex flex-col justify-between">
                 <WebAudioMixer
                   channelStates={channelStates}
                   onChannelChange={handleChannelChange}

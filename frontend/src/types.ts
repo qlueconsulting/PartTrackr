@@ -1,3 +1,12 @@
+export interface ApiLogEntry {
+  id: string
+  timestamp: string
+  level: 'info' | 'success' | 'warn' | 'error'
+  service: string
+  message: string
+  details?: any
+}
+
 export interface BoundingBox {
   x: number
   y: number
