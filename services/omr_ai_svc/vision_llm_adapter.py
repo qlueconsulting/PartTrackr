@@ -145,8 +145,8 @@ class VisionLLMAdapter:
             if ollama_res:
                 return cls._format_staves_response(ollama_res, staves)
 
-        # 3. Deterministic layout-aware fallback
-        return cls._create_baseline_staves(staves)
+        # 3. Local Computer Vision note recognition from crop image
+        return cls._recognize_from_crop_cv(m_crop_path, staves)
 
     @classmethod
     def _call_gemini_vision(
@@ -241,6 +241,123 @@ class VisionLLMAdapter:
         return raw_staves
 
     @classmethod
+    def _pitch_from_step(cls, step: int, clef: str) -> str:
+        treble_map = {
+            -5: 'G3', -4: 'A3', -3: 'B3', -2: 'C4', -1: 'D4',
+            0: 'E4', 1: 'F4', 2: 'G4', 3: 'A4', 4: 'B4', 5: 'C5',
+            6: 'D5', 7: 'E5', 8: 'F5', 9: 'G5', 10: 'A5', 11: 'B5', 12: 'C6'
+        }
+        bass_map = {
+            -5: 'B1', -4: 'C2', -3: 'D2', -2: 'E2', -1: 'F2',
+            0: 'G2', 1: 'A2', 2: 'B2', 3: 'C3', 4: 'D3', 5: 'E3',
+            6: 'F3', 7: 'G3', 8: 'A3', 9: 'B3', 10: 'C4', 11: 'D4', 12: 'E4'
+        }
+        m = treble_map if clef == "treble" else bass_map
+        return m.get(step, 'C4' if clef == 'treble' else 'C3')
+
+    @classmethod
+    def _recognize_from_crop_cv(
+        cls,
+        m_crop_path: Optional[str],
+        staves: List[StaffInfo]
+    ) -> Dict[str, TrackData]:
+        if not m_crop_path or not Path(m_crop_path).exists():
+            return cls._create_baseline_staves(staves)
+
+        try:
+            from PIL import Image
+            import numpy as np
+            from scipy import ndimage
+
+            im = Image.open(m_crop_path).convert('L')
+            arr = np.array(im)
+            h_img, w_img = arr.shape
+            bw = (arr < 175).astype(np.uint8)
+
+            labeled, num_features = ndimage.label(bw)
+            objects = ndimage.find_objects(labeled)
+
+            crop_min_y = min(st.y_top for st in staves)
+            crop_max_y = max(st.y_bot for st in staves)
+            span_y = max(1.0, crop_max_y - crop_min_y)
+
+            raw_staves: Dict[str, TrackData] = {}
+
+            for st in staves:
+                st_top_px = int(((st.y_top - crop_min_y) / span_y) * h_img)
+                st_bot_px = int(((st.y_bot - crop_min_y) / span_y) * h_img)
+                staff_h_px = max(10, st_bot_px - st_top_px)
+                spacing = staff_h_px / 4.0
+
+                y_lo = max(0, int(st_top_px - 1.5 * spacing))
+                y_hi = min(h_img, int(st_bot_px + 1.5 * spacing))
+
+                notes_found = []
+                for sl in objects:
+                    yc = (sl[0].start + sl[0].stop) / 2.0
+                    xc = (sl[1].start + sl[1].stop) / 2.0
+                    obj_h = sl[0].stop - sl[0].start
+                    obj_w = sl[1].stop - sl[1].start
+                    area = bw[sl].sum()
+
+                    if y_lo <= yc <= y_hi:
+                        if (0.35 * spacing) <= obj_h <= (2.6 * spacing) and (0.35 * spacing) <= obj_w <= (2.6 * spacing) and area >= 10:
+                            step = int(round((st_bot_px - yc) / (spacing / 2.0)))
+                            pitch_name = cls._pitch_from_step(step, st.clef)
+
+                            # Stem direction
+                            top_sample_y = max(0, int(yc - 2.5 * spacing))
+                            bot_sample_y = min(h_img, int(yc + 2.5 * spacing))
+                            left_sample_x = max(0, int(xc - 3))
+                            right_sample_x = min(w_img, int(xc + 4))
+
+                            above_px = bw[top_sample_y:int(yc), left_sample_x:right_sample_x].sum()
+                            below_px = bw[int(yc):bot_sample_y, left_sample_x:right_sample_x].sum()
+                            stem = "up" if above_px >= below_px else "down"
+
+                            notes_found.append({
+                                "x": xc,
+                                "pitch": pitch_name,
+                                "stem": stem,
+                            })
+
+                notes_found.sort(key=lambda n: n["x"])
+                # Deduplicate notes within 6 horizontal pixels
+                dedup_notes = []
+                for n in notes_found:
+                    if not dedup_notes or (n["x"] - dedup_notes[-1]["x"]) > 6.0:
+                        dedup_notes.append(n)
+
+                if not dedup_notes:
+                    matched_elements = [
+                        NoteElement(pitch=None, duration_quarters=4.0, duration_type="whole", offset_quarters=0.0, is_rest=True)
+                    ]
+                else:
+                    n_cnt = len(dedup_notes)
+                    dur_q = max(0.5, 4.0 / float(n_cnt))
+                    matched_elements = []
+                    for idx_n, n_item in enumerate(dedup_notes):
+                        matched_elements.append(NoteElement(
+                            pitch=n_item["pitch"],
+                            duration_quarters=dur_q,
+                            duration_type="quarter" if dur_q <= 1.0 else ("half" if dur_q <= 2.0 else "whole"),
+                            offset_quarters=float(idx_n * dur_q),
+                            stem_direction=n_item["stem"],
+                            is_rest=False
+                        ))
+
+                raw_staves[st.staff_id] = TrackData(
+                    track_name=st.staff_id,
+                    clef=st.clef,
+                    elements=matched_elements
+                )
+
+            return raw_staves
+        except Exception as e:
+            logger.warning(f"CV note extraction fallback error: {e}")
+            return cls._create_baseline_staves(staves)
+
+    @classmethod
     def _create_baseline_staves(cls, staves: List[StaffInfo]) -> Dict[str, TrackData]:
         """Creates baseline diatonic pitches for rehearsal testing when no external API is reachable."""
         raw_staves: Dict[str, TrackData] = {}
@@ -254,9 +371,9 @@ class VisionLLMAdapter:
                          NoteElement(pitch="G4", duration_quarters=1.0, duration_type="quarter", offset_quarters=1.0),
                          NoteElement(pitch="C5", duration_quarters=2.0, duration_type="half", offset_quarters=2.0)]
             elif clef_val == "bass":
-                notes = [NoteElement(pitch="C3", duration_quarters=4.0, duration_type="whole", offset_quarters=0.0, lyric="Amen")]
+                notes = [NoteElement(pitch="C3", duration_quarters=4.0, duration_type="whole", offset_quarters=0.0)]
             else:
-                notes = [NoteElement(pitch="G4", duration_quarters=4.0, duration_type="whole", offset_quarters=0.0, lyric="Amen")]
+                notes = [NoteElement(pitch="G4", duration_quarters=4.0, duration_type="whole", offset_quarters=0.0)]
 
             raw_staves[st.staff_id] = TrackData(
                 track_name=st.staff_id,

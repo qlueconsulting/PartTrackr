@@ -4,6 +4,7 @@ import logging
 from pathlib import Path
 from typing import Dict, List, Any, Tuple, Optional
 import pymupdf
+import numpy as np
 
 logger = logging.getLogger("pdf_layout_svc")
 
@@ -12,6 +13,7 @@ class PDFLayoutEngine:
     """
     Renders PDF pages to 300 DPI high-resolution PNGs, detects systems,
     staves, barlines, brackets, measure boxes, and produces cropped measure images.
+    Supports both digital vector PDFs and scanned/raster sheet music PDFs.
     """
 
     @classmethod
@@ -43,7 +45,6 @@ class PDFLayoutEngine:
             page_png_path = output_dir / f"page_{page_num}.png"
             pix.save(str(page_png_path))
 
-            scale = dpi / 72.0  # PDF points are 72 DPI
             page_w_pt = page.rect.width
             page_h_pt = page.rect.height
 
@@ -56,7 +57,7 @@ class PDFLayoutEngine:
                 global_system_idx += 1
 
                 # Starting measure override if printed in score
-                if sys.get("start_measure_num") is not None:
+                if sys.get("start_measure_num") is not None and sys["start_measure_num"] >= global_measure_num:
                     global_measure_num = sys["start_measure_num"]
 
                 m_start = global_measure_num
@@ -178,18 +179,27 @@ class PDFLayoutEngine:
         if len(doc) == 0:
             return title, composer, subtitle
 
+        blacklist_terms = [
+            "rehearsal", "copies", "purchased", "library", "copyright", "assigned to",
+            "all rights reserved", "printed in", "oxford university press", "unauthorized",
+            "photocopying", "mormon tabernacle", "music director", "dedicated to",
+            "for mixed choir", "mixed choir", "satb", "keyboard", "accompaniment",
+            "vocal score", "full score", "choral score", "edition", "arranger",
+            "full score and set", "available on rental", "publisher"
+        ]
+
         p0 = doc[0]
         spans = []
         for b in p0.get_text("dict").get("blocks", []):
             for l in b.get("lines", []):
                 for s in l.get("spans", []):
                     txt = s.get("text", "").strip()
-                    if not txt:
+                    if not txt or len(txt) < 2:
                         continue
                     if any(0xE000 <= ord(ch) <= 0xF8FF for ch in txt):
                         continue
                     x0, y0, x1, y1 = s["bbox"]
-                    if y0 < 150:
+                    if y0 < 220:
                         spans.append({
                             "text": txt,
                             "size": s.get("size", 10.0),
@@ -199,18 +209,29 @@ class PDFLayoutEngine:
                         })
 
         if spans:
-            centered = [
+            clean_candidates = [
                 sp for sp in spans
-                if 120 < sp["x_center"] < 500 and sp["text"].lower() not in ("choir", "piano", "vocal score", "satb")
+                if not any(b_term in sp["text"].lower() for b_term in blacklist_terms)
             ]
-            if centered:
-                best_title = max(centered, key=lambda x: x["size"])
-                title = best_title["text"]
-                subs = [sp["text"] for sp in centered if sp is not best_title and sp["y0"] > best_title["y0"]]
-                if subs:
-                    subtitle = " — ".join(subs)
 
-            right_spans = [sp for sp in spans if sp["x0"] > 350 and sp["text"] != title]
+            # Title detection: prominent centered text on upper third
+            title_candidates = [
+                sp for sp in clean_candidates
+                if 100 < sp["x_center"] < (p0.rect.width - 100) and sp["y0"] < 170
+            ]
+            if title_candidates:
+                best_title = max(title_candidates, key=lambda x: x["size"])
+                title = best_title["text"]
+
+            # Composer detection: aligned right on upper header (above first system)
+            right_spans = [
+                sp for sp in clean_candidates
+                if sp["x0"] > (p0.rect.width * 0.45)
+                and sp["text"] != title
+                and sp["y0"] < 130.0
+                and not any(ch in sp["text"] for ch in [";", "!", "?"])
+                and len(sp["text"].split()) <= 6
+            ]
             if right_spans:
                 composer = " / ".join(sp["text"] for sp in sorted(right_spans, key=lambda x: x["y0"]))
 
@@ -218,9 +239,19 @@ class PDFLayoutEngine:
 
     @classmethod
     def _extract_page_systems(cls, page: pymupdf.Page, page_num: int) -> List[Dict[str, Any]]:
+        # 1. Try vector drawing extraction first
+        vector_systems = cls._extract_page_systems_vector(page, page_num)
+        if vector_systems and any(len(s.get("staves", [])) >= 2 for s in vector_systems):
+            return vector_systems
+
+        # 2. Robust Computer Vision raster staff & system detection for scanned sheet music
+        return cls._extract_page_systems_raster(page, page_num)
+
+    @classmethod
+    def _extract_page_systems_vector(cls, page: pymupdf.Page, page_num: int) -> List[Dict[str, Any]]:
         drawings = page.get_drawings()
 
-        # 1. Staff lines (horizontal lines > 150pt wide, < 2.5pt tall)
+        # Staff lines (horizontal lines > 150pt wide, < 2.5pt tall)
         horiz_lines = []
         for d in drawings:
             r = d["rect"]
@@ -238,7 +269,6 @@ class PDFLayoutEngine:
                 unique_lines[-1][1] = min(unique_lines[-1][1], x0)
                 unique_lines[-1][2] = max(unique_lines[-1][2], x1)
 
-        # 2. Group into 5-line staves
         staves = []
         cur = []
         for line in unique_lines:
@@ -263,39 +293,19 @@ class PDFLayoutEngine:
                 "x_right": max(c[2] for c in cur),
             })
 
-        if not staves:
-            # Fallback if vector lines weren't parsed as drawings
-            return [{
-                "page_num": page_num,
-                "staves": [{
-                    "lines": [100.0, 110.0, 120.0, 130.0, 140.0],
-                    "y_top": 100.0,
-                    "y_bot": 140.0,
-                    "x_left": 50.0,
-                    "x_right": page.rect.width - 50.0,
-                    "clef": "treble",
-                    "bracket_type": "bracket",
-                    "role": "vocal",
-                }],
-                "y_top": 90.0,
-                "y_bot": 150.0,
-                "x_left": 50.0,
-                "x_right": page.rect.width - 50.0,
-                "bar_x": [50.0, page.rect.width - 50.0],
-            }]
+        if len(staves) < 2:
+            return []
 
-        # 3. Group staves into systems by vertical spacing and vertical connector bars
+        # Group staves into systems
         systems = []
         idx = 0
         while idx < len(staves):
-            s_top = staves[idx]
-            group = [s_top]
+            group = [staves[idx]]
             next_idx = idx + 1
             while next_idx < len(staves):
                 prev_st = group[-1]
                 cand = staves[next_idx]
                 gap = cand["y_top"] - prev_st["y_bot"]
-                # Staves within the same system are usually spaced < 65pt apart
                 if gap < 70.0:
                     group.append(cand)
                     next_idx += 1
@@ -311,45 +321,182 @@ class PDFLayoutEngine:
             })
             idx = next_idx
 
-        # 4. Text and barlines
+        cls._classify_and_segment_systems(systems, page, drawings)
+        return systems
+
+    @classmethod
+    def _extract_page_systems_raster(cls, page: pymupdf.Page, page_num: int) -> List[Dict[str, Any]]:
+        # Render at 150 DPI for fast and high-precision line recognition
+        pix = page.get_pixmap(dpi=150)
+        scale_y = page.rect.height / float(pix.height)
+        scale_x = page.rect.width / float(pix.width)
+
+        img = np.frombuffer(pix.samples, dtype=np.uint8).reshape((pix.height, pix.width, pix.n))
+        gray = img.mean(axis=2) if pix.n >= 3 else img[:, :, 0]
+        bw = (gray < 200).astype(np.uint8)
+
+        # Horizontal projection profile across central 76% of page
+        x0_px = int(pix.width * 0.12)
+        x1_px = int(pix.width * 0.88)
+        w_mid = max(1, x1_px - x0_px)
+        h_proj = bw[:, x0_px:x1_px].sum(axis=1) / float(w_mid)
+
+        thresh = max(0.28, float(h_proj.mean() + 1.8 * h_proj.std()))
+
+        # Detect line peaks
+        peaks = []
+        for y in range(1, len(h_proj) - 1):
+            if h_proj[y] >= thresh and h_proj[y] >= h_proj[y - 1] and h_proj[y] >= h_proj[y + 1]:
+                if not peaks or (y - peaks[-1]) > 3:
+                    peaks.append(y)
+
+        # Group 5-line staves with uniform spacing
+        staves = []
+        i = 0
+        while i + 4 < len(peaks):
+            five = peaks[i:i + 5]
+            diffs = [five[k + 1] - five[k] for k in range(4)]
+            avg_d = sum(diffs) / 4.0
+            if 4.5 <= avg_d <= 25.0 and (max(diffs) - min(diffs)) <= 4.5:
+                # Find horizontal start and end of this staff
+                line_y_indices = five
+                staff_row_mask = bw[line_y_indices, :].sum(axis=0) >= 2
+                active_cols = np.where(staff_row_mask)[0]
+                if len(active_cols) > 50:
+                    x_left_pt = max(35.0, active_cols[0] * scale_x - 5.0)
+                    x_right_pt = min(page.rect.width - 35.0, active_cols[-1] * scale_x + 5.0)
+                else:
+                    x_left_pt = 45.0
+                    x_right_pt = page.rect.width - 45.0
+
+                staves.append({
+                    "lines": [p * scale_y for p in five],
+                    "y_top": five[0] * scale_y,
+                    "y_bot": five[4] * scale_y,
+                    "x_left": x_left_pt,
+                    "x_right": x_right_pt,
+                })
+                i += 5
+            else:
+                i += 1
+
+        if not staves:
+            # Fallback if page has no recognizable staves (e.g. cover page)
+            return []
+
+        # Group staves into systems by vertical spacing (< 75pt within system)
+        systems = []
+        idx = 0
+        while idx < len(staves):
+            group = [staves[idx]]
+            next_idx = idx + 1
+            while next_idx < len(staves):
+                gap = staves[next_idx]["y_top"] - group[-1]["y_bot"]
+                if gap < 75.0:
+                    group.append(staves[next_idx])
+                    next_idx += 1
+                else:
+                    break
+            systems.append({
+                "page_num": page_num,
+                "staves": group,
+                "y_top": group[0]["y_top"],
+                "y_bot": group[-1]["y_bot"],
+                "x_left": min(st["x_left"] for st in group),
+                "x_right": max(st["x_right"] for st in group),
+            })
+            idx = next_idx
+
+        # Barline segmentation via raster vertical projection
+        for sys in systems:
+            y_t_px = max(0, int(sys["y_top"] / scale_y))
+            y_b_px = min(pix.height, int(sys["y_bot"] / scale_y))
+            v_slice = bw[y_t_px:y_b_px, :]
+            v_proj = v_slice.sum(axis=0) / max(1.0, float(v_slice.shape[0]))
+            v_thresh = max(0.22, float(v_proj.mean() + 1.8 * v_proj.std()))
+
+            bar_pxs = []
+            min_dist_px = int(35.0 / scale_x)
+            for bx in range(int(pix.width * 0.08), int(pix.width * 0.92)):
+                if v_proj[bx] >= v_thresh and v_proj[bx] >= v_proj[bx - 1] and v_proj[bx] >= v_proj[bx + 1]:
+                    if not bar_pxs or (bx - bar_pxs[-1]) > min_dist_px:
+                        bar_pxs.append(bx)
+
+            bars_pt = [bx * scale_x for bx in bar_pxs]
+            x_l = sys["x_left"]
+            x_r = sys["x_right"]
+            clean_bars = [x_l] + [b for b in bars_pt if (x_l + 18.0) < b < (x_r - 18.0)] + [x_r]
+
+            if len(clean_bars) < 3:
+                # Divide evenly into 4 standard measures per system
+                w = x_r - x_l
+                clean_bars = [x_l + (w / 4.0) * k for k in range(5)]
+
+            sys["bar_x"] = clean_bars
+
+        cls._classify_and_segment_systems(systems, page, None)
+        return systems
+
+    @classmethod
+    def _classify_and_segment_systems(
+        cls,
+        systems: List[Dict[str, Any]],
+        page: pymupdf.Page,
+        drawings: Optional[List[Any]]
+    ):
         text_blocks = page.get_text("blocks")
+        page_words = page.get_text("words")
+
         for sys in systems:
             y0_ref = sys["staves"][0]["y_top"]
-            y1_ref = sys["staves"][0]["y_bot"]
 
-            # Barlines
-            top_bars = []
-            for d in drawings:
-                r = d["rect"]
-                if (r.x1 - r.x0) < 3.5 and abs(r.y0 - y0_ref) < 1.5 and abs(r.y1 - y1_ref) < 1.5:
-                    top_bars.append(round((r.x0 + r.x1) / 2.0, 2))
+            # If barlines were not already set by raster detection
+            if "bar_x" not in sys:
+                top_bars = []
+                if drawings:
+                    for d in drawings:
+                        r = d["rect"]
+                        if (r.x1 - r.x0) < 3.5 and abs(r.y0 - y0_ref) < 2.0:
+                            top_bars.append(round((r.x0 + r.x1) / 2.0, 2))
 
-            raw_bars = sorted(list(set([sys["x_left"]] + top_bars + [sys["x_right"]])))
-            merged_bars = []
-            for bx in raw_bars:
-                if not merged_bars or (bx - merged_bars[-1]) > 8.0:
-                    merged_bars.append(bx)
+                raw_bars = sorted(list(set([sys["x_left"]] + top_bars + [sys["x_right"]])))
+                merged_bars = []
+                for bx in raw_bars:
+                    if not merged_bars or (bx - merged_bars[-1]) > 8.0:
+                        merged_bars.append(bx)
 
-            if len(merged_bars) < 2:
-                # Default 4 measure divisions across the width if no barlines detected
-                w = sys["x_right"] - sys["x_left"]
-                merged_bars = [sys["x_left"] + (w / 4.0) * i for i in range(5)]
+                if len(merged_bars) < 2:
+                    w = sys["x_right"] - sys["x_left"]
+                    merged_bars = [sys["x_left"] + (w / 4.0) * i for i in range(5)]
 
-            sys["bar_x"] = merged_bars
+                sys["bar_x"] = merged_bars
 
-            # System start measure number
+            # System start measure number from printed margins
             sys_m_num = None
             for b in text_blocks:
                 txt = b[4].strip()
-                if re.match(r"^\d+$", txt) and b[0] < 110.0:
-                    if (y0_ref - 35.0) <= b[1] <= (y0_ref + 10.0):
+                if re.match(r"^\d+$", txt) and b[0] < 120.0:
+                    if (y0_ref - 35.0) <= b[1] <= (y0_ref + 15.0):
                         sys_m_num = int(txt)
                         break
             sys["start_measure_num"] = sys_m_num
 
-            # Classify staves (Choir bracket vs Piano brace)
+            # Classify staves using part labels and choral topology
             n_staves = len(sys["staves"])
             for st_i, st in enumerate(sys["staves"]):
+                st_mid_y = (st["y_top"] + st["y_bot"]) / 2.0
+                
+                # Check for label words in the left margin
+                nearby_words = [
+                    w[4].lower() for w in page_words
+                    if w[0] < 130.0 and abs(((w[1] + w[3]) / 2.0) - st_mid_y) < 25.0
+                ]
+                label_txt = " ".join(nearby_words)
+                st["label"] = label_txt if label_txt else None
+
+                is_bass_named = any(k in label_txt for k in ("bass", "b.", "men", "tenor & bass", "t & b"))
+                is_treble_named = any(k in label_txt for k in ("soprano", "alto", "s.", "a.", "women", "s & a"))
+
                 if n_staves >= 3:
                     if st_i >= n_staves - 2:
                         st["bracket_type"] = "brace"
@@ -358,14 +505,17 @@ class PDFLayoutEngine:
                     else:
                         st["bracket_type"] = "bracket"
                         st["role"] = "vocal"
-                        st["clef"] = "bass" if st_i == n_staves - 3 and n_staves >= 4 else "treble"
+                        if is_bass_named:
+                            st["clef"] = "bass"
+                        elif is_treble_named:
+                            st["clef"] = "treble"
+                        else:
+                            st["clef"] = "bass" if (st_i == n_staves - 3 and n_staves >= 4) else "treble"
                 elif n_staves == 2:
                     st["bracket_type"] = "bracket"
                     st["role"] = "vocal"
-                    st["clef"] = "treble" if st_i == 0 else "bass"
+                    st["clef"] = "bass" if (is_bass_named or st_i == 1) else "treble"
                 else:
                     st["bracket_type"] = "bracket"
                     st["role"] = "vocal"
-                    st["clef"] = "treble"
-
-        return systems
+                    st["clef"] = "bass" if is_bass_named else "treble"

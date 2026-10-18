@@ -81,6 +81,19 @@ export const VisualDiffViewer: React.FC<VisualDiffViewerProps> = ({
     }
   }, [selectedMeasureNumber, currentPlayingMeasure, isOsmdLoaded])
 
+  // Auto-flip PDF page when selected or playing measure is on another page
+  useEffect(() => {
+    const targetMeasure = currentPlayingMeasure || selectedMeasureNumber
+    if (!targetMeasure || !layoutData?.systems) return
+
+    const sysForMeasure = layoutData.systems.find((s: any) =>
+      s.measures?.some((m: any) => m.measure_number === targetMeasure)
+    )
+    if (sysForMeasure && sysForMeasure.page_num && sysForMeasure.page_num !== currentPage) {
+      setCurrentPage(sysForMeasure.page_num)
+    }
+  }, [selectedMeasureNumber, currentPlayingMeasure, layoutData, currentPage])
+
   const pageSystems = layoutData?.systems?.filter((s: any) => s.page_num === currentPage) || []
 
   return (
