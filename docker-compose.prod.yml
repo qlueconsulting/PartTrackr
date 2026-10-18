@@ -1,0 +1,72 @@
+version: '3.8'
+
+services:
+  gateway-svc:
+    image: ghcr.io/qlueconsulting/parttrackr-gateway:latest
+    container_name: parttrackr_gateway
+    ports:
+      - "8005:8005"
+    volumes:
+      - ./parttrackr_storage:/app/storage
+    environment:
+      - STORAGE_DIR=/app/storage
+      - LAYOUT_SVC_URL=http://pdf-layout-svc:8006
+      - OMR_SVC_URL=http://omr-ai-svc:8007
+      - ROUTER_SVC_URL=http://voice-router-svc:8008
+      - DECODER_SVC_URL=http://decoder-xml-svc:8009
+    depends_on:
+      - pdf-layout-svc
+      - omr-ai-svc
+      - voice-router-svc
+      - decoder-xml-svc
+    restart: unless-stopped
+
+  pdf-layout-svc:
+    image: ghcr.io/qlueconsulting/parttrackr-layout:latest
+    container_name: parttrackr_layout
+    ports:
+      - "8006:8006"
+    volumes:
+      - ./parttrackr_storage:/app/storage
+    restart: unless-stopped
+
+  omr-ai-svc:
+    image: ghcr.io/qlueconsulting/parttrackr-omr:latest
+    container_name: parttrackr_omr
+    ports:
+      - "8007:8007"
+    volumes:
+      - ./parttrackr_storage:/app/storage
+    environment:
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+    restart: unless-stopped
+
+  voice-router-svc:
+    image: ghcr.io/qlueconsulting/parttrackr-router:latest
+    container_name: parttrackr_router
+    ports:
+      - "8008:8008"
+    volumes:
+      - ./parttrackr_storage:/app/storage
+    restart: unless-stopped
+
+  decoder-xml-svc:
+    image: ghcr.io/qlueconsulting/parttrackr-decoder:latest
+    container_name: parttrackr_decoder
+    ports:
+      - "8009:8009"
+    volumes:
+      - ./parttrackr_storage:/app/storage
+    restart: unless-stopped
+
+  diagnostic-ui:
+    image: ghcr.io/qlueconsulting/parttrackr-ui:latest
+    container_name: parttrackr_ui
+    ports:
+      - "8001:8001"
+    environment:
+      - VITE_GATEWAY_URL=http://gateway-svc:8005
+    depends_on:
+      - gateway-svc
+    restart: unless-stopped
