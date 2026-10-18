@@ -78,6 +78,7 @@ export const App: React.FC = () => {
   useEffect(() => {
     const engine = new MidiAudioEngine()
     audioEngineRef.current = engine
+    engine.setAllChannelStates(channelStates)
 
     engine.onTimeUpdate = (_time, mNum) => {
       setCurrentMeasure(mNum)
@@ -127,13 +128,24 @@ export const App: React.FC = () => {
 
         if (jobData.status === 'completed' && jobData.decoder_result) {
           addLog('success', 'decoder-xml-svc', `MusicXML and MIDI ready. Measures: ${jobData.total_measures}`)
-          const midiUrl = `/api/v1/jobs/${jobId}/files/compiled/score_11ch.mid`
           const syncMapUrl = `/api/v1/jobs/${jobId}/files/compiled/sync_map.json`
-          audioEngineRef.current?.loadScore(
-            midiUrl,
-            syncMapUrl,
-            jobData.total_duration_seconds || 60
-          )
+          const scoreCism = jobData.routed_cism || jobData.raw_cism
+          if (scoreCism) {
+            audioEngineRef.current?.loadScore(
+              scoreCism,
+              syncMapUrl,
+              jobData.total_duration_seconds || 60
+            )
+          } else {
+            audioEngineRef.current?.loadScore(
+              `/api/v1/jobs/${jobId}`,
+              syncMapUrl,
+              jobData.total_duration_seconds || 60
+            )
+          }
+          if (channelStates) {
+            audioEngineRef.current?.setAllChannelStates(channelStates)
+          }
         } else if (jobData.status !== 'completed' && jobData.status !== 'failed') {
           listenToJobEvents(jobId)
         }
@@ -423,11 +435,19 @@ export const App: React.FC = () => {
                         onOverrideSaved={(updated) => {
                           addLog('success', 'voice-router-svc', 'Measure override compiled successfully')
                           if (currentJob) {
+                            const newRouted = updated.result.routed_cism
+                            const newDecoder = updated.result.decoder_result
                             setCurrentJob({
                               ...currentJob,
-                              routed_cism: updated.result.routed_cism,
-                              decoder_result: updated.result.decoder_result,
+                              routed_cism: newRouted,
+                              decoder_result: newDecoder,
                             })
+                            const syncMapUrl = `/api/v1/jobs/${currentJob.job_id}/files/compiled/sync_map.json`
+                            audioEngineRef.current?.loadScore(
+                              newRouted,
+                              syncMapUrl,
+                              newDecoder?.total_duration_seconds || currentJob.total_duration_seconds
+                            )
                           }
                         }}
                       />
@@ -492,7 +512,7 @@ export const App: React.FC = () => {
                 </div>
               </div>
 
-              {/* Singer Part Selector */}
+              {/* Singer Part Selector & Quick Actions */}
               <div className="flex items-center gap-2">
                 <span className="text-xs text-slate-400 font-semibold uppercase tracking-wider">My Part:</span>
                 <select
@@ -506,17 +526,84 @@ export const App: React.FC = () => {
                     </option>
                   ))}
                 </select>
+
+                <div className="flex items-center gap-1.5 ml-2">
+                  <button
+                    onClick={() => {
+                      const updated: Record<string, ChannelState> = {}
+                      for (const p of CANONICAL_11_PARTS) {
+                        updated[p] = {
+                          ...channelStates[p],
+                          soloed: p === selectedSingerPart,
+                          muted: false,
+                        }
+                      }
+                      setChannelStates(updated)
+                      audioEngineRef.current?.setAllChannelStates(updated)
+                    }}
+                    className="px-2.5 py-1 bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-300 rounded text-xs font-semibold cursor-pointer transition-colors"
+                    title="Solo your chosen vocal part"
+                  >
+                    Solo Part
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      const updated: Record<string, ChannelState> = {}
+                      for (const p of CANONICAL_11_PARTS) {
+                        updated[p] = {
+                          ...channelStates[p],
+                          amplified: p === selectedSingerPart ? !channelStates[p].amplified : false,
+                        }
+                      }
+                      setChannelStates(updated)
+                      audioEngineRef.current?.setAllChannelStates(updated)
+                    }}
+                    className="px-2.5 py-1 bg-purple-500/20 hover:bg-purple-500/30 border border-purple-500/40 text-purple-300 rounded text-xs font-semibold cursor-pointer transition-colors"
+                    title="Boost your chosen vocal part by +6dB"
+                  >
+                    Boost (+6dB)
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      const initial: Record<string, ChannelState> = {}
+                      for (const p of CANONICAL_11_PARTS) {
+                        initial[p] = { volume: 0.85, pan: 0.0, muted: false, soloed: false, amplified: false }
+                      }
+                      setChannelStates(initial)
+                      audioEngineRef.current?.setAllChannelStates(initial)
+                    }}
+                    className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-xs font-semibold cursor-pointer transition-colors"
+                    title="Reset all 11 parts to standard balance"
+                  >
+                    Reset
+                  </button>
+                </div>
               </div>
             </div>
 
-            {/* Full Height 11-Channel Rehearsal Mixer */}
-            <div className="flex-1">
+            {/* 11-Channel Rehearsal Mixer */}
+            <div>
               <WebAudioMixer
                 channelStates={channelStates}
                 onChannelChange={handleChannelChange}
                 activeParts={activePartsInMeasure}
               />
             </div>
+
+            {/* Side-by-Side Visual Diff Viewer (under 11 part controls) */}
+            <VisualDiffViewer
+              job={currentJob}
+              selectedMeasureNumber={selectedMeasureNumber}
+              onSelectMeasure={(mNum) => {
+                setSelectedMeasureNumber(mNum)
+                const targetSec = currentJob.decoder_result?.measure_summary?.find((m) => m.measure_number === mNum)
+                  ?.start_time_seconds || 0
+                audioEngineRef.current?.seek(targetSec)
+              }}
+              currentPlayingMeasure={currentMeasure}
+            />
           </div>
         )}
 
