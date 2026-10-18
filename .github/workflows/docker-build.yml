@@ -1,4 +1,4 @@
-name: Build & Push Docker Image
+name: Build & Push Microservice Docker Images
 
 on:
   push:
@@ -6,19 +6,41 @@ on:
       - 'backend-only'
       - 'backend_only'
       - 'backend*only*'
+      - 'main'
   workflow_dispatch:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: qlueconsulting/parttrackr
 
 jobs:
   build-and-push:
-    name: Build & Push Docker Image to GHCR
+    name: Build & Push ${{ matrix.service.name }} to GHCR
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        service:
+          - name: parttrackr-gateway
+            context: .
+            dockerfile: services/gateway_svc/Dockerfile
+          - name: parttrackr-layout
+            context: .
+            dockerfile: services/pdf_layout_svc/Dockerfile
+          - name: parttrackr-omr
+            context: .
+            dockerfile: services/omr_ai_svc/Dockerfile
+          - name: parttrackr-router
+            context: .
+            dockerfile: services/voice_router_svc/Dockerfile
+          - name: parttrackr-decoder
+            context: .
+            dockerfile: services/decoder_xml_svc/Dockerfile
+          - name: parttrackr-ui
+            context: ./frontend
+            dockerfile: ./frontend/Dockerfile
 
     steps:
       - name: Checkout repository
@@ -38,17 +60,17 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          images: ${{ env.REGISTRY }}/qlueconsulting/${{ matrix.service.name }}
           tags: |
-            type=raw,value=backend-only
             type=raw,value=latest
+            type=raw,value=backend-only
             type=sha,prefix=sha-
 
       - name: Build and Push Docker Image
         uses: docker/build-push-action@v5
         with:
-          context: .
-          file: ./Dockerfile
+          context: ${{ matrix.service.context }}
+          file: ${{ matrix.service.dockerfile }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

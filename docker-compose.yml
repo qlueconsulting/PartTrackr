@@ -1,31 +1,93 @@
 version: '3.8'
 
 services:
-  parttrackr:
-    image: ghcr.io/qlueconsulting/parttrackr:backend-only
+  gateway-svc:
+    image: ghcr.io/qlueconsulting/parttrackr-gateway:latest
     build:
       context: .
-      dockerfile: Dockerfile
-    container_name: parttrackr_service
+      dockerfile: services/gateway_svc/Dockerfile
+    container_name: parttrackr_gateway
     ports:
-      - "8001:8000"
+      - "8005:8005"
     volumes:
       - ./storage:/app/storage
     environment:
-      - AUDIVERIS_CMD=/usr/local/bin/audiveris
-      - FLUIDSYNTH_CMD=fluidsynth
-      - FFMPEG_CMD=ffmpeg
-      - SOUNDFONT_PATH=/usr/share/sounds/sf2/FluidR3_GM.sf2
-      - DATABASE_URL=sqlite:////app/storage/parttrackr.db
-      - OLLAMA_BASE_URL=http://ollama:11434
-      - OLLAMA_MODEL=qwen2.5vl:7b
+      - STORAGE_DIR=/app/storage
+      - LAYOUT_SVC_URL=http://pdf-layout-svc:8006
+      - OMR_SVC_URL=http://omr-ai-svc:8007
+      - ROUTER_SVC_URL=http://voice-router-svc:8008
+      - DECODER_SVC_URL=http://decoder-xml-svc:8009
+    depends_on:
+      - pdf-layout-svc
+      - omr-ai-svc
+      - voice-router-svc
+      - decoder-xml-svc
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 10s
+
+  pdf-layout-svc:
+    image: ghcr.io/qlueconsulting/parttrackr-layout:latest
+    build:
+      context: .
+      dockerfile: services/pdf_layout_svc/Dockerfile
+    container_name: parttrackr_layout
+    ports:
+      - "8006:8006"
+    volumes:
+      - ./storage:/app/storage
+    restart: unless-stopped
+
+  omr-ai-svc:
+    image: ghcr.io/qlueconsulting/parttrackr-omr:latest
+    build:
+      context: .
+      dockerfile: services/omr_ai_svc/Dockerfile
+    container_name: parttrackr_omr
+    ports:
+      - "8007:8007"
+    volumes:
+      - ./storage:/app/storage
+    environment:
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+    restart: unless-stopped
+
+  voice-router-svc:
+    image: ghcr.io/qlueconsulting/parttrackr-router:latest
+    build:
+      context: .
+      dockerfile: services/voice_router_svc/Dockerfile
+    container_name: parttrackr_router
+    ports:
+      - "8008:8008"
+    volumes:
+      - ./storage:/app/storage
+    restart: unless-stopped
+
+  decoder-xml-svc:
+    image: ghcr.io/qlueconsulting/parttrackr-decoder:latest
+    build:
+      context: .
+      dockerfile: services/decoder_xml_svc/Dockerfile
+    container_name: parttrackr_decoder
+    ports:
+      - "8009:8009"
+    volumes:
+      - ./storage:/app/storage
+    restart: unless-stopped
+
+  diagnostic-ui:
+    image: ghcr.io/qlueconsulting/parttrackr-ui:latest
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: parttrackr_ui
+    ports:
+      - "8001:8001"
+    environment:
+      - VITE_GATEWAY_URL=http://localhost:8005
+    depends_on:
+      - gateway-svc
+    restart: unless-stopped
 
   # Optional Local GPU Vision LLM Service (Dual NVIDIA RTX 2060 Super 8GB + RTX 2060 6GB = 14GB VRAM)
   ollama:

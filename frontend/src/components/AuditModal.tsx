@@ -163,7 +163,7 @@ export const AuditModal: React.FC<AuditModalProps> = ({
                         {m.active_parts.join(', ')}
                       </td>
                       <td className="py-1.5 text-amber-400 font-sans">
-                        {m.entrances.length > 0 ? m.entrances.join(', ') : '—'}
+                        {m.entrances && m.entrances.length > 0 ? m.entrances.join(', ') : '—'}
                       </td>
                     </tr>
                   ))}
