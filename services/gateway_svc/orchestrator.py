@@ -63,7 +63,7 @@ class PipelineOrchestrator:
 
         append_job_log(job_dir, "info", "gateway-svc", f"Pipeline initiated for '{pdf_path.name}' (Job ID: {job_id})")
 
-        async with httpx.AsyncClient(timeout=180.0) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(600.0, connect=30.0)) as client:
             try:
                 # Stage 1: Layout & Crops
                 job.status = "layout"

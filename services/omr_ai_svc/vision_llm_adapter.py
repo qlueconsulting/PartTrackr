@@ -73,6 +73,26 @@ class VisionLLMAdapter:
         total_measures = 0
         engines_used = set()
 
+        # Fast 1.5-second pre-check: Is Ollama reachable AND is the model pulled?
+        model_name = os.environ.get("OLLAMA_MODEL", "qwen2.5-vl:7b")
+        ollama_active = [False]
+        if ollama_endpoint:
+            try:
+                resp = requests.get(f"{ollama_endpoint.rstrip('/')}/api/tags", timeout=1.5)
+                if resp.status_code == 200:
+                    models = resp.json().get("models", [])
+                    target_base = model_name.split(":")[0].replace("-", "").replace("_", "").lower()
+                    for m in models:
+                        m_name = m.get("name", "").replace("-", "").replace("_", "").lower()
+                        if target_base in m_name:
+                            ollama_active[0] = True
+                            logger.info(f"Ollama vision model '{m.get('name')}' detected on {ollama_endpoint}")
+                            break
+                    if not ollama_active[0]:
+                        logger.info(f"Ollama reachable, but '{model_name}' not pulled. Fast-pathing to OpenCV CV engine.")
+            except Exception as e:
+                logger.debug(f"Ollama not reachable ({e}). Fast-pathing to OpenCV CV engine.")
+
         for sys_dict in systems_raw:
             sys_idx = sys_dict["system_index"]
             p_num = sys_dict["page_num"]
@@ -92,8 +112,9 @@ class VisionLLMAdapter:
                     m_crop_path=m_crop,
                     staves=staves_out,
                     api_key=api_key,
-                    ollama_url=ollama_endpoint,
-                    custom_instructions=custom_instructions
+                    ollama_url=ollama_endpoint if ollama_active[0] else None,
+                    custom_instructions=custom_instructions,
+                    ollama_active_state=ollama_active
                 )
                 engines_used.add(eng_name)
 
@@ -134,7 +155,8 @@ class VisionLLMAdapter:
         staves: List[StaffInfo],
         api_key: Optional[str],
         ollama_url: Optional[str],
-        custom_instructions: Optional[str]
+        custom_instructions: Optional[str],
+        ollama_active_state: Optional[List[bool]] = None
     ) -> Tuple[Dict[str, TrackData], str]:
         # 1. Try Gemini API if key is present and crop image exists
         if api_key and m_crop_path and Path(m_crop_path).exists():
@@ -148,6 +170,10 @@ class VisionLLMAdapter:
             if ollama_res:
                 model_name = os.environ.get("OLLAMA_MODEL", "qwen2.5-vl:7b")
                 return cls._format_staves_response(ollama_res, staves), f"Ollama ({model_name})"
+            else:
+                # Trip the circuit breaker for subsequent measures if Ollama fails
+                if ollama_active_state is not None:
+                    ollama_active_state[0] = False
 
         # 3. Local Computer Vision note recognition from crop image
         return cls._recognize_from_crop_cv(m_crop_path, staves), "OpenCV Computer Vision"
