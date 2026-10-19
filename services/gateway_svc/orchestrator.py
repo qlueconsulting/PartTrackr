@@ -53,13 +53,23 @@ class PipelineOrchestrator:
         job_dir: Path,
         pdf_path: Path,
         session_factory,
-        custom_instructions: Optional[str] = None
+        custom_instructions: Optional[str] = None,
+        score_hints: Optional[Dict[str, Any]] = None
     ):
         db: Session = session_factory()
         job = db.query(Job).filter(Job.id == job_id).first()
         if not job:
             db.close()
             return
+
+        if score_hints:
+            job.score_hints = score_hints
+            db.commit()
+            append_job_log(
+                job_dir, "info", "gateway-svc",
+                f"Applying Score Hints & AI Helps: TimeSig={score_hints.get('time_signature')}, BPM={score_hints.get('tempo_bpm')}, Voicing={score_hints.get('choral_voicing')}, Accompaniment={score_hints.get('accompaniment_type')}",
+                score_hints
+            )
 
         append_job_log(job_dir, "info", "gateway-svc", f"Pipeline initiated for '{pdf_path.name}' (Job ID: {job_id})")
 
@@ -117,11 +127,13 @@ class PipelineOrchestrator:
                     f"POST {OMR_SVC_URL}/api/v1/omr/process - Running hybrid OMR across {layout_data.get('total_systems')} systems..."
                 )
 
+                active_instructions = custom_instructions or (score_hints.get("custom_instructions") if score_hints else None)
                 omr_payload = {
                     "job_id": job_id,
                     "pdf_path": str(pdf_path),
                     "layout_data": layout_data,
-                    "custom_instructions": custom_instructions,
+                    "custom_instructions": active_instructions,
+                    "score_hints": score_hints,
                 }
                 resp_omr = await client.post(f"{OMR_SVC_URL}/api/v1/omr/process", json=omr_payload)
                 if resp_omr.status_code != 200:
@@ -154,6 +166,7 @@ class PipelineOrchestrator:
                     "job_id": job_id,
                     "cism": raw_cism,
                     "overrides": job.overrides,
+                    "score_hints": score_hints,
                 }
                 resp_router = await client.post(f"{ROUTER_SVC_URL}/api/v1/router/process", json=router_payload)
                 if resp_router.status_code != 200:

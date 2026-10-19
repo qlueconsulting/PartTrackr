@@ -547,3 +547,166 @@ class PDFLayoutEngine:
                     st["bracket_type"] = "bracket"
                     st["role"] = "vocal"
                     st["clef"] = "bass" if is_bass_named else "treble"
+
+    @classmethod
+    def preflight_analysis(cls, pdf_path: Path) -> Dict[str, Any]:
+        """
+        Fast (~0.2s) cursory pre-flight inspection of the opening of the PDF score.
+        Detects title, composer, page count, time signature, tempo BPM, and part layout / voicing
+        before committing to the full heavyweight rasterization and OMR pipeline.
+        """
+        doc = pymupdf.open(str(pdf_path))
+        page_count = len(doc)
+        title, composer, subtitle = cls._extract_metadata(doc, pdf_path)
+
+        # Inspect first 2 pages for systems, staves, text, and glyphs
+        p1 = doc[0] if page_count > 0 else None
+        p2 = doc[1] if page_count > 1 else None
+
+        syss_p1 = cls._extract_page_systems(p1, 1) if p1 else []
+        # If Page 1 is a cover or has only single isolated title staff, check Page 2
+        syss_to_use = syss_p1
+        if (not syss_p1 or (len(syss_p1) == 1 and len(syss_p1[0]["staves"]) <= 1)) and p2:
+            syss_p2 = cls._extract_page_systems(p2, 2)
+            if syss_p2 and len(syss_p2[0]["staves"]) >= 2:
+                syss_to_use = syss_p2
+
+        staves_per_system = len(syss_to_use[0]["staves"]) if syss_to_use else 1
+
+        # Text across first 2 pages
+        all_text = ""
+        for p in doc[:2]:
+            all_text += p.get_text("text") + " "
+
+        doc.close()
+
+        # 1. Time Signature Detection (SMuFL Glyphs + Text Regex)
+        time_sig = "4/4"
+        # Check SMuFL time signature combinations
+        if "\ue088\ue086" in all_text or "\ue086\ue088" in all_text:
+            time_sig = "6/8"
+        elif "\ue084\ue084" in all_text:
+            time_sig = "4/4"
+        elif "\ue083\ue084" in all_text or "\ue084\ue083" in all_text:
+            time_sig = "3/4"
+        elif "\ue082\ue084" in all_text or "\ue084\ue082" in all_text:
+            time_sig = "2/4"
+        elif "\ue082\ue082" in all_text:
+            time_sig = "2/2"
+        elif "\ue088\ue081\ue082" in all_text or ("\ue081\ue082" in all_text and "\ue088" in all_text):
+            time_sig = "12/8"
+        elif "\ue08a" in all_text:
+            time_sig = "4/4"
+        elif "\ue08b" in all_text:
+            time_sig = "2/2"
+        else:
+            # Match standard fractions in text e.g. "6/8", "3/4", "4/4", "2/4", "2/2"
+            frac_match = re.search(r"\b(4/4|3/4|6/8|2/4|2/2|12/8|9/8|3/8|5/4|7/8)\b", all_text)
+            if frac_match:
+                time_sig = frac_match.group(1)
+            else:
+                ratio_match = re.search(r"\b([23469]|12)\s*/\s*([248]|16)\b", all_text)
+                if ratio_match:
+                    time_sig = f"{ratio_match.group(1)}/{ratio_match.group(2)}"
+
+        # 2. Starting Tempo (BPM) Detection
+        tempo_bpm = 120.0
+        bpm_match = re.search(r"(?:♩|q|M\.M\.|\bquarter\b|\bcrotchet\b)?\s*=\s*(\d{2,3})", all_text)
+        if not bpm_match:
+            bpm_match = re.search(r"=\s*(\d{2,3})", all_text)
+
+        if bpm_match:
+            val = float(bpm_match.group(1))
+            if 30 <= val <= 280:
+                tempo_bpm = val
+        else:
+            italian_tempos = {
+                "largo": 56.0,
+                "lento": 60.0,
+                "adagio": 66.0,
+                "andante": 92.0,
+                "moderato": 108.0,
+                "allegretto": 116.0,
+                "allegro": 132.0,
+                "vivace": 152.0,
+                "presto": 168.0,
+                "maestoso": 88.0,
+            }
+            lower_text = all_text.lower()
+            for term, val in italian_tempos.items():
+                if re.search(rf"\b{term}\b", lower_text):
+                    tempo_bpm = val
+                    break
+
+        # 3. Part Layout & Voicing Topology
+        has_piano = staves_per_system >= 3 or any(
+            st.get("bracket_type") == "brace" or "piano" in (st.get("label") or "").lower()
+            for st in (syss_to_use[0]["staves"] if syss_to_use else [])
+        )
+
+        lower_text = all_text.lower()
+        has_soprano = bool(re.search(r"\b(soprano|s\.)\b", lower_text))
+        has_alto = bool(re.search(r"\b(alto|a\.)\b", lower_text))
+        has_tenor = bool(re.search(r"\b(tenor|t\.)\b", lower_text))
+        has_bass = bool(re.search(r"\b(bass|b\.)\b", lower_text))
+
+        detected_labels = []
+        if has_soprano: detected_labels.append("Soprano")
+        if has_alto: detected_labels.append("Alto")
+        if has_tenor: detected_labels.append("Tenor")
+        if has_bass: detected_labels.append("Bass")
+
+        if staves_per_system == 6:
+            choral_voicing = "SATB"
+            part_layout_summary = "SATB (4 vocal staves) + Piano Accompaniment (2 staves)"
+        elif staves_per_system == 5:
+            if has_tenor or has_bass:
+                choral_voicing = "SAB"
+                part_layout_summary = "SAB (3 vocal staves) + Piano Accompaniment (2 staves)"
+            else:
+                choral_voicing = "SSAA"
+                part_layout_summary = "SSAA (3 vocal staves) + Piano Accompaniment (2 staves)"
+        elif staves_per_system == 4:
+            if has_piano:
+                choral_voicing = "SA_TB"
+                part_layout_summary = "SA + TB (2 vocal staves) + Piano Accompaniment (2 staves)"
+            else:
+                choral_voicing = "SATB"
+                part_layout_summary = "SATB 4-Part Choral Score (A Cappella, 4 vocal staves)"
+        elif staves_per_system == 3:
+            choral_voicing = "Unison"
+            part_layout_summary = "Solo / Unison (1 vocal staff) + Piano Accompaniment (2 staves)"
+        elif staves_per_system == 2:
+            if has_soprano and has_alto and not has_tenor and not has_bass:
+                choral_voicing = "SA_TB"
+                part_layout_summary = "SA 2-Part Choral Score (2 vocal staves)"
+            elif (has_tenor or has_bass) and not has_soprano and not has_alto:
+                choral_voicing = "TTBB"
+                part_layout_summary = "TB 2-Part Men's Choral Score (2 vocal staves)"
+            else:
+                choral_voicing = "SA_TB"
+                part_layout_summary = "2-Staff Choral Score (SA + TB)"
+        elif staves_per_system == 1:
+            choral_voicing = "Unison"
+            part_layout_summary = "Single Vocal Line (Unison / Lead Sheet)"
+        else:
+            choral_voicing = "SATB"
+            part_layout_summary = f"{staves_per_system} staves per system (Divisi Choral + Piano Accompaniment)"
+
+        accompaniment_type = "piano" if has_piano else "a_cappella"
+
+        return {
+            "title": title,
+            "composer": composer,
+            "subtitle": subtitle,
+            "page_count": page_count,
+            "time_signature": time_sig,
+            "tempo_bpm": tempo_bpm,
+            "choral_voicing": choral_voicing,
+            "accompaniment_type": accompaniment_type,
+            "has_piano": has_piano,
+            "staves_per_system": staves_per_system,
+            "part_layout_summary": part_layout_summary,
+            "voice_labels_detected": detected_labels,
+        }
+

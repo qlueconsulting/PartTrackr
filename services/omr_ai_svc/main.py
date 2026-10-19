@@ -25,6 +25,7 @@ class OMRRequest(BaseModel):
     pdf_path: str
     layout_data: Dict[str, Any]
     custom_instructions: Optional[str] = None
+    score_hints: Optional[Dict[str, Any]] = None
     gemini_api_key: Optional[str] = None
 
 
@@ -45,11 +46,13 @@ def process_omr(req: OMRRequest) -> ScoreCISM:
     if not pdf_file.exists():
         raise HTTPException(status_code=404, detail=f"PDF file not found at {req.pdf_path}")
 
+    custom_instr = req.custom_instructions or (req.score_hints.get("custom_instructions") if req.score_hints else None)
+
     try:
         # 1. Deterministic Fast Path: Vector SMuFL extraction for digital PDFs
         if VectorSMuFLExtractor.can_extract(pdf_file):
             logger.info(f"Job {req.job_id}: Detected SMuFL vector glyphs in {pdf_file.name}. Running direct vector extraction...")
-            score_cism = VectorSMuFLExtractor.extract_cism(pdf_file, req.layout_data)
+            score_cism = VectorSMuFLExtractor.extract_cism(pdf_file, req.layout_data, score_hints=req.score_hints)
             return score_cism
 
         # 2. Vision-LLM Path: Multimodal recognition on crops for scanned/raster PDFs
@@ -57,7 +60,8 @@ def process_omr(req: OMRRequest) -> ScoreCISM:
         score_cism = VisionLLMAdapter.extract_cism_from_crops(
             layout_data=req.layout_data,
             gemini_api_key=req.gemini_api_key,
-            custom_instructions=req.custom_instructions
+            custom_instructions=custom_instr,
+            score_hints=req.score_hints
         )
         return score_cism
 

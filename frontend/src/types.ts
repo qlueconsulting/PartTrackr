@@ -115,6 +115,22 @@ export interface DecoderResult {
 
 export type PipelineStage = 'pending' | 'layout' | 'omr' | 'routing' | 'decoding' | 'completed' | 'failed'
 
+export interface PreflightData {
+  job_id?: string
+  title: string
+  composer: string
+  subtitle?: string | null
+  page_count: number
+  time_signature: string
+  tempo_bpm: number
+  choral_voicing: string
+  accompaniment_type: string
+  has_piano: boolean
+  staves_per_system: number
+  part_layout_summary: string
+  voice_labels_detected?: string[]
+}
+
 export interface JobData {
   job_id: string
   status: PipelineStage
@@ -130,6 +146,7 @@ export interface JobData {
   routed_cism?: ScoreCISM | null
   decoder_result?: DecoderResult | null
   overrides?: Record<string, any> | null
+  score_hints?: ScoreHints | null
   error_message?: string | null
 }
 

@@ -15,6 +15,7 @@ import {
   Volume2,
   Volume1,
   VolumeX,
+  Sparkles,
 } from 'lucide-react'
 
 import { PipelineStepper } from './components/PipelineStepper'
@@ -22,6 +23,7 @@ import { VisualDiffViewer } from './components/VisualDiffViewer'
 import { CISMEditor } from './components/CISMEditor'
 import { ApiLogViewer } from './components/ApiLogViewer'
 import { WebAudioMixer } from './components/WebAudioMixer'
+import { ScoreHintsModal } from './components/ScoreHintsModal'
 import { MidiAudioEngine } from './audio/MidiAudioEngine'
 import {
   CANONICAL_11_PARTS,
@@ -29,6 +31,7 @@ import {
   type JobData,
   type ChannelState,
   type ApiLogEntry,
+  type ScoreHints,
 } from './types'
 
 export const App: React.FC = () => {
@@ -43,6 +46,7 @@ export const App: React.FC = () => {
   const [selectedMeasureNumber, setSelectedMeasureNumber] = useState<number | null>(1)
   const [isUploading, setIsUploading] = useState<boolean>(false)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
+  const [isHintsModalOpen, setIsHintsModalOpen] = useState<boolean>(false)
 
   // API & Pipeline Telemetry Logs
   const [apiLogs, setApiLogs] = useState<ApiLogEntry[]>([])
@@ -313,6 +317,7 @@ export const App: React.FC = () => {
       const data = await res.json()
       addLog('success', 'gateway-svc', `Upload accepted! Job ID: ${data.job_id}`, data)
       loadJobDetails(data.job_id)
+      setIsHintsModalOpen(true)
     } catch (err: any) {
       console.error('Upload error:', err)
       setErrorMessage(err.message || 'PDF upload failed')
@@ -322,6 +327,12 @@ export const App: React.FC = () => {
       // reset file input
       e.target.value = ''
     }
+  }
+
+  const handleReprocessTriggered = (jobId: string, hints: ScoreHints) => {
+    addLog('info', 'client', `Score reprocessing dispatched with AI hints:`, hints)
+    setBottomTab('logs')
+    loadJobDetails(jobId)
   }
 
   // Transport Handlers
@@ -404,6 +415,17 @@ export const App: React.FC = () => {
               <span>Rehearsal Console</span>
             </button>
           </div>
+
+          {/* AI Helps & Reprocess Button */}
+          <button
+            onClick={() => setIsHintsModalOpen(true)}
+            disabled={!currentJob}
+            className="flex items-center gap-1.5 px-3.5 py-1.5 bg-gradient-to-r from-violet-600 via-indigo-600 to-purple-600 hover:from-violet-500 hover:via-indigo-500 hover:to-purple-500 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-lg text-xs font-semibold shadow transition-all duration-150 cursor-pointer"
+            title="Configure score hints, time signature, tempo, and AI helps"
+          >
+            <Sparkles className="w-3.5 h-3.5 text-amber-300" />
+            <span>AI Helps / Reprocess</span>
+          </button>
 
           <label className="flex items-center gap-1.5 px-3.5 py-1.5 bg-sky-600 hover:bg-sky-500 text-white rounded-lg text-xs font-semibold cursor-pointer shadow transition-all duration-150">
             <Upload className="w-3.5 h-3.5" />
@@ -700,6 +722,15 @@ export const App: React.FC = () => {
                   >
                     Reset
                   </button>
+
+                  <button
+                    onClick={() => setIsHintsModalOpen(true)}
+                    className="flex items-center gap-1 px-2.5 py-1 bg-violet-600/30 hover:bg-violet-600/40 border border-violet-500/50 text-violet-200 rounded text-xs font-semibold cursor-pointer transition-colors"
+                    title="Open Score Hints & AI Helps modal"
+                  >
+                    <Sparkles className="w-3.5 h-3.5 text-amber-300" />
+                    <span>AI Helps</span>
+                  </button>
                 </div>
               </div>
             </div>
@@ -752,6 +783,14 @@ export const App: React.FC = () => {
             </label>
           </div>
         )}
+
+        {/* Score Hints & AI Reprocess Modal */}
+        <ScoreHintsModal
+          isOpen={isHintsModalOpen}
+          onClose={() => setIsHintsModalOpen(false)}
+          job={currentJob}
+          onReprocessTriggered={handleReprocessTriggered}
+        />
       </main>
     </div>
   )

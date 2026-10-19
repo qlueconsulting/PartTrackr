@@ -63,12 +63,34 @@ class VectorSMuFLExtractor:
         return False
 
     @classmethod
-    def extract_cism(cls, pdf_path: Path, layout_data: Dict[str, Any]) -> ScoreCISM:
+    def _calculate_quarter_length(cls, time_sig: str) -> float:
+        try:
+            parts = time_sig.split("/")
+            if len(parts) == 2:
+                num = float(parts[0])
+                den = float(parts[1])
+                if den > 0:
+                    return (num * 4.0) / den
+        except Exception:
+            pass
+        return 4.0
+
+    @classmethod
+    def extract_cism(cls, pdf_path: Path, layout_data: Dict[str, Any], score_hints: Optional[Dict[str, Any]] = None) -> ScoreCISM:
         doc = pymupdf.open(str(pdf_path))
         title = layout_data.get("title", pdf_path.stem)
         composer = layout_data.get("composer", "Unknown Composer")
         subtitle = layout_data.get("subtitle")
         has_piano = layout_data.get("has_piano", False)
+        if score_hints and score_hints.get("accompaniment_type") == "a_cappella":
+            has_piano = False
+
+        time_sig = (score_hints.get("time_signature") if score_hints else None) or layout_data.get("time_signature") or "4/4"
+        try:
+            tempo_bpm = float((score_hints.get("tempo_bpm") if score_hints else None) or layout_data.get("tempo_bpm") or 120.0)
+        except Exception:
+            tempo_bpm = 120.0
+        quarter_length = cls._calculate_quarter_length(time_sig)
 
         systems_out: List[SystemData] = []
         total_measures = 0
@@ -143,9 +165,9 @@ class VectorSMuFLExtractor:
 
                 measures_out.append(MeasureData(
                     measure_number=m_num,
-                    time_signature="4/4",
-                    tempo_bpm=120.0,
-                    quarter_length=4.0,
+                    time_signature=time_sig,
+                    tempo_bpm=tempo_bpm,
+                    quarter_length=quarter_length,
                     bounding_box=bbox,
                     raw_staves=raw_staves
                 ))

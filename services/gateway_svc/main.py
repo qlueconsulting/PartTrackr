@@ -59,6 +59,15 @@ def health_check():
     }
 
 
+class ScoreHintsRequest(BaseModel):
+    time_signature: Optional[str] = None
+    tempo_bpm: Optional[float] = None
+    choral_voicing: Optional[str] = None
+    accompaniment_type: Optional[str] = None
+    total_measures: Optional[int] = None
+    custom_instructions: Optional[str] = None
+
+
 @app.post("/api/v1/jobs/upload")
 async def upload_pdf_job(
     background_tasks: BackgroundTasks,
@@ -77,13 +86,28 @@ async def upload_pdf_job(
     with open(pdf_dest, "wb") as f:
         shutil.copyfileobj(file.file, f)
 
+    # Run quick cursory preflight analysis
+    preflight_hints = {}
+    try:
+        from services.pdf_layout_svc.layout_engine import PDFLayoutEngine
+        preflight_hints = PDFLayoutEngine.preflight_analysis(pdf_dest)
+    except Exception as e:
+        logger.warning(f"Initial preflight check failed for {file.filename}: {e}")
+
+    final_title = preflight_hints.get("title") or Path(file.filename).stem.replace("_", " ").title()
+    final_composer = preflight_hints.get("composer") or "Unknown Composer"
+    page_count = preflight_hints.get("page_count", 1)
+
     job = Job(
         id=job_id,
         original_filename=file.filename,
         pdf_path=str(pdf_dest),
-        title=Path(file.filename).stem.replace("_", " ").title(),
+        title=final_title,
+        composer=final_composer,
+        page_count=page_count,
         status="pending",
-        stage_message="File uploaded, initializing pipeline..."
+        stage_message="File uploaded, initializing pipeline...",
+        score_hints=preflight_hints
     )
     db.add(job)
     db.commit()
@@ -95,14 +119,83 @@ async def upload_pdf_job(
         job_dir=job_dir,
         pdf_path=pdf_dest,
         session_factory=SessionFactory,
-        custom_instructions=custom_instructions
+        custom_instructions=custom_instructions,
+        score_hints=preflight_hints
     )
 
     return {
         "job_id": job_id,
         "filename": file.filename,
         "status": "pending",
+        "preflight": preflight_hints,
         "message": "Job created. Use GET /api/v1/jobs/{job_id} or SSE /events to track progress."
+    }
+
+
+@app.get("/api/v1/jobs/{job_id}/preflight")
+async def get_job_preflight(job_id: str, db: Session = Depends(get_db)):
+    job = db.query(Job).filter(Job.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    pdf_file = Path(job.pdf_path)
+    if not pdf_file.exists():
+        raise HTTPException(status_code=404, detail="Job PDF file missing from disk")
+
+    from services.pdf_layout_svc.layout_engine import PDFLayoutEngine
+    try:
+        preflight_data = PDFLayoutEngine.preflight_analysis(pdf_file)
+        preflight_data["job_id"] = job_id
+        return preflight_data
+    except Exception as e:
+        logger.exception(f"Pre-flight analysis failed for job {job_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/v1/jobs/{job_id}/reprocess")
+async def reprocess_job_with_hints(
+    job_id: str,
+    hints: ScoreHintsRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db)
+):
+    job = db.query(Job).filter(Job.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    job_dir = STORAGE_DIR / "jobs" / job_id
+    pdf_dest = Path(job.pdf_path)
+    if not pdf_dest.exists():
+        raise HTTPException(status_code=404, detail="Job PDF file missing from storage")
+
+    # Clean up previous compiled outputs
+    compiled_dir = job_dir / "compiled"
+    if compiled_dir.exists():
+        shutil.rmtree(compiled_dir, ignore_errors=True)
+
+    dump_fn = getattr(hints, "model_dump", getattr(hints, "dict"))
+    hints_dict = dump_fn(exclude_none=True)
+    job.status = "pending"
+    job.stage_message = "Reprocessing score with user AI hints..."
+    job.error_message = None
+    job.score_hints = hints_dict
+    db.commit()
+
+    background_tasks.add_task(
+        PipelineOrchestrator.run_pipeline,
+        job_id=job_id,
+        job_dir=job_dir,
+        pdf_path=pdf_dest,
+        session_factory=SessionFactory,
+        custom_instructions=hints.custom_instructions,
+        score_hints=hints_dict
+    )
+
+    return {
+        "job_id": job_id,
+        "status": "pending",
+        "message": "Score reprocessing initiated with AI helps.",
+        "score_hints": hints_dict
     }
 
 
@@ -127,6 +220,7 @@ def get_job_status(job_id: str, db: Session = Depends(get_db)):
         "routed_cism": job.routed_cism,
         "decoder_result": job.decoder_result,
         "overrides": job.overrides,
+        "score_hints": job.score_hints,
         "error_message": job.error_message,
     }
 

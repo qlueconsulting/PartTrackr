@@ -64,3 +64,59 @@ def test_microservices_end_to_end(tmp_path):
     with open(sync_map_path, "r", encoding="utf-8") as f:
         sync_map_data = json.load(f)
     assert len(sync_map_data["measures"]) == len(measure_summary)
+
+
+def test_preflight_analysis():
+    pdf_path = Path("tests/fixtures/Caroling_Final.pdf")
+    assert pdf_path.exists()
+
+    preflight = PDFLayoutEngine.preflight_analysis(pdf_path)
+    assert preflight["title"] == "Caroling"
+    assert preflight["page_count"] == 5
+    assert preflight["time_signature"] == "6/8"
+    assert preflight["tempo_bpm"] == 92.0
+    assert preflight["choral_voicing"] == "SA_TB"
+    assert preflight["has_piano"] is False
+    assert "part_layout_summary" in preflight
+
+
+def test_gateway_preflight_and_reprocess_endpoints():
+    from fastapi.testclient import TestClient
+    from services.gateway_svc.main import app
+
+    client = TestClient(app)
+    pdf_path = Path("tests/fixtures/Caroling_Final.pdf")
+    assert pdf_path.exists()
+
+    # 1. Upload score
+    with open(pdf_path, "rb") as f:
+        resp = client.post("/api/v1/jobs/upload", files={"file": ("Caroling_Final.pdf", f, "application/pdf")})
+    assert resp.status_code == 200
+    upload_data = resp.json()
+    job_id = upload_data["job_id"]
+    assert "preflight" in upload_data
+    assert upload_data["preflight"]["time_signature"] == "6/8"
+
+    # 2. Query preflight endpoint
+    pre_resp = client.get(f"/api/v1/jobs/{job_id}/preflight")
+    assert pre_resp.status_code == 200
+    pre_data = pre_resp.json()
+    assert pre_data["job_id"] == job_id
+    assert pre_data["time_signature"] == "6/8"
+    assert pre_data["tempo_bpm"] == 92.0
+
+    # 3. Reprocess score with user AI hints
+    reprocess_payload = {
+        "time_signature": "6/8",
+        "tempo_bpm": 96.0,
+        "choral_voicing": "SATB",
+        "accompaniment_type": "piano",
+        "custom_instructions": "Bars 1-4 are piano prelude; Soprano divisi on refrain"
+    }
+    rep_resp = client.post(f"/api/v1/jobs/{job_id}/reprocess", json=reprocess_payload)
+    assert rep_resp.status_code == 200
+    rep_data = rep_resp.json()
+    assert rep_data["job_id"] == job_id
+    assert rep_data["status"] == "pending"
+    assert rep_data["score_hints"]["custom_instructions"] == "Bars 1-4 are piano prelude; Soprano divisi on refrain"
+

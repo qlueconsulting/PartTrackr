@@ -55,12 +55,26 @@ class VisionLLMAdapter:
     """
 
     @classmethod
+    def _calculate_quarter_length(cls, time_sig: str) -> float:
+        try:
+            parts = time_sig.split("/")
+            if len(parts) == 2:
+                num = float(parts[0])
+                den = float(parts[1])
+                if den > 0:
+                    return (num * 4.0) / den
+        except Exception:
+            pass
+        return 4.0
+
+    @classmethod
     def extract_cism_from_crops(
         cls,
         layout_data: Dict[str, Any],
         gemini_api_key: Optional[str] = None,
         ollama_url: Optional[str] = None,
-        custom_instructions: Optional[str] = None
+        custom_instructions: Optional[str] = None,
+        score_hints: Optional[Dict[str, Any]] = None
     ) -> ScoreCISM:
         api_key = gemini_api_key or os.environ.get("GEMINI_API_KEY")
         ollama_endpoint = ollama_url or os.environ.get("OLLAMA_BASE_URL", "http://ollama:11434")
@@ -68,6 +82,16 @@ class VisionLLMAdapter:
         title = layout_data.get("title", "Choral Score")
         composer = layout_data.get("composer", "Unknown Composer")
         systems_raw = layout_data.get("systems", [])
+
+        # Extract hints
+        time_sig = (score_hints.get("time_signature") if score_hints else None) or layout_data.get("time_signature") or "4/4"
+        try:
+            tempo_bpm = float((score_hints.get("tempo_bpm") if score_hints else None) or layout_data.get("tempo_bpm") or 120.0)
+        except Exception:
+            tempo_bpm = 120.0
+        quarter_length = cls._calculate_quarter_length(time_sig)
+
+        active_instructions = custom_instructions or (score_hints.get("custom_instructions") if score_hints else None)
 
         systems_out: List[SystemData] = []
         total_measures = 0
@@ -113,16 +137,16 @@ class VisionLLMAdapter:
                     staves=staves_out,
                     api_key=api_key,
                     ollama_url=ollama_endpoint if ollama_active[0] else None,
-                    custom_instructions=custom_instructions,
+                    custom_instructions=active_instructions,
                     ollama_active_state=ollama_active
                 )
                 engines_used.add(eng_name)
 
                 measures_out.append(MeasureData(
                     measure_number=m_num,
-                    time_signature="4/4",
-                    tempo_bpm=120.0,
-                    quarter_length=4.0,
+                    time_signature=time_sig,
+                    tempo_bpm=tempo_bpm,
+                    quarter_length=quarter_length,
                     bounding_box=bbox,
                     raw_staves=raw_staves
                 ))

@@ -1,58 +1,123 @@
 import React, { useState, useEffect } from 'react'
-import { Sliders, X, Sparkles, CheckCircle2, AlertCircle, Loader2, Info } from 'lucide-react'
-import type { ScoreResponse, ScoreHints } from '../types'
+import {
+  X,
+  Sparkles,
+  CheckCircle2,
+  AlertCircle,
+  Loader2,
+  Music,
+  Clock,
+  Layers,
+  RefreshCw,
+} from 'lucide-react'
+import type { JobData, ScoreHints, PreflightData } from '../types'
 
 interface ScoreHintsModalProps {
   isOpen: boolean
   onClose: () => void
-  score: ScoreResponse | null
-  onScoreUpdated: (updatedScore: ScoreResponse) => void
+  job: JobData | null
+  onReprocessTriggered?: (jobId: string, hints: ScoreHints) => void
 }
+
+const QUICK_HINT_CHIPS = [
+  '🎹 Bottom 2 staves are piano only',
+  '⏱️ Measure 1 is a pick-up bar',
+  '🎵 6/8 meter in 2 feel',
+  '👥 Divisi Soprano on chorus',
+  '🔇 Men tacet measures 1-16',
+  '🎺 Piano prelude bars 1-4',
+  '🎼 SA + TB on 2 staves with piano accompaniment',
+]
 
 export const ScoreHintsModal: React.FC<ScoreHintsModalProps> = ({
   isOpen,
   onClose,
-  score,
-  onScoreUpdated,
+  job,
+  onReprocessTriggered,
 }) => {
   const [totalMeasures, setTotalMeasures] = useState<string>('')
   const [choralVoicing, setChoralVoicing] = useState<string>('SATB')
   const [accompanimentType, setAccompanimentType] = useState<string>('piano')
-  const [timeSignature, setTimeSignature] = useState<string>('')
-  const [tempoBpm, setTempoBpm] = useState<string>('')
+  const [timeSignature, setTimeSignature] = useState<string>('4/4')
+  const [tempoBpm, setTempoBpm] = useState<string>('120')
   const [customInstructions, setCustomInstructions] = useState<string>('')
 
+  const [preflightData, setPreflightData] = useState<PreflightData | null>(null)
+  const [isLoadingPreflight, setIsLoadingPreflight] = useState<boolean>(false)
   const [isReprocessing, setIsReprocessing] = useState<boolean>(false)
   const [error, setError] = useState<string | null>(null)
   const [successMsg, setSuccessMsg] = useState<string | null>(null)
 
   useEffect(() => {
-    if (score && isOpen) {
-      const hints = score.score_hints || {}
+    if (job && isOpen) {
+      setError(null)
+      setSuccessMsg(null)
+
+      const hints = (job.score_hints as any) || {}
+      setTimeSignature(hints.time_signature || '4/4')
+      setTempoBpm(hints.tempo_bpm ? String(Math.round(hints.tempo_bpm)) : '120')
+      setChoralVoicing(hints.choral_voicing || 'SATB')
+      setAccompanimentType(hints.accompaniment_type || (hints.has_piano ? 'piano' : 'auto'))
       setTotalMeasures(
         hints.total_measures != null
           ? String(hints.total_measures)
-          : score.measure_count > 0
-          ? String(score.measure_count)
+          : job.total_measures > 0
+          ? String(job.total_measures)
           : ''
       )
-      setChoralVoicing(hints.choral_voicing || 'SATB')
-      setAccompanimentType(hints.accompaniment_type || 'piano')
-      setTimeSignature(hints.time_signature || score.time_signature || '4/4')
-      setTempoBpm(
-        hints.tempo_bpm != null
-          ? String(hints.tempo_bpm)
-          : score.tempo_bpm > 0
-          ? String(Math.round(score.tempo_bpm))
-          : '120'
-      )
       setCustomInstructions(hints.custom_instructions || '')
-      setError(null)
-      setSuccessMsg(null)
-    }
-  }, [score, isOpen])
 
-  if (!isOpen || !score) return null
+      if (hints.part_layout_summary) {
+        setPreflightData({
+          title: hints.title || job.title,
+          composer: hints.composer || job.composer,
+          page_count: hints.page_count || job.page_count,
+          time_signature: hints.time_signature || '4/4',
+          tempo_bpm: hints.tempo_bpm || 120,
+          choral_voicing: hints.choral_voicing || 'SATB',
+          accompaniment_type: hints.accompaniment_type || 'piano',
+          has_piano: Boolean(hints.has_piano),
+          staves_per_system: hints.staves_per_system || 3,
+          part_layout_summary: hints.part_layout_summary,
+        })
+      } else {
+        // Fetch fresh preflight analysis
+        fetchPreflight(job.job_id)
+      }
+    }
+  }, [job, isOpen])
+
+  const fetchPreflight = async (jobId: string) => {
+    try {
+      setIsLoadingPreflight(true)
+      const res = await fetch(`/api/v1/jobs/${jobId}/preflight`)
+      if (res.ok) {
+        const data: PreflightData = await res.json()
+        setPreflightData(data)
+        if (data.time_signature) setTimeSignature(data.time_signature)
+        if (data.tempo_bpm) setTempoBpm(String(Math.round(data.tempo_bpm)))
+        if (data.choral_voicing) setChoralVoicing(data.choral_voicing)
+        if (data.accompaniment_type) setAccompanimentType(data.accompaniment_type)
+      }
+    } catch (e) {
+      console.warn('Could not fetch preflight analysis:', e)
+    } finally {
+      setIsLoadingPreflight(false)
+    }
+  }
+
+  if (!isOpen || !job) return null
+
+  const handleChipClick = (chipText: string) => {
+    // Strip emoji from the chip for clean AI prompt text
+    const cleanText = chipText.replace(/^[^\w\s]+\s*/, '')
+    setCustomInstructions((prev) => {
+      const trimmed = prev.trim()
+      if (!trimmed) return cleanText
+      if (trimmed.includes(cleanText)) return prev // Already present
+      return `${trimmed}; ${cleanText}`
+    })
+  }
 
   const handleReprocess = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -64,20 +129,20 @@ export const ScoreHintsModal: React.FC<ScoreHintsModalProps> = ({
       total_measures: totalMeasures.trim() ? parseInt(totalMeasures.trim(), 10) : null,
       choral_voicing: choralVoicing,
       accompaniment_type: accompanimentType,
-      time_signature: timeSignature.trim() || null,
-      tempo_bpm: tempoBpm.trim() ? parseFloat(tempoBpm.trim()) : null,
+      time_signature: timeSignature.trim() || '4/4',
+      tempo_bpm: tempoBpm.trim() ? parseFloat(tempoBpm.trim()) : 120.0,
       custom_instructions: customInstructions.trim() || null,
     }
 
     try {
-      const res = await fetch(`/api/v1/scores/${score.id}/reprocess`, {
+      const res = await fetch(`/api/v1/jobs/${job.job_id}/reprocess`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       })
 
       if (!res.ok) {
-        let errMsg = `Reprocessing failed (${res.status})`
+        let errMsg = `Reprocessing request failed (${res.status})`
         try {
           const errData = await res.json()
           errMsg = errData.detail || errMsg
@@ -88,12 +153,13 @@ export const ScoreHintsModal: React.FC<ScoreHintsModalProps> = ({
         throw new Error(errMsg)
       }
 
-      const updated: ScoreResponse = await res.json()
-      setSuccessMsg('Score reprocessed successfully!')
-      onScoreUpdated(updated)
+      setSuccessMsg('Pipeline re-execution dispatched with AI hints!')
+      if (onReprocessTriggered) {
+        onReprocessTriggered(job.job_id, payload)
+      }
       setTimeout(() => {
         onClose()
-      }, 900)
+      }, 700)
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Reprocessing failed'
       setError(msg)
@@ -103,8 +169,9 @@ export const ScoreHintsModal: React.FC<ScoreHintsModalProps> = ({
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4">
-      <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-lg w-full p-6 shadow-2xl relative">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md p-4 animate-in fade-in duration-200">
+      <div className="bg-slate-900 border border-slate-700/80 rounded-2xl max-w-xl w-full p-6 shadow-2xl relative max-h-[92vh] overflow-y-auto">
+        {/* Close Button */}
         <button
           onClick={onClose}
           disabled={isReprocessing}
@@ -114,67 +181,123 @@ export const ScoreHintsModal: React.FC<ScoreHintsModalProps> = ({
         </button>
 
         {/* Modal Header */}
-        <div className="flex items-center gap-2 mb-1">
-          <div className="w-8 h-8 rounded-lg bg-violet-500/10 border border-violet-500/20 flex items-center justify-center text-violet-400">
-            <Sliders className="w-4 h-4" />
+        <div className="flex items-center gap-2.5 mb-1.5">
+          <div className="w-9 h-9 rounded-xl bg-violet-500/20 border border-violet-500/30 flex items-center justify-center text-violet-400">
+            <Sparkles className="w-5 h-5" />
           </div>
-          <h3 className="text-lg font-bold text-white">Score Hints & AI Reprocess</h3>
+          <div>
+            <h3 className="text-lg font-bold text-white flex items-center gap-2">
+              Score AI Helps & Reprocess
+            </h3>
+            <p className="text-xs text-slate-400">
+              Guide OMR topology, time signature, tempo, and voice isolation for{' '}
+              <strong className="text-slate-200">{job.title || 'the current piece'}</strong>
+            </p>
+          </div>
         </div>
-        <p className="text-xs text-slate-400 mb-4">
-          Guide the notation analysis and voice routing for <strong className="text-slate-200">{score.title}</strong> without waiting for OCR to re-run.
-        </p>
 
-        {/* Info Callout */}
-        <div className="mb-4 p-3 rounded-lg bg-slate-950/70 border border-slate-800 flex items-start gap-2.5 text-xs text-slate-300">
-          <Info className="w-4 h-4 text-indigo-400 flex-shrink-0 mt-0.5" />
-          <span>
-            <strong>Bypasses OCR:</strong> Edits apply directly to the parsed notation grid and isolated audio stems (~3s). Audiveris is not executed again.
-          </span>
+        {/* Cursory Pre-Flight Analysis Banner */}
+        <div className="my-4 p-3.5 rounded-xl bg-slate-950/80 border border-violet-900/40 shadow-inner">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-[11px] font-bold uppercase tracking-wider text-violet-400 flex items-center gap-1.5">
+              <Layers className="w-3.5 h-3.5" />
+              Cursory Pre-Flight Detection (Page 1)
+            </span>
+            {isLoadingPreflight && (
+              <span className="text-[11px] text-slate-400 flex items-center gap-1">
+                <Loader2 className="w-3 h-3 animate-spin" />
+                Scanning...
+              </span>
+            )}
+          </div>
+
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+            <div className="bg-slate-900/90 border border-slate-800 rounded-lg p-2 text-center">
+              <span className="text-[10px] text-slate-400 block mb-0.5">Time Signature</span>
+              <span className="font-mono font-bold text-amber-300 text-sm">
+                {preflightData?.time_signature || timeSignature || '4/4'}
+              </span>
+            </div>
+            <div className="bg-slate-900/90 border border-slate-800 rounded-lg p-2 text-center">
+              <span className="text-[10px] text-slate-400 block mb-0.5">Starting Tempo</span>
+              <span className="font-mono font-bold text-emerald-400 text-sm">
+                {preflightData?.tempo_bpm ? `${Math.round(preflightData.tempo_bpm)} BPM` : `${tempoBpm} BPM`}
+              </span>
+            </div>
+            <div className="bg-slate-900/90 border border-slate-800 rounded-lg p-2 text-center">
+              <span className="text-[10px] text-slate-400 block mb-0.5">Staff Layout</span>
+              <span className="font-bold text-indigo-300 text-xs truncate block">
+                {preflightData?.choral_voicing || choralVoicing}
+              </span>
+            </div>
+            <div className="bg-slate-900/90 border border-slate-800 rounded-lg p-2 text-center">
+              <span className="text-[10px] text-slate-400 block mb-0.5">Accompaniment</span>
+              <span className="font-bold text-sky-300 text-xs truncate block">
+                {preflightData?.has_piano ? 'Piano Accompaniment' : 'A Cappella'}
+              </span>
+            </div>
+          </div>
+
+          {preflightData?.part_layout_summary && (
+            <div className="mt-2 text-[11px] text-slate-300 border-t border-slate-800/80 pt-2 flex items-center gap-1.5">
+              <span className="text-violet-400 font-semibold">Layout:</span>
+              <span className="text-slate-300">{preflightData.part_layout_summary}</span>
+            </div>
+          )}
         </div>
 
         {error && (
-          <div className="mb-4 p-3 rounded-lg bg-rose-950/50 border border-rose-800 text-rose-300 text-xs flex items-center gap-2">
+          <div className="mb-4 p-3 rounded-lg bg-rose-950/60 border border-rose-800 text-rose-300 text-xs flex items-center gap-2">
             <AlertCircle className="w-4 h-4 flex-shrink-0" />
             <span>{error}</span>
           </div>
         )}
 
         {successMsg && (
-          <div className="mb-4 p-3 rounded-lg bg-emerald-950/50 border border-emerald-800 text-emerald-300 text-xs flex items-center gap-2">
+          <div className="mb-4 p-3 rounded-lg bg-emerald-950/60 border border-emerald-800 text-emerald-300 text-xs flex items-center gap-2">
             <CheckCircle2 className="w-4 h-4 flex-shrink-0" />
             <span>{successMsg}</span>
           </div>
         )}
 
         <form onSubmit={handleReprocess} className="space-y-4">
-          {/* Parameter 1: Total Measures */}
-          <div>
-            <label className="block text-xs font-semibold text-slate-300 mb-1">
-              1. Total Measures in Score
-            </label>
-            <div className="flex items-center gap-2">
+          {/* Parameter 1: Time Signature & Tempo */}
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-1 flex items-center gap-1.5">
+                <Clock className="w-3.5 h-3.5 text-amber-400" />
+                1. Time Signature
+              </label>
+              <input
+                type="text"
+                value={timeSignature}
+                onChange={(e) => setTimeSignature(e.target.value)}
+                placeholder="4/4, 6/8, 3/4, 2/4..."
+                className="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-lg text-sm text-white font-mono focus:outline-none focus:border-indigo-500"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-1 flex items-center gap-1.5">
+                <Music className="w-3.5 h-3.5 text-emerald-400" />
+                2. Starting BPM
+              </label>
               <input
                 type="number"
-                min="1"
-                max="999"
-                value={totalMeasures}
-                onChange={(e) => setTotalMeasures(e.target.value)}
-                placeholder="e.g. 123"
-                className="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-lg text-sm text-white focus:outline-none focus:border-indigo-500"
+                min="30"
+                max="300"
+                value={tempoBpm}
+                onChange={(e) => setTempoBpm(e.target.value)}
+                placeholder="120"
+                className="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-lg text-sm text-white font-mono focus:outline-none focus:border-indigo-500"
               />
-              <span className="text-xs text-slate-400 whitespace-nowrap">
-                Currently: {score.measure_count}
-              </span>
             </div>
-            <p className="text-[11px] text-slate-500 mt-1">
-              Locks measure grid to exactly this number, trimming empty trailing bars or padding rests.
-            </p>
           </div>
 
           {/* Parameter 2: Choral Voicing Format */}
           <div>
-            <label className="block text-xs font-semibold text-slate-300 mb-1">
-              2. Choral Voicing & Staff Layout
+            <label className="block text-xs font-semibold text-slate-300 mb-1 flex items-center gap-1.5">
+              <Layers className="w-3.5 h-3.5 text-indigo-400" />
+              3. Choral Voicing & Staff Layout
             </label>
             <select
               value={choralVoicing}
@@ -186,18 +309,15 @@ export const ScoreHintsModal: React.FC<ScoreHintsModalProps> = ({
               <option value="SSAA">SSAA (Women's Choir - Voices S1..A2)</option>
               <option value="TTBB">TTBB (Men's Choir - Voices T1..B2)</option>
               <option value="SAB">SAB (Soprano, Alto, Baritone)</option>
-              <option value="Unison">Unison (Doubled across all 10 vocal stems)</option>
+              <option value="Unison">Unison (Doubled across vocal stems)</option>
               <option value="Auto">Auto (Score Bracket & Clef Detection)</option>
             </select>
-            <p className="text-[11px] text-slate-500 mt-1">
-              Controls how vocal staves are routed into S1, S2, A1, A2, T1, T2, Bar1, Bar2, B1, B2.
-            </p>
           </div>
 
           {/* Parameter 3: Accompaniment Type */}
           <div>
             <label className="block text-xs font-semibold text-slate-300 mb-1">
-              3. Accompaniment Type
+              4. Accompaniment Type
             </label>
             <select
               value={accompanimentType}
@@ -210,54 +330,59 @@ export const ScoreHintsModal: React.FC<ScoreHintsModalProps> = ({
               <option value="auto">Auto Detect</option>
             </select>
             <p className="text-[11px] text-slate-500 mt-1">
-              Rule A5 guarantee: Selecting A Cappella mutes Piano stem without inventing notes.
+              Guarantees bottom staves are cleanly separated from vocal lines.
             </p>
           </div>
 
-          {/* Parameter 4: Initial Time Signature & Tempo */}
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs font-semibold text-slate-300 mb-1">
-                4a. Time Signature
-              </label>
-              <input
-                type="text"
-                value={timeSignature}
-                onChange={(e) => setTimeSignature(e.target.value)}
-                placeholder="4/4, 3/4, 6/8..."
-                className="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-lg text-sm text-white focus:outline-none focus:border-indigo-500"
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-semibold text-slate-300 mb-1">
-                4b. Starting BPM
-              </label>
-              <input
-                type="number"
-                min="30"
-                max="300"
-                value={tempoBpm}
-                onChange={(e) => setTempoBpm(e.target.value)}
-                placeholder="120"
-                className="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-lg text-sm text-white focus:outline-none focus:border-indigo-500"
-              />
-            </div>
-          </div>
-
-          {/* Parameter 5: Custom AI Instructions & Directives */}
+          {/* Parameter 4: Optional Total Measures Clamp */}
           <div>
             <label className="block text-xs font-semibold text-slate-300 mb-1">
-              5. Custom AI Instructions & Measure Directives (Optional)
+              5. Total Measures (Optional Clamp)
             </label>
+            <input
+              type="number"
+              min="1"
+              max="999"
+              value={totalMeasures}
+              onChange={(e) => setTotalMeasures(e.target.value)}
+              placeholder="e.g. 56 (Leave blank for automatic detection)"
+              className="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-lg text-sm text-white focus:outline-none focus:border-indigo-500"
+            />
+          </div>
+
+          {/* Parameter 5: Additional Information AI Prompt & Directives */}
+          <div>
+            <label className="block text-xs font-semibold text-slate-300 mb-1 flex items-center justify-between">
+              <span className="flex items-center gap-1.5 text-violet-300">
+                <Sparkles className="w-3.5 h-3.5 text-amber-300" />
+                6. Additional Information AI Prompt (Custom LLM Guidance)
+              </span>
+              <span className="text-[10px] text-slate-500">Injected directly into Vision OMR</span>
+            </label>
+
+            {/* Quick Hint Chips */}
+            <div className="flex flex-wrap gap-1.5 mb-2">
+              {QUICK_HINT_CHIPS.map((chip, idx) => (
+                <button
+                  type="button"
+                  key={idx}
+                  onClick={() => handleChipClick(chip)}
+                  className="text-[11px] px-2.5 py-1 rounded-full bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700/80 transition flex items-center gap-1"
+                >
+                  {chip}
+                </button>
+              ))}
+            </div>
+
             <textarea
               rows={3}
               value={customInstructions}
               onChange={(e) => setCustomInstructions(e.target.value)}
-              placeholder="e.g. bars 1-4 are a piano prelude; m.25 soprano solo; men rest bars 1-8; piano tacet bars 5-8"
-              className="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-lg text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 resize-none font-mono"
+              placeholder="e.g. Bottom 2 staves are piano accompaniment; bars 1-4 are a piano prelude; measure 25 has soprano solo; tenor rests bars 1-8..."
+              className="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-lg text-xs text-white placeholder-slate-500 focus:outline-none focus:border-violet-500 resize-none font-mono"
             />
             <p className="text-[11px] text-slate-500 mt-1">
-              Provides measure directives (e.g. preludes, interludes, solos, or section tacets) to guide AI topology and voice routing.
+              Add any piece-specific context to guide note extraction, tacet measures, or solo sections.
             </p>
           </div>
 
@@ -266,17 +391,17 @@ export const ScoreHintsModal: React.FC<ScoreHintsModalProps> = ({
             <button
               type="submit"
               disabled={isReprocessing}
-              className="w-full py-2.5 px-4 rounded-xl bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white font-bold text-sm shadow-lg shadow-indigo-600/30 flex items-center justify-center gap-2 transition disabled:opacity-50"
+              className="w-full py-3 px-4 rounded-xl bg-gradient-to-r from-violet-600 via-indigo-600 to-purple-600 hover:from-violet-500 hover:via-indigo-500 hover:to-purple-500 text-white font-bold text-sm shadow-lg shadow-indigo-600/30 flex items-center justify-center gap-2 transition disabled:opacity-50"
             >
               {isReprocessing ? (
                 <>
                   <Loader2 className="w-4 h-4 animate-spin" />
-                  <span>Reprocessing Score (~3s)...</span>
+                  <span>Reprocessing with AI Helps...</span>
                 </>
               ) : (
                 <>
-                  <Sparkles className="w-4 h-4 text-amber-300" />
-                  <span>Reprocess Score</span>
+                  <RefreshCw className="w-4 h-4 text-amber-300" />
+                  <span>Reprocess Score with AI Helps</span>
                 </>
               )}
             </button>
