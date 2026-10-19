@@ -306,7 +306,7 @@ class PDFLayoutEngine:
                 prev_st = group[-1]
                 cand = staves[next_idx]
                 gap = cand["y_top"] - prev_st["y_bot"]
-                if gap < 70.0:
+                if gap < 70.0 and len(group) < 6:
                     group.append(cand)
                     next_idx += 1
                 else:
@@ -384,19 +384,37 @@ class PDFLayoutEngine:
             # Fallback if page has no recognizable staves (e.g. cover page)
             return []
 
-        # Group staves into systems by vertical spacing (< 75pt within system)
+        # Group staves into systems by vertical spacing and left-barline connectivity
+        left_x_px_max = int(pix.width * 0.22)
+        left_strip = bw[:, :left_x_px_max]
+
         systems = []
         idx = 0
         while idx < len(staves):
             group = [staves[idx]]
             next_idx = idx + 1
             while next_idx < len(staves):
-                gap = staves[next_idx]["y_top"] - group[-1]["y_bot"]
-                if gap < 75.0:
-                    group.append(staves[next_idx])
-                    next_idx += 1
+                st_prev = group[-1]
+                st_curr = staves[next_idx]
+                gap_pt = st_curr["y_top"] - st_prev["y_bot"]
+
+                # Check vertical line connecting st_prev bot to st_curr top at left margin
+                y_from = int(st_prev["y_bot"] / scale_y)
+                y_to = int(st_curr["y_top"] / scale_y)
+                if y_to > y_from:
+                    inter_slice = left_strip[y_from:y_to, :]
+                    col_coverage = inter_slice.mean(axis=0)
+                    connected = float(col_coverage.max()) >= 0.58
                 else:
+                    connected = True
+
+                # Split if gap is large (>90pt) OR not connected when group has >= 2 staves OR group reaches 6 staves
+                if gap_pt > 90.0 or (len(group) >= 2 and not connected) or len(group) >= 6:
                     break
+                else:
+                    group.append(st_curr)
+                    next_idx += 1
+
             systems.append({
                 "page_num": page_num,
                 "staves": group,
@@ -512,9 +530,19 @@ class PDFLayoutEngine:
                         else:
                             st["clef"] = "bass" if (st_i == n_staves - 3 and n_staves >= 4) else "treble"
                 elif n_staves == 2:
-                    st["bracket_type"] = "bracket"
-                    st["role"] = "vocal"
-                    st["clef"] = "bass" if (is_bass_named or st_i == 1) else "treble"
+                    if is_treble_named and is_bass_named:
+                        st["bracket_type"] = "bracket"
+                        st["role"] = "vocal"
+                        st["clef"] = "treble" if st_i == 0 else "bass"
+                    elif is_treble_named or is_bass_named:
+                        st["bracket_type"] = "bracket"
+                        st["role"] = "vocal"
+                        st["clef"] = "bass" if is_bass_named else "treble"
+                    else:
+                        # 2-staff piano accompaniment system (e.g. prelude, interlude)
+                        st["bracket_type"] = "brace"
+                        st["role"] = "piano_rh" if st_i == 0 else "piano_lh"
+                        st["clef"] = "treble" if st_i == 0 else "bass"
                 else:
                     st["bracket_type"] = "bracket"
                     st["role"] = "vocal"

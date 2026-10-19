@@ -39,6 +39,14 @@ class VoiceRouterEngine:
             if not piano_staves and len(sys.staves) >= 3 and cism_out.has_piano:
                 piano_staves = sys.staves[-2:]
                 vocal_staves = sys.staves[:-2]
+            elif not piano_staves and len(sys.staves) == 2 and cism_out.has_piano:
+                has_vocal_label = any(
+                    st.label and any(k in st.label.lower() for k in ("soprano", "alto", "tenor", "bass", "men", "women"))
+                    for st in sys.staves
+                )
+                if not has_vocal_label:
+                    piano_staves = sys.staves
+                    vocal_staves = []
 
             for m in sys.measures:
                 m.tracks = cls._route_measure(

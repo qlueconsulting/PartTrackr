@@ -12,6 +12,9 @@ import {
   Terminal,
   AlertCircle,
   X,
+  Volume2,
+  Volume1,
+  VolumeX,
 } from 'lucide-react'
 
 import { PipelineStepper } from './components/PipelineStepper'
@@ -94,6 +97,26 @@ export const App: React.FC = () => {
   const [isPlaying, setIsPlaying] = useState<boolean>(false)
   const [currentMeasure, setCurrentMeasure] = useState<number>(1)
   const [selectedSingerPart, setSelectedSingerPart] = useState<string>('soprano_1')
+  const [masterVolume, setMasterVolume] = useState<number>(0.85)
+  const [isMuted, setIsMuted] = useState<boolean>(false)
+
+  const handleMasterVolumeChange = useCallback((newVol: number) => {
+    setMasterVolume(newVol)
+    if (newVol > 0 && isMuted) {
+      setIsMuted(false)
+    }
+    audioEngineRef.current?.setMasterVolume(newVol)
+  }, [isMuted])
+
+  const handleToggleMute = useCallback(() => {
+    if (isMuted) {
+      setIsMuted(false)
+      audioEngineRef.current?.setMasterVolume(masterVolume > 0 ? masterVolume : 0.85)
+    } else {
+      setIsMuted(true)
+      audioEngineRef.current?.setMasterVolume(0)
+    }
+  }, [isMuted, masterVolume])
 
   // 11-Part Channel Mixer States
   const [channelStates, setChannelStates] = useState<Record<string, ChannelState>>(() => {
@@ -566,6 +589,47 @@ export const App: React.FC = () => {
                   <span className="text-xs text-slate-500 ml-2">
                     / {currentJob.total_measures || 1}
                   </span>
+                </div>
+              </div>
+
+              {/* Master MIDI Volume Control */}
+              <div className="flex items-center gap-2 bg-slate-950/80 px-3 py-1.5 rounded-lg border border-slate-800">
+                <button
+                  onClick={handleToggleMute}
+                  className={`p-1.5 rounded transition cursor-pointer ${
+                    isMuted || masterVolume === 0
+                      ? 'text-rose-400 hover:text-rose-300 bg-rose-950/50'
+                      : 'text-slate-300 hover:text-sky-400'
+                  }`}
+                  title={isMuted ? 'Unmute MIDI Volume' : 'Mute MIDI Volume'}
+                >
+                  {isMuted || masterVolume === 0 ? (
+                    <VolumeX className="w-4 h-4" />
+                  ) : masterVolume < 0.5 ? (
+                    <Volume1 className="w-4 h-4" />
+                  ) : (
+                    <Volume2 className="w-4 h-4" />
+                  )}
+                </button>
+                <div className="flex flex-col gap-0.5">
+                  <div className="flex items-center justify-between text-[10px] text-slate-400 font-mono gap-2">
+                    <span>MIDI Volume</span>
+                    <span className="font-semibold text-sky-400">
+                      {isMuted ? '0%' : `${Math.round(masterVolume * 100)}%`}
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min="0"
+                    max="100"
+                    value={isMuted ? 0 : Math.round(masterVolume * 100)}
+                    onChange={(e) => {
+                      const val = parseInt(e.target.value, 10) / 100.0
+                      handleMasterVolumeChange(val)
+                    }}
+                    className="w-24 sm:w-28 h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-sky-500"
+                    title={`Turn down or adjust MIDI volume: ${Math.round(masterVolume * 100)}%`}
+                  />
                 </div>
               </div>
 

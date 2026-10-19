@@ -520,6 +520,18 @@ export class MidiAudioEngine {
     })
   }
 
+  public setMasterVolume(val: number) {
+    if (this.masterGain && this.audioCtx) {
+      const clamped = Math.max(0.0, Math.min(1.5, val))
+      this.masterGain.gain.cancelScheduledValues(this.audioCtx.currentTime)
+      this.masterGain.gain.setValueAtTime(clamped, this.audioCtx.currentTime)
+    }
+  }
+
+  public getMasterVolume(): number {
+    return this.masterGain ? this.masterGain.gain.value : 0.85
+  }
+
   public getCurrentTime(): number {
     if (!this.isPlaying || !this.audioCtx) {
       return this.pauseOffset
