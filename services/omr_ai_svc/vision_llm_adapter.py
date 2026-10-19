@@ -3,7 +3,7 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Tuple
 import requests
 
 from common.cism_schema import (
@@ -71,6 +71,7 @@ class VisionLLMAdapter:
 
         systems_out: List[SystemData] = []
         total_measures = 0
+        engines_used = set()
 
         for sys_dict in systems_raw:
             sys_idx = sys_dict["system_index"]
@@ -87,13 +88,14 @@ class VisionLLMAdapter:
                 m_crop = m_dict.get("crop_image_path")
 
                 # Try recognition on measure crop or fallback
-                raw_staves = cls._recognize_measure(
+                raw_staves, eng_name = cls._recognize_measure(
                     m_crop_path=m_crop,
                     staves=staves_out,
                     api_key=api_key,
                     ollama_url=ollama_endpoint,
                     custom_instructions=custom_instructions
                 )
+                engines_used.add(eng_name)
 
                 measures_out.append(MeasureData(
                     measure_number=m_num,
@@ -112,6 +114,7 @@ class VisionLLMAdapter:
                 measures=measures_out
             ))
 
+        primary_engine = ", ".join(sorted(engines_used)) if engines_used else "OpenCV Computer Vision"
         return ScoreCISM(
             score_id=layout_data.get("job_id", "score_vision"),
             title=title,
@@ -121,7 +124,7 @@ class VisionLLMAdapter:
             total_measures=total_measures,
             has_piano=layout_data.get("has_piano", False),
             systems=systems_out,
-            metadata={"omr_engine": "VisionLLM"}
+            metadata={"omr_engine": primary_engine}
         )
 
     @classmethod
@@ -132,21 +135,22 @@ class VisionLLMAdapter:
         api_key: Optional[str],
         ollama_url: Optional[str],
         custom_instructions: Optional[str]
-    ) -> Dict[str, TrackData]:
+    ) -> Tuple[Dict[str, TrackData], str]:
         # 1. Try Gemini API if key is present and crop image exists
         if api_key and m_crop_path and Path(m_crop_path).exists():
             gemini_res = cls._call_gemini_vision(m_crop_path, api_key, custom_instructions)
             if gemini_res:
-                return cls._format_staves_response(gemini_res, staves)
+                return cls._format_staves_response(gemini_res, staves), "Gemini-2.0-Flash"
 
         # 2. Try Local GPU Ollama if available
         if ollama_url and m_crop_path and Path(m_crop_path).exists():
             ollama_res = cls._call_ollama_vision(m_crop_path, ollama_url, custom_instructions)
             if ollama_res:
-                return cls._format_staves_response(ollama_res, staves)
+                model_name = os.environ.get("OLLAMA_MODEL", "qwen2.5-vl:7b")
+                return cls._format_staves_response(ollama_res, staves), f"Ollama ({model_name})"
 
         # 3. Local Computer Vision note recognition from crop image
-        return cls._recognize_from_crop_cv(m_crop_path, staves)
+        return cls._recognize_from_crop_cv(m_crop_path, staves), "OpenCV Computer Vision"
 
     @classmethod
     def _call_gemini_vision(
@@ -189,23 +193,27 @@ class VisionLLMAdapter:
         ollama_url: str,
         custom_instructions: Optional[str]
     ) -> Optional[Dict[str, Any]]:
+        model_name = os.environ.get("OLLAMA_MODEL", "qwen2.5-vl:7b")
         try:
             with open(image_path, "rb") as f:
                 img_b64 = base64.b64encode(f.read()).decode("ascii")
 
             payload = {
-                "model": "qwen2.5vl:7b",
+                "model": model_name,
                 "prompt": VISION_OMR_PROMPT + (f"\nHints: {custom_instructions}" if custom_instructions else ""),
                 "images": [img_b64],
                 "format": "json",
                 "stream": False
             }
-            resp = requests.post(f"{ollama_url.rstrip('/')}/api/generate", json=payload, timeout=12)
+            resp = requests.post(f"{ollama_url.rstrip('/')}/api/generate", json=payload, timeout=15)
             if resp.status_code == 200:
                 raw = resp.json().get("response", "")
+                logger.info(f"Successfully processed crop via Ollama ({model_name})")
                 return json.loads(raw)
+            else:
+                logger.info(f"Ollama ({model_name}) returned HTTP {resp.status_code} (model may need to be pulled: 'ollama pull {model_name}')")
         except Exception as e:
-            logger.debug(f"Ollama OMR call skipped/failed: {e}")
+            logger.debug(f"Ollama OMR call skipped/failed ({e}) - using CV fallback")
         return None
 
     @classmethod
