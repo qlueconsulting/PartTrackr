@@ -24,6 +24,7 @@ import { CISMEditor } from './components/CISMEditor'
 import { ApiLogViewer } from './components/ApiLogViewer'
 import { WebAudioMixer } from './components/WebAudioMixer'
 import { ScoreHintsModal } from './components/ScoreHintsModal'
+import { RecentScoresDropdown } from './components/RecentScoresDropdown'
 import { MidiAudioEngine } from './audio/MidiAudioEngine'
 import {
   CANONICAL_11_PARTS,
@@ -43,6 +44,7 @@ export const App: React.FC = () => {
 
   // Job & Pipeline State
   const [currentJob, setCurrentJob] = useState<JobData | null>(null)
+  const [recentJobs, setRecentJobs] = useState<JobData[]>([])
   const [selectedMeasureNumber, setSelectedMeasureNumber] = useState<number | null>(1)
   const [isUploading, setIsUploading] = useState<boolean>(false)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
@@ -155,13 +157,16 @@ export const App: React.FC = () => {
 
   const fetchLatestJobs = async () => {
     try {
-      addLog('info', 'client', 'GET /api/v1/jobs - Fetching existing pipeline jobs...')
-      const res = await fetch('/api/v1/jobs')
+      addLog('info', 'client', 'GET /api/v1/jobs?limit=10 - Fetching last 10 submission records...')
+      const res = await fetch('/api/v1/jobs?limit=10')
       if (res.ok) {
-        const jobs = await res.json()
-        addLog('success', 'gateway-svc', `Found ${jobs.length} existing job records`, jobs)
+        const jobs: JobData[] = await res.json()
+        setRecentJobs(jobs)
+        addLog('success', 'gateway-svc', `Found ${jobs.length} existing job records in history`, jobs)
         if (jobs && jobs.length > 0) {
-          loadJobDetails(jobs[0].job_id)
+          const savedActiveId = localStorage.getItem('parttrackr_active_job_id')
+          const targetJob = jobs.find((j) => j.job_id === savedActiveId) || jobs[0]
+          loadJobDetails(targetJob.job_id)
         }
       } else {
         addLog('warn', 'gateway-svc', `Failed to fetch jobs HTTP ${res.status}`)
@@ -173,12 +178,22 @@ export const App: React.FC = () => {
 
   const loadJobDetails = async (jobId: string) => {
     try {
+      localStorage.setItem('parttrackr_active_job_id', jobId)
       addLog('info', 'client', `GET /api/v1/jobs/${jobId} - Querying job status...`)
       fetchJobLogs(jobId)
       const res = await fetch(`/api/v1/jobs/${jobId}`)
       if (res.ok) {
         const jobData: JobData = await res.json()
         setCurrentJob(jobData)
+        setRecentJobs((prev) => {
+          const idx = prev.findIndex((j) => j.job_id === jobId)
+          if (idx >= 0) {
+            const next = [...prev]
+            next[idx] = { ...next[idx], ...jobData }
+            return next
+          }
+          return [jobData, ...prev.slice(0, 9)]
+        })
         addLog('info', 'gateway-svc', `Job ${jobId} status: ${jobData.status.toUpperCase()} - ${jobData.stage_message}`, {
           total_measures: jobData.total_measures,
           status: jobData.status,
@@ -415,6 +430,19 @@ export const App: React.FC = () => {
               <span>Rehearsal Console</span>
             </button>
           </div>
+
+          {/* 10-File Submission History Selector */}
+          <RecentScoresDropdown
+            jobs={recentJobs}
+            activeJobId={currentJob?.job_id || null}
+            onSelectJob={(jobId) => loadJobDetails(jobId)}
+            onOpenAiHelpsForJob={(job) => {
+              loadJobDetails(job.job_id)
+              setIsHintsModalOpen(true)
+            }}
+            isLoading={isLoadingLogs}
+            onRefresh={fetchLatestJobs}
+          />
 
           {/* AI Helps & Reprocess Button */}
           <button

@@ -129,10 +129,13 @@ export interface PreflightData {
   staves_per_system: number
   part_layout_summary: string
   voice_labels_detected?: string[]
+  custom_instructions?: string | null
+  suggested_custom_instructions?: string | null
 }
 
 export interface JobData {
   job_id: string
+  filename?: string
   status: PipelineStage
   stage_message: string
   title: string
@@ -141,6 +144,7 @@ export interface JobData {
   total_measures: number
   total_duration_seconds: number
   created_at?: string
+  updated_at?: string
   layout_data?: LayoutResult | null
   raw_cism?: ScoreCISM | null
   routed_cism?: ScoreCISM | null

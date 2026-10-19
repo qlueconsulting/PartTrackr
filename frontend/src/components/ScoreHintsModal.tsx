@@ -65,7 +65,8 @@ export const ScoreHintsModal: React.FC<ScoreHintsModalProps> = ({
           ? String(job.total_measures)
           : ''
       )
-      setCustomInstructions(hints.custom_instructions || '')
+      const initialInstructions = hints.custom_instructions || hints.suggested_custom_instructions || ''
+      setCustomInstructions(initialInstructions)
 
       if (hints.part_layout_summary) {
         setPreflightData({
@@ -79,6 +80,8 @@ export const ScoreHintsModal: React.FC<ScoreHintsModalProps> = ({
           has_piano: Boolean(hints.has_piano),
           staves_per_system: hints.staves_per_system || 3,
           part_layout_summary: hints.part_layout_summary,
+          custom_instructions: hints.custom_instructions,
+          suggested_custom_instructions: hints.suggested_custom_instructions || hints.custom_instructions,
         })
       } else {
         // Fetch fresh preflight analysis
@@ -98,6 +101,9 @@ export const ScoreHintsModal: React.FC<ScoreHintsModalProps> = ({
         if (data.tempo_bpm) setTempoBpm(String(Math.round(data.tempo_bpm)))
         if (data.choral_voicing) setChoralVoicing(data.choral_voicing)
         if (data.accompaniment_type) setAccompanimentType(data.accompaniment_type)
+        if (data.suggested_custom_instructions && !customInstructions) {
+          setCustomInstructions(data.suggested_custom_instructions)
+        }
       }
     } catch (e) {
       console.warn('Could not fetch preflight analysis:', e)
@@ -357,7 +363,19 @@ export const ScoreHintsModal: React.FC<ScoreHintsModalProps> = ({
                 <Sparkles className="w-3.5 h-3.5 text-amber-300" />
                 6. Additional Information AI Prompt (Custom LLM Guidance)
               </span>
-              <span className="text-[10px] text-slate-500">Injected directly into Vision OMR</span>
+              <div className="flex items-center gap-2">
+                {preflightData?.suggested_custom_instructions && (
+                  <button
+                    type="button"
+                    onClick={() => setCustomInstructions(preflightData.suggested_custom_instructions || '')}
+                    className="text-[11px] text-violet-400 hover:text-violet-300 underline cursor-pointer font-normal"
+                    title="Reset to synthesized pre-flight directives"
+                  >
+                    Reset to AI Suggestions
+                  </button>
+                )}
+                <span className="text-[10px] text-slate-500">Injected directly into Vision OMR</span>
+              </div>
             </label>
 
             {/* Quick Hint Chips */}

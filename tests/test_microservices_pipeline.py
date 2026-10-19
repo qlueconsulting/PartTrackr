@@ -78,6 +78,9 @@ def test_preflight_analysis():
     assert preflight["choral_voicing"] == "SA_TB"
     assert preflight["has_piano"] is False
     assert "part_layout_summary" in preflight
+    assert "suggested_custom_instructions" in preflight
+    assert "compound duple in 2 feel" in preflight["suggested_custom_instructions"]
+    assert "Soprano" in preflight["suggested_custom_instructions"]
 
 
 def test_gateway_preflight_and_reprocess_endpoints():
@@ -96,6 +99,7 @@ def test_gateway_preflight_and_reprocess_endpoints():
     job_id = upload_data["job_id"]
     assert "preflight" in upload_data
     assert upload_data["preflight"]["time_signature"] == "6/8"
+    assert "suggested_custom_instructions" in upload_data["preflight"]
 
     # 2. Query preflight endpoint
     pre_resp = client.get(f"/api/v1/jobs/{job_id}/preflight")
@@ -119,4 +123,15 @@ def test_gateway_preflight_and_reprocess_endpoints():
     assert rep_data["job_id"] == job_id
     assert rep_data["status"] == "pending"
     assert rep_data["score_hints"]["custom_instructions"] == "Bars 1-4 are piano prelude; Soprano divisi on refrain"
+
+    # 4. Query job history list (last 10) and verify AI hints are preserved
+    history_resp = client.get("/api/v1/jobs?limit=10")
+    assert history_resp.status_code == 200
+    history_jobs = history_resp.json()
+    assert len(history_jobs) >= 1
+    target = next((j for j in history_jobs if j["job_id"] == job_id), None)
+    assert target is not None
+    assert target["score_hints"] is not None
+    assert target["score_hints"]["custom_instructions"] == "Bars 1-4 are piano prelude; Soprano divisi on refrain"
+
 

@@ -1,5 +1,6 @@
 import os
 import re
+from collections import Counter
 import logging
 from pathlib import Path
 from typing import Dict, List, Any, Tuple, Optional
@@ -564,14 +565,12 @@ class PDFLayoutEngine:
         p2 = doc[1] if page_count > 1 else None
 
         syss_p1 = cls._extract_page_systems(p1, 1) if p1 else []
-        # If Page 1 is a cover or has only single isolated title staff, check Page 2
-        syss_to_use = syss_p1
-        if (not syss_p1 or (len(syss_p1) == 1 and len(syss_p1[0]["staves"]) <= 1)) and p2:
-            syss_p2 = cls._extract_page_systems(p2, 2)
-            if syss_p2 and len(syss_p2[0]["staves"]) >= 2:
-                syss_to_use = syss_p2
+        syss_p2 = cls._extract_page_systems(p2, 2) if p2 else []
+        all_sys = list(syss_p1) + list(syss_p2)
 
-        staves_per_system = len(syss_to_use[0]["staves"]) if syss_to_use else 1
+        counts = [len(s.get("staves", [])) for s in all_sys if len(s.get("staves", [])) >= 2]
+        staves_per_system = Counter(counts).most_common(1)[0][0] if counts else (len(syss_p1[0]["staves"]) if syss_p1 else 1)
+        has_piano = staves_per_system >= 3 or any("piano" in (st.get("label") or "").lower() for s in all_sys for st in s.get("staves", []))
 
         # Text across first 2 pages
         all_text = ""
@@ -639,11 +638,6 @@ class PDFLayoutEngine:
                     break
 
         # 3. Part Layout & Voicing Topology
-        has_piano = staves_per_system >= 3 or any(
-            st.get("bracket_type") == "brace" or "piano" in (st.get("label") or "").lower()
-            for st in (syss_to_use[0]["staves"] if syss_to_use else [])
-        )
-
         lower_text = all_text.lower()
         has_soprano = bool(re.search(r"\b(soprano|s\.)\b", lower_text))
         has_alto = bool(re.search(r"\b(alto|a\.)\b", lower_text))
@@ -695,6 +689,48 @@ class PDFLayoutEngine:
 
         accompaniment_type = "piano" if has_piano else "a_cappella"
 
+        # 4. Synthesize intelligent pre-populated AI guidance prompt
+        prompt_parts = []
+        if has_piano:
+            if staves_per_system == 3:
+                prompt_parts.append("Bottom 2 staves are piano accompaniment (piano RH and piano LH); top staff is vocal line.")
+            elif staves_per_system == 4:
+                prompt_parts.append("Bottom 2 staves are piano accompaniment; upper 2 staves are choral vocal parts (SA on staff 1, TB on staff 2).")
+            elif staves_per_system == 5:
+                prompt_parts.append("Bottom 2 staves are piano accompaniment; upper 3 staves are 3-part choral harmony.")
+            elif staves_per_system == 6:
+                prompt_parts.append("Bottom 2 staves are piano accompaniment; upper 4 staves are SATB vocal parts.")
+            else:
+                prompt_parts.append("Bottom 2 staves are piano accompaniment; upper staves are choral vocal lines.")
+        else:
+            if staves_per_system == 4:
+                prompt_parts.append("4-part SATB a cappella vocal score; all 10 vocal parts active, piano rests 100%.")
+            elif staves_per_system == 2:
+                prompt_parts.append("2-staff a cappella choral score; route vocal lines across canonical parts.")
+            else:
+                prompt_parts.append("A cappella vocal score without piano accompaniment.")
+
+        if time_sig == "6/8":
+            prompt_parts.append("Time signature is 6/8 meter (compound duple in 2 feel).")
+        elif time_sig == "3/4":
+            prompt_parts.append("Time signature is 3/4 triple meter.")
+        elif time_sig == "2/2":
+            prompt_parts.append("Time signature is 2/2 cut time.")
+        elif time_sig == "2/4":
+            prompt_parts.append("Time signature is 2/4 duple meter.")
+        elif time_sig == "12/8":
+            prompt_parts.append("Time signature is 12/8 compound quadruple meter.")
+        else:
+            prompt_parts.append(f"Time signature is {time_sig}.")
+
+        if tempo_bpm and tempo_bpm != 120.0:
+            prompt_parts.append(f"Starting tempo is ~{int(tempo_bpm)} BPM.")
+
+        if detected_labels:
+            prompt_parts.append(f"Vocal parts labeled: {', '.join(detected_labels)}.")
+
+        suggested_instructions = " ".join(prompt_parts)
+
         return {
             "title": title,
             "composer": composer,
@@ -708,5 +744,8 @@ class PDFLayoutEngine:
             "staves_per_system": staves_per_system,
             "part_layout_summary": part_layout_summary,
             "voice_labels_detected": detected_labels,
+            "custom_instructions": suggested_instructions,
+            "suggested_custom_instructions": suggested_instructions,
         }
+
 

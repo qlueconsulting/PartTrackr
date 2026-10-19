@@ -112,14 +112,14 @@ async def upload_pdf_job(
     db.add(job)
     db.commit()
 
-    # Trigger async pipeline
+    effective_instructions = custom_instructions or preflight_hints.get("custom_instructions")
     background_tasks.add_task(
         PipelineOrchestrator.run_pipeline,
         job_id=job_id,
         job_dir=job_dir,
         pdf_path=pdf_dest,
         session_factory=SessionFactory,
-        custom_instructions=custom_instructions,
+        custom_instructions=effective_instructions,
         score_hints=preflight_hints
     )
 
@@ -331,20 +331,28 @@ def serve_job_file(job_id: str, file_subpath: str):
 
 
 @app.get("/api/v1/jobs")
-def list_jobs(db: Session = Depends(get_db)):
-    jobs = db.query(Job).order_by(Job.created_at.desc()).limit(30).all()
+def list_jobs(limit: int = 10, db: Session = Depends(get_db)):
+    """Returns the most recent jobs submitted (up to limit, defaults to 10) with full metadata and score hints."""
+    effective_limit = max(1, min(limit, 50))
+    jobs = db.query(Job).order_by(Job.created_at.desc()).limit(effective_limit).all()
     return [
         {
             "job_id": j.id,
             "filename": j.original_filename,
             "title": j.title,
+            "composer": j.composer,
             "status": j.status,
             "stage_message": j.stage_message,
+            "page_count": j.page_count,
             "total_measures": j.total_measures,
+            "total_duration_seconds": j.total_duration_seconds,
+            "score_hints": j.score_hints,
             "created_at": j.created_at.isoformat() if j.created_at else None,
+            "updated_at": j.updated_at.isoformat() if j.updated_at else None,
         }
         for j in jobs
     ]
+
 
 
 if __name__ == "__main__":
