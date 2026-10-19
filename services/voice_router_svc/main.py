@@ -21,6 +21,7 @@ class RouteRequest(BaseModel):
     job_id: str
     cism: ScoreCISM
     overrides: Optional[Dict[str, Any]] = Field(None, description="Manual measure-level voice routing overrides from the UI")
+    score_hints: Optional[Dict[str, Any]] = Field(None, description="Score hints including total_measures, accompaniment_type, etc.")
 
 
 @app.get("/health")
@@ -32,7 +33,7 @@ def health_check():
 def route_voices(req: RouteRequest) -> ScoreCISM:
     try:
         logger.info(f"Routing raw staves to 11 canonical parts for job {req.job_id}...")
-        routed_cism = VoiceRouterEngine.route_score(req.cism, overrides=req.overrides)
+        routed_cism = VoiceRouterEngine.route_score(req.cism, overrides=req.overrides, score_hints=req.score_hints)
         return routed_cism
     except Exception as e:
         tb = traceback.format_exc()

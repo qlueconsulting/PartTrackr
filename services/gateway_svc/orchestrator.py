@@ -198,6 +198,7 @@ class PipelineOrchestrator:
                     "job_id": job_id,
                     "cism": routed_cism,
                     "output_dir": str(job_dir / "compiled"),
+                    "score_hints": score_hints,
                 }
                 resp_decoder = await client.post(f"{DECODER_SVC_URL}/api/v1/decoder/compile", json=decoder_payload)
                 if resp_decoder.status_code != 200:
@@ -210,7 +211,10 @@ class PipelineOrchestrator:
                 job.status = "completed"
                 job.stage_message = "Pipeline processing completed successfully."
                 job.decoder_result = decoder_result
-                job.total_measures = decoder_result.get("total_measures", 0)
+                if score_hints and score_hints.get("total_measures"):
+                    job.total_measures = int(score_hints["total_measures"])
+                else:
+                    job.total_measures = decoder_result.get("total_measures", 0)
                 job.total_duration_seconds = decoder_result.get("total_duration_seconds", 0.0)
                 job.error_message = None
                 db.commit()

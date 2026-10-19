@@ -130,8 +130,73 @@ def test_gateway_preflight_and_reprocess_endpoints():
     history_jobs = history_resp.json()
     assert len(history_jobs) >= 1
     target = next((j for j in history_jobs if j["job_id"] == job_id), None)
-    assert target is not None
-    assert target["score_hints"] is not None
     assert target["score_hints"]["custom_instructions"] == "Bars 1-4 are piano prelude; Soprano divisi on refrain"
+
+
+def test_reconcile_total_measures_ground_truth(tmp_path):
+    from common.lockstep_utils import reconcile_cism_measures
+    from common.cism_schema import SystemData, MeasureData, BoundingBox, TrackData, NoteElement
+
+    # Build synthetic CISM with 8 measures across 2 systems
+    sys1 = SystemData(
+        system_index=0,
+        page_num=1,
+        bounding_box=BoundingBox(x=0, y=0, w=600, h=200),
+        measures=[MeasureData(measure_number=i+1, time_signature="4/4", tempo_bpm=120) for i in range(4)]
+    )
+    sys2 = SystemData(
+        system_index=1,
+        page_num=1,
+        bounding_box=BoundingBox(x=0, y=200, w=600, h=200),
+        measures=[MeasureData(measure_number=i+5, time_signature="4/4", tempo_bpm=120) for i in range(4)]
+    )
+    cism = ScoreCISM(
+        score_id="test_reconcile",
+        title="Test Score",
+        composer="Composer",
+        total_systems=2,
+        total_measures=8,
+        systems=[sys1, sys2]
+    )
+
+    # 1. Truncate from 8 to 5 measures
+    clamped = reconcile_cism_measures(cism.model_copy(deep=True), target_total_measures=5)
+    assert clamped.total_measures == 5
+    assert len(clamped.all_measures()) == 5
+    assert [m.measure_number for m in clamped.all_measures()] == [1, 2, 3, 4, 5]
+
+    # 2. Pad from 8 to 12 measures
+    padded = reconcile_cism_measures(cism.model_copy(deep=True), target_total_measures=12, target_time_signature="3/4", target_tempo_bpm=100.0)
+    assert padded.total_measures == 12
+    assert len(padded.all_measures()) == 12
+    assert [m.measure_number for m in padded.all_measures()] == list(range(1, 13))
+    last_m = padded.all_measures()[-1]
+    assert last_m.time_signature == "3/4"
+    assert last_m.tempo_bpm == 100.0
+    for p in CANONICAL_11_PARTS:
+        assert p in last_m.tracks
+        assert len(last_m.tracks[p].elements) == 1
+        assert last_m.tracks[p].elements[0].is_rest is True
+
+    # 3. Route with score_hints enforcing total_measures=6
+    routed = VoiceRouterEngine.route_score(
+        cism,
+        score_hints={"total_measures": 6, "accompaniment_type": "piano", "time_signature": "4/4"}
+    )
+    assert routed.total_measures == 6
+    assert len(routed.all_measures()) == 6
+    assert routed.has_piano is True
+
+    # 4. Decoder XML compile with score_hints
+    compiled_dir = tmp_path / "compiled_hints"
+    main_xml, stems, summary = XMLCompiler.compile_score(routed, compiled_dir)
+    assert len(summary) == 6
+    assert summary[-1]["measure_number"] == 6
+
+    main_midi, stem_midis, sync_map_path = MIDIGenerator.compile_midi_and_sync_map(routed, compiled_dir)
+    with open(sync_map_path, "r", encoding="utf-8") as f:
+        sync = json.load(f)
+    assert sync["total_measures"] == 6
+    assert len(sync["measures"]) == 6
 
 

@@ -346,8 +346,20 @@ export const App: React.FC = () => {
 
   const handleReprocessTriggered = (jobId: string, hints: ScoreHints) => {
     addLog('info', 'client', `Score reprocessing dispatched with AI hints:`, hints)
+    setErrorMessage(null)
     setBottomTab('logs')
-    loadJobDetails(jobId)
+    setCurrentJob((prev) =>
+      prev
+        ? {
+            ...prev,
+            status: 'pending',
+            stage_message: 'Reprocessing score with user AI hints...',
+            score_hints: hints,
+            total_measures: hints.total_measures ?? prev.total_measures,
+          }
+        : null
+    )
+    listenToJobEvents(jobId)
   }
 
   // Transport Handlers

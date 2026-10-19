@@ -13,6 +13,7 @@ from common.cism_schema import (
     NoteElement,
     BoundingBox,
 )
+from common.lockstep_utils import reconcile_cism_measures
 
 logger = logging.getLogger("omr_ai_svc.vector")
 
@@ -180,7 +181,7 @@ class VectorSMuFLExtractor:
                 measures=measures_out
             ))
 
-        return ScoreCISM(
+        score_obj = ScoreCISM(
             score_id=layout_data.get("job_id", "score_vector"),
             title=title,
             composer=composer,
@@ -192,6 +193,18 @@ class VectorSMuFLExtractor:
             systems=systems_out,
             metadata={"omr_engine": "VectorSMuFL"}
         )
+
+        target_measures = score_hints.get("total_measures") if score_hints else None
+        if target_measures:
+            score_obj = reconcile_cism_measures(
+                score_obj,
+                target_total_measures=int(target_measures),
+                target_time_signature=time_sig,
+                target_tempo_bpm=tempo_bpm,
+                has_piano=has_piano
+            )
+
+        return score_obj
 
     @classmethod
     def _extract_elements_in_box(

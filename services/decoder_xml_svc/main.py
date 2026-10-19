@@ -1,11 +1,12 @@
 import logging
 from pathlib import Path
 import traceback
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 from common.cism_schema import ScoreCISM
+from common.lockstep_utils import reconcile_cism_measures
 from services.decoder_xml_svc.xml_compiler import XMLCompiler
 from services.decoder_xml_svc.midi_generator import MIDIGenerator
 
@@ -23,6 +24,7 @@ class DecodeRequest(BaseModel):
     job_id: str
     cism: ScoreCISM
     output_dir: str
+    score_hints: Optional[Dict[str, Any]] = Field(None, description="Score hints including verified total_measures")
 
 
 @app.get("/health")
@@ -36,15 +38,38 @@ def compile_score(req: DecodeRequest) -> Dict[str, Any]:
     try:
         logger.info(f"Compiling MusicXML and MIDI for job {req.job_id}...")
 
+        target_measures = req.score_hints.get("total_measures") if req.score_hints else None
+        target_ts = req.score_hints.get("time_signature") if req.score_hints else None
+        target_bpm = req.score_hints.get("tempo_bpm") if req.score_hints else None
+        accompaniment_type = req.score_hints.get("accompaniment_type") if req.score_hints else None
+
+        has_piano = None
+        if accompaniment_type == "a_cappella":
+            has_piano = False
+        elif accompaniment_type in ("piano", "orchestra_reduction"):
+            has_piano = True
+
+        cism = req.cism
+        if target_measures:
+            cism = reconcile_cism_measures(
+                cism,
+                target_total_measures=int(target_measures),
+                target_time_signature=target_ts,
+                target_tempo_bpm=target_bpm,
+                has_piano=has_piano
+            )
+        elif has_piano is not None:
+            cism.has_piano = has_piano
+
         # 1. Compile MusicXML and individual stems
         main_xml_path, stem_xml_paths, measure_summary = XMLCompiler.compile_score(
-            cism=req.cism,
+            cism=cism,
             output_dir=out_dir
         )
 
         # 2. Compile 11-channel MIDI, individual stem MIDIs, and sync map
         main_midi_path, stem_midi_paths, sync_map_path = MIDIGenerator.compile_midi_and_sync_map(
-            cism=req.cism,
+            cism=cism,
             output_dir=out_dir
         )
 
@@ -63,7 +88,7 @@ def compile_score(req: DecodeRequest) -> Dict[str, Any]:
             "sync_map_path": str(sync_map_path),
             "stems": stems_manifest,
             "measure_summary": measure_summary,
-            "total_measures": len(measure_summary),
+            "total_measures": target_measures if target_measures else len(measure_summary),
             "total_duration_seconds": measure_summary[-1]["start_time_seconds"] + measure_summary[-1]["duration_seconds"] if measure_summary else 0.0,
         }
 

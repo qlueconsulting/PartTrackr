@@ -10,6 +10,7 @@ from common.cism_schema import (
     TrackData,
     NoteElement,
 )
+from common.lockstep_utils import reconcile_cism_measures
 
 logger = logging.getLogger("voice_router_svc")
 
@@ -22,8 +23,35 @@ class VoiceRouterEngine:
     """
 
     @classmethod
-    def route_score(cls, cism: ScoreCISM, overrides: Optional[Dict[str, Any]] = None) -> ScoreCISM:
+    def route_score(
+        cls,
+        cism: ScoreCISM,
+        overrides: Optional[Dict[str, Any]] = None,
+        score_hints: Optional[Dict[str, Any]] = None
+    ) -> ScoreCISM:
         cism_out = cism.model_copy(deep=True)
+
+        target_measures = score_hints.get("total_measures") if score_hints else None
+        target_ts = score_hints.get("time_signature") if score_hints else None
+        target_bpm = score_hints.get("tempo_bpm") if score_hints else None
+        accompaniment_type = score_hints.get("accompaniment_type") if score_hints else None
+
+        has_piano = None
+        if accompaniment_type == "a_cappella":
+            has_piano = False
+        elif accompaniment_type in ("piano", "orchestra_reduction"):
+            has_piano = True
+
+        if target_measures:
+            cism_out = reconcile_cism_measures(
+                cism_out,
+                target_total_measures=int(target_measures),
+                target_time_signature=target_ts,
+                target_tempo_bpm=target_bpm,
+                has_piano=has_piano
+            )
+        elif has_piano is not None:
+            cism_out.has_piano = has_piano
 
         for sys in cism_out.systems:
             vocal_staves: List[StaffInfo] = []

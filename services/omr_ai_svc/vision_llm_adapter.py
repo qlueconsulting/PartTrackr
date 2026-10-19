@@ -15,6 +15,7 @@ from common.cism_schema import (
     NoteElement,
     BoundingBox,
 )
+from common.lockstep_utils import reconcile_cism_measures
 
 logger = logging.getLogger("omr_ai_svc.vision")
 
@@ -53,6 +54,39 @@ class VisionLLMAdapter:
     2. Local GPU Ollama with Qwen2.5-VL
     3. Robust synthetic / layout-aware fallback
     """
+
+    @classmethod
+    def build_ground_truth_prompt(
+        cls,
+        custom_instructions: Optional[str] = None,
+        score_hints: Optional[Dict[str, Any]] = None
+    ) -> str:
+        prompt = VISION_OMR_PROMPT
+        facts = []
+        if score_hints:
+            if score_hints.get("total_measures"):
+                facts.append(f"- Verified Total Measures in Piece: {score_hints['total_measures']}")
+            if score_hints.get("time_signature"):
+                facts.append(f"- Verified Time Signature: {score_hints['time_signature']}")
+            if score_hints.get("tempo_bpm"):
+                facts.append(f"- Verified Starting Tempo: {score_hints['tempo_bpm']} BPM")
+            if score_hints.get("choral_voicing"):
+                facts.append(f"- Verified Choral Voicing: {score_hints['choral_voicing']}")
+            if score_hints.get("accompaniment_type"):
+                facts.append(f"- Verified Accompaniment: {score_hints['accompaniment_type']}")
+            if score_hints.get("has_piano") is not None:
+                facts.append(f"- Score Has Piano: {score_hints['has_piano']}")
+            if score_hints.get("part_layout_summary"):
+                facts.append(f"- Part Layout: {score_hints['part_layout_summary']}")
+
+        active_instr = custom_instructions or (score_hints.get("custom_instructions") if score_hints else None)
+        if active_instr:
+            facts.append(f"- User Score Directives: {active_instr}")
+
+        if facts:
+            prompt += "\n\nCRITICAL USER-VERIFIED GROUND TRUTH FACTS:\n" + "\n".join(facts)
+            prompt += "\nYou MUST strictly conform to these ground-truth facts when identifying notes, rests, barlines, and staves."
+        return prompt
 
     @classmethod
     def _calculate_quarter_length(cls, time_sig: str) -> float:
@@ -138,6 +172,7 @@ class VisionLLMAdapter:
                     api_key=api_key,
                     ollama_url=ollama_endpoint if ollama_active[0] else None,
                     custom_instructions=active_instructions,
+                    score_hints=score_hints,
                     ollama_active_state=ollama_active
                 )
                 engines_used.add(eng_name)
@@ -160,17 +195,37 @@ class VisionLLMAdapter:
             ))
 
         primary_engine = ", ".join(sorted(engines_used)) if engines_used else "OpenCV Computer Vision"
-        return ScoreCISM(
+        
+        has_piano = layout_data.get("has_piano", False)
+        if score_hints:
+            if score_hints.get("accompaniment_type") == "a_cappella":
+                has_piano = False
+            elif score_hints.get("accompaniment_type") in ("piano", "orchestra_reduction"):
+                has_piano = True
+
+        score_obj = ScoreCISM(
             score_id=layout_data.get("job_id", "score_vision"),
             title=title,
             composer=composer,
             page_count=layout_data.get("page_count", 1),
             total_systems=len(systems_out),
             total_measures=total_measures,
-            has_piano=layout_data.get("has_piano", False),
+            has_piano=has_piano,
             systems=systems_out,
             metadata={"omr_engine": primary_engine}
         )
+
+        target_measures = score_hints.get("total_measures") if score_hints else None
+        if target_measures:
+            score_obj = reconcile_cism_measures(
+                score_obj,
+                target_total_measures=int(target_measures),
+                target_time_signature=time_sig,
+                target_tempo_bpm=tempo_bpm,
+                has_piano=has_piano
+            )
+
+        return score_obj
 
     @classmethod
     def _recognize_measure(
@@ -180,17 +235,18 @@ class VisionLLMAdapter:
         api_key: Optional[str],
         ollama_url: Optional[str],
         custom_instructions: Optional[str],
+        score_hints: Optional[Dict[str, Any]] = None,
         ollama_active_state: Optional[List[bool]] = None
     ) -> Tuple[Dict[str, TrackData], str]:
         # 1. Try Gemini API if key is present and crop image exists
         if api_key and m_crop_path and Path(m_crop_path).exists():
-            gemini_res = cls._call_gemini_vision(m_crop_path, api_key, custom_instructions)
+            gemini_res = cls._call_gemini_vision(m_crop_path, api_key, custom_instructions, score_hints)
             if gemini_res:
                 return cls._format_staves_response(gemini_res, staves), "Gemini-2.0-Flash"
 
         # 2. Try Local GPU Ollama if available
         if ollama_url and m_crop_path and Path(m_crop_path).exists():
-            ollama_res = cls._call_ollama_vision(m_crop_path, ollama_url, custom_instructions)
+            ollama_res = cls._call_ollama_vision(m_crop_path, ollama_url, custom_instructions, score_hints)
             if ollama_res:
                 model_name = os.environ.get("OLLAMA_MODEL", "qwen2.5-vl:7b")
                 return cls._format_staves_response(ollama_res, staves), f"Ollama ({model_name})"
@@ -207,16 +263,15 @@ class VisionLLMAdapter:
         cls,
         image_path: str,
         api_key: str,
-        custom_instructions: Optional[str]
+        custom_instructions: Optional[str] = None,
+        score_hints: Optional[Dict[str, Any]] = None
     ) -> Optional[Dict[str, Any]]:
         try:
             with open(image_path, "rb") as f:
                 img_b64 = base64.b64encode(f.read()).decode("ascii")
 
             url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={api_key}"
-            prompt = VISION_OMR_PROMPT
-            if custom_instructions:
-                prompt += f"\nUser score hints: {custom_instructions}"
+            prompt = cls.build_ground_truth_prompt(custom_instructions, score_hints)
 
             payload = {
                 "contents": [{
@@ -241,16 +296,18 @@ class VisionLLMAdapter:
         cls,
         image_path: str,
         ollama_url: str,
-        custom_instructions: Optional[str]
+        custom_instructions: Optional[str] = None,
+        score_hints: Optional[Dict[str, Any]] = None
     ) -> Optional[Dict[str, Any]]:
         model_name = os.environ.get("OLLAMA_MODEL", "qwen2.5-vl:7b")
         try:
             with open(image_path, "rb") as f:
                 img_b64 = base64.b64encode(f.read()).decode("ascii")
 
+            prompt = cls.build_ground_truth_prompt(custom_instructions, score_hints)
             payload = {
                 "model": model_name,
-                "prompt": VISION_OMR_PROMPT + (f"\nHints: {custom_instructions}" if custom_instructions else ""),
+                "prompt": prompt,
                 "images": [img_b64],
                 "format": "json",
                 "stream": False
