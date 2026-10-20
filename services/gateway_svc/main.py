@@ -64,8 +64,11 @@ class ScoreHintsRequest(BaseModel):
     tempo_bpm: Optional[float] = None
     choral_voicing: Optional[str] = None
     accompaniment_type: Optional[str] = None
+    staves_per_system: Optional[int] = None
     total_measures: Optional[int] = None
     custom_instructions: Optional[str] = None
+    part_layout_summary: Optional[str] = None
+    save_as_template: Optional[bool] = True
 
 
 @app.post("/api/v1/jobs/upload")
@@ -180,6 +183,22 @@ async def reprocess_job_with_hints(
     job.error_message = None
     job.score_hints = hints_dict
     db.commit()
+
+    # Record teacher signal in learning store for continuous adaptation
+    if hints.save_as_template is not False:
+        try:
+            from common.learning_store import LearningManager
+            LearningManager.record_teacher_signal(
+                job_id=job_id,
+                title=job.title or "Choral Score",
+                composer=job.composer or "Unknown Composer",
+                score_hints=hints_dict,
+                layout_data=job.layout_data,
+                cism=job.raw_cism
+            )
+            logger.info(f"Recorded teacher signal for job {job_id} into learning store.")
+        except Exception as e:
+            logger.warning(f"Failed to record teacher signal for job {job_id}: {e}")
 
     background_tasks.add_task(
         PipelineOrchestrator.run_pipeline,
@@ -353,6 +372,18 @@ def list_jobs(limit: int = 10, db: Session = Depends(get_db)):
         for j in jobs
     ]
 
+
+
+@app.get("/api/v1/learning/blueprints")
+def get_learned_blueprints():
+    """Returns all learned score style blueprints and their fingerprints."""
+    from common.learning_store import LearningManager
+    try:
+        bps = LearningManager.load_all_blueprints()
+        return {k: v.model_dump() for k, v in bps.items()}
+    except Exception as e:
+        logger.warning(f"Error fetching learned blueprints: {e}")
+        return {}
 
 
 if __name__ == "__main__":

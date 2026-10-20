@@ -90,6 +90,7 @@ class PipelineOrchestrator:
                     "pdf_path": str(pdf_path),
                     "output_dir": str(job_dir / "layout"),
                     "dpi": 300,
+                    "score_hints": score_hints,
                 }
                 resp_layout = await client.post(f"{LAYOUT_SVC_URL}/api/v1/layout/process", json=layout_payload)
                 if resp_layout.status_code != 200:

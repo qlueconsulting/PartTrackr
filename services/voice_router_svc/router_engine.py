@@ -82,7 +82,8 @@ class VoiceRouterEngine:
                     vocal_staves=vocal_staves,
                     piano_staves=piano_staves,
                     has_piano_in_score=cism_out.has_piano,
-                    overrides=overrides
+                    overrides=overrides,
+                    score_hints=score_hints
                 )
 
         return cism_out
@@ -94,7 +95,8 @@ class VoiceRouterEngine:
         vocal_staves: List[StaffInfo],
         piano_staves: List[StaffInfo],
         has_piano_in_score: bool,
-        overrides: Optional[Dict[str, Any]]
+        overrides: Optional[Dict[str, Any]],
+        score_hints: Optional[Dict[str, Any]] = None
     ) -> Dict[str, TrackData]:
         tracks: Dict[str, TrackData] = {}
         for p in CANONICAL_11_PARTS:
@@ -139,7 +141,7 @@ class VoiceRouterEngine:
         # 3. Route Vocal Staves based on active vocal topology
         nv = len(vocal_staves)
         if nv == 1:
-            cls._route_single_vocal_staff(vocal_staves[0], m, tracks)
+            cls._route_single_vocal_staff(vocal_staves[0], m, tracks, score_hints=score_hints)
         elif nv == 2:
             cls._route_two_vocal_staves(vocal_staves[0], vocal_staves[1], m, tracks)
         elif nv >= 4:
@@ -157,15 +159,41 @@ class VoiceRouterEngine:
         return tracks
 
     @classmethod
-    def _route_single_vocal_staff(cls, st: StaffInfo, m: MeasureData, tracks: Dict[str, TrackData]):
+    def _route_single_vocal_staff(
+        cls,
+        st: StaffInfo,
+        m: MeasureData,
+        tracks: Dict[str, TrackData],
+        score_hints: Optional[Dict[str, Any]] = None
+    ):
         raw_t = m.raw_staves.get(st.staff_id)
         elems = raw_t.elements if raw_t else []
-        is_bass = st.clef == "bass"
+
+        # Determine if this vocal line is Male or Female (Zero Second-Guessing of User Hints!)
+        voicing_hint = (score_hints.get("choral_voicing") or "").lower() if score_hints else ""
+        custom_hint = (score_hints.get("custom_instructions") or "").lower() if score_hints else ""
+        label_hint = (st.label or "").lower()
+
+        is_explicitly_male = any(
+            k in voicing_hint or k in custom_hint or k in label_hint
+            for k in ("male", "men", "tenor", "baritone", "bass", "tb", "ttbb")
+        )
+        is_explicitly_female = any(
+            k in voicing_hint or k in custom_hint or k in label_hint
+            for k in ("female", "women", "soprano", "alto", "sa", "ssaa")
+        )
+
+        if is_explicitly_male:
+            is_male = True
+        elif is_explicitly_female:
+            is_male = False
+        else:
+            is_male = st.clef in ("bass", "treble_8vb")
 
         up_elems, low_elems = cls._split_divisi_elements(elems, m.quarter_length)
 
-        if is_bass:
-            # Men's unison/divisi -> Tenor, Baritone, Bass active; Women rest
+        if is_male:
+            # Men's vocal line -> Tenor, Baritone, Bass active; Women rest!
             for p in ["soprano_1", "soprano_2", "alto_1", "alto_2"]:
                 tracks[p].elements = [NoteElement(pitch=None, duration_quarters=m.quarter_length, duration_type="whole", is_rest=True)]
             for p in ["tenor_1", "tenor_2"]:
@@ -173,7 +201,7 @@ class VoiceRouterEngine:
             for p in ["baritone_1", "baritone_2", "bass_1", "bass_2"]:
                 tracks[p].elements = copy.deepcopy(low_elems)
         else:
-            # Women's unison/divisi -> Soprano, Alto active; Men rest
+            # Women's vocal line -> Soprano, Alto active; Men rest!
             for p in ["soprano_1", "soprano_2"]:
                 tracks[p].elements = copy.deepcopy(up_elems)
             for p in ["alto_1", "alto_2"]:

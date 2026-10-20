@@ -7,6 +7,8 @@ from typing import Dict, List, Any, Tuple, Optional
 import pymupdf
 import numpy as np
 
+from common.learning_store import LearningManager, ScoreStyleFingerprint
+
 logger = logging.getLogger("pdf_layout_svc")
 
 
@@ -22,7 +24,8 @@ class PDFLayoutEngine:
         cls,
         pdf_path: Path,
         output_dir: Path,
-        dpi: int = 300
+        dpi: int = 300,
+        score_hints: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         output_dir.mkdir(parents=True, exist_ok=True)
         crops_dir = output_dir / "crops"
@@ -50,7 +53,7 @@ class PDFLayoutEngine:
             page_h_pt = page.rect.height
 
             # 2. Extract page systems, staff lines, and barlines in point coordinates
-            systems = cls._extract_page_systems(page, page_num)
+            systems = cls._extract_page_systems(page, page_num, score_hints=score_hints)
 
             page_systems_data = []
             for sys in systems:
@@ -109,17 +112,45 @@ class PDFLayoutEngine:
                 m_end = global_measure_num - 1
 
                 staves_data = []
+                num_staves_in_sys = len(sys["staves"])
+                is_3staff_vocal_piano = (num_staves_in_sys == 3)
+                voicing_str = (score_hints.get("choral_voicing") or "").lower() if score_hints else ""
+                custom_str = (score_hints.get("custom_instructions") or "").lower() if score_hints else ""
+                is_male = any(k in voicing_str or k in custom_str for k in ("male", "men", "tenor", "baritone", "bass", "tb", "ttbb"))
+
                 for st_i, st in enumerate(sys["staves"]):
+                    if is_3staff_vocal_piano:
+                        if st_i == 0:
+                            role = "vocal_men" if is_male else "vocal"
+                            bracket_type = "none"
+                            clef = "treble_8vb" if is_male else st.get("clef", "treble")
+                            label = "Men" if is_male else (st.get("label") or "Solo / Choir")
+                        elif st_i == 1:
+                            role = "piano_rh"
+                            bracket_type = "brace"
+                            clef = "treble"
+                            label = "Piano RH"
+                        else:
+                            role = "piano_lh"
+                            bracket_type = "brace"
+                            clef = "bass"
+                            label = "Piano LH"
+                    else:
+                        bracket_type = st.get("bracket_type", "bracket" if st_i < num_staves_in_sys - 2 else "brace")
+                        role = st.get("role", "vocal")
+                        clef = st.get("clef", "treble")
+                        label = st.get("label")
+
                     staves_data.append({
                         "staff_id": f"sys{sys_idx}_st{st_i}",
                         "index": st_i,
-                        "clef": st.get("clef", "treble"),
-                        "bracket_type": st.get("bracket_type", "bracket" if st_i < len(sys["staves"]) - 2 else "brace"),
-                        "role": st.get("role", "vocal"),
+                        "clef": clef,
+                        "bracket_type": bracket_type,
+                        "role": role,
                         "y_top": st["y_top"],
                         "y_bot": st["y_bot"],
                         "has_lyrics": st.get("has_lyrics", False),
-                        "label": st.get("label"),
+                        "label": label,
                     })
 
                 sys_payload = {
@@ -239,17 +270,17 @@ class PDFLayoutEngine:
         return title, composer, subtitle
 
     @classmethod
-    def _extract_page_systems(cls, page: pymupdf.Page, page_num: int) -> List[Dict[str, Any]]:
+    def _extract_page_systems(cls, page: pymupdf.Page, page_num: int, score_hints: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
         # 1. Try vector drawing extraction first
-        vector_systems = cls._extract_page_systems_vector(page, page_num)
+        vector_systems = cls._extract_page_systems_vector(page, page_num, score_hints=score_hints)
         if vector_systems and any(len(s.get("staves", [])) >= 2 for s in vector_systems):
             return vector_systems
 
         # 2. Robust Computer Vision raster staff & system detection for scanned sheet music
-        return cls._extract_page_systems_raster(page, page_num)
+        return cls._extract_page_systems_raster(page, page_num, score_hints=score_hints)
 
     @classmethod
-    def _extract_page_systems_vector(cls, page: pymupdf.Page, page_num: int) -> List[Dict[str, Any]]:
+    def _extract_page_systems_vector(cls, page: pymupdf.Page, page_num: int, score_hints: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
         drawings = page.get_drawings()
 
         # Staff lines (horizontal lines > 150pt wide, < 2.5pt tall)
@@ -322,11 +353,11 @@ class PDFLayoutEngine:
             })
             idx = next_idx
 
-        cls._classify_and_segment_systems(systems, page, drawings)
+        cls._classify_and_segment_systems(systems, page, drawings, score_hints=score_hints)
         return systems
 
     @classmethod
-    def _extract_page_systems_raster(cls, page: pymupdf.Page, page_num: int) -> List[Dict[str, Any]]:
+    def _extract_page_systems_raster(cls, page: pymupdf.Page, page_num: int, score_hints: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
         # Render at 150 DPI for fast and high-precision line recognition
         pix = page.get_pixmap(dpi=150)
         scale_y = page.rect.height / float(pix.height)
@@ -336,20 +367,27 @@ class PDFLayoutEngine:
         gray = img.mean(axis=2) if pix.n >= 3 else img[:, :, 0]
         bw = (gray < 200).astype(np.uint8)
 
-        # Horizontal projection profile across central 76% of page
-        x0_px = int(pix.width * 0.12)
-        x1_px = int(pix.width * 0.88)
+        # Horizontal projection profile across central 72% of page
+        x0_px = int(pix.width * 0.14)
+        x1_px = int(pix.width * 0.86)
         w_mid = max(1, x1_px - x0_px)
         h_proj = bw[:, x0_px:x1_px].sum(axis=1) / float(w_mid)
 
-        thresh = max(0.28, float(h_proj.mean() + 1.8 * h_proj.std()))
+        thresh = max(0.20, float(h_proj.mean() + 1.2 * h_proj.std()))
 
-        # Detect line peaks
-        peaks = []
+        raw_peaks = []
         for y in range(1, len(h_proj) - 1):
             if h_proj[y] >= thresh and h_proj[y] >= h_proj[y - 1] and h_proj[y] >= h_proj[y + 1]:
-                if not peaks or (y - peaks[-1]) > 3:
-                    peaks.append(y)
+                raw_peaks.append(y)
+
+        # De-bounce adjacent line slices (merge peaks closer than 5px caused by ink bleed on scanned PDFs)
+        peaks = []
+        for p in raw_peaks:
+            if not peaks or (p - peaks[-1]) > 5:
+                peaks.append(p)
+            else:
+                if h_proj[p] > h_proj[peaks[-1]]:
+                    peaks[-1] = p
 
         # Group 5-line staves with uniform spacing
         staves = []
@@ -358,7 +396,7 @@ class PDFLayoutEngine:
             five = peaks[i:i + 5]
             diffs = [five[k + 1] - five[k] for k in range(4)]
             avg_d = sum(diffs) / 4.0
-            if 4.5 <= avg_d <= 25.0 and (max(diffs) - min(diffs)) <= 4.5:
+            if 5.0 <= avg_d <= 24.0 and (max(diffs) - min(diffs)) <= 5.5:
                 # Find horizontal start and end of this staff
                 line_y_indices = five
                 staff_row_mask = bw[line_y_indices, :].sum(axis=0) >= 2
@@ -385,46 +423,66 @@ class PDFLayoutEngine:
             # Fallback if page has no recognizable staves (e.g. cover page)
             return []
 
-        # Group staves into systems by vertical spacing and left-barline connectivity
-        left_x_px_max = int(pix.width * 0.22)
-        left_strip = bw[:, :left_x_px_max]
+        # Check target staves per system from score hints (Zero Second-Guessing!)
+        target_sps = None
+        if score_hints and score_hints.get("staves_per_system"):
+            target_sps = int(score_hints["staves_per_system"])
+        elif len(staves) >= 3 and len(staves) % 3 == 0:
+            target_sps = 3
+        elif len(staves) >= 4 and len(staves) % 4 == 0:
+            target_sps = 4
 
         systems = []
-        idx = 0
-        while idx < len(staves):
-            group = [staves[idx]]
-            next_idx = idx + 1
-            while next_idx < len(staves):
-                st_prev = group[-1]
-                st_curr = staves[next_idx]
-                gap_pt = st_curr["y_top"] - st_prev["y_bot"]
+        if target_sps and len(staves) >= target_sps and len(staves) % target_sps == 0:
+            # Deterministic System Locking: Group staves strictly into target_sps units without splitting!
+            for k in range(0, len(staves), target_sps):
+                group = staves[k:k + target_sps]
+                systems.append({
+                    "page_num": page_num,
+                    "staves": group,
+                    "y_top": group[0]["y_top"],
+                    "y_bot": group[-1]["y_bot"],
+                    "x_left": min(st["x_left"] for st in group),
+                    "x_right": max(st["x_right"] for st in group),
+                })
+        else:
+            left_x_px_max = int(pix.width * 0.22)
+            left_strip = bw[:, :left_x_px_max]
 
-                # Check vertical line connecting st_prev bot to st_curr top at left margin
-                y_from = int(st_prev["y_bot"] / scale_y)
-                y_to = int(st_curr["y_top"] / scale_y)
-                if y_to > y_from:
-                    inter_slice = left_strip[y_from:y_to, :]
-                    col_coverage = inter_slice.mean(axis=0)
-                    connected = float(col_coverage.max()) >= 0.58
-                else:
-                    connected = True
+            idx = 0
+            while idx < len(staves):
+                group = [staves[idx]]
+                next_idx = idx + 1
+                while next_idx < len(staves):
+                    st_prev = group[-1]
+                    st_curr = staves[next_idx]
+                    gap_pt = st_curr["y_top"] - st_prev["y_bot"]
 
-                # Split if gap is large (>90pt) OR not connected when group has >= 2 staves OR group reaches 6 staves
-                if gap_pt > 90.0 or (len(group) >= 2 and not connected) or len(group) >= 6:
-                    break
-                else:
-                    group.append(st_curr)
-                    next_idx += 1
+                    # In 3-staff layouts with vocal above piano, check left margin barline
+                    y_from = int(st_prev["y_bot"] / scale_y)
+                    y_to = int(st_curr["y_top"] / scale_y)
+                    if y_to > y_from:
+                        inter_slice = left_strip[y_from:y_to, :]
+                        col_coverage = inter_slice.mean(axis=0)
+                        connected = float(col_coverage.max()) >= 0.58
+                    else:
+                        connected = True
 
-            systems.append({
-                "page_num": page_num,
-                "staves": group,
-                "y_top": group[0]["y_top"],
-                "y_bot": group[-1]["y_bot"],
-                "x_left": min(st["x_left"] for st in group),
-                "x_right": max(st["x_right"] for st in group),
-            })
-            idx = next_idx
+                    if gap_pt > 75.0 or (len(group) >= 3 and not connected) or len(group) >= 6:
+                        break
+                    else:
+                        group.append(st_curr)
+                        next_idx += 1
+
+                systems.append({
+                    "page_num": page_num,
+                    "staves": group,
+                    "y_top": group[0]["y_top"],
+                    "y_bot": group[-1]["y_bot"],
+                    "x_left": min(st["x_left"] for st in group),
+                    "x_right": max(st["x_right"] for st in group),
+                })
+                idx = next_idx
 
         # Barline segmentation via raster vertical projection
         for sys in systems:
@@ -453,7 +511,7 @@ class PDFLayoutEngine:
 
             sys["bar_x"] = clean_bars
 
-        cls._classify_and_segment_systems(systems, page, None)
+        cls._classify_and_segment_systems(systems, page, None, score_hints=score_hints)
         return systems
 
     @classmethod
@@ -461,7 +519,8 @@ class PDFLayoutEngine:
         cls,
         systems: List[Dict[str, Any]],
         page: pymupdf.Page,
-        drawings: Optional[List[Any]]
+        drawings: Optional[List[Any]],
+        score_hints: Optional[Dict[str, Any]] = None
     ):
         text_blocks = page.get_text("blocks")
         page_words = page.get_text("words")
@@ -522,10 +581,11 @@ class PDFLayoutEngine:
                         st["role"] = "piano_rh" if st_i == n_staves - 2 else "piano_lh"
                         st["clef"] = "treble" if st_i == n_staves - 2 else "bass"
                     else:
-                        st["bracket_type"] = "bracket"
-                        st["role"] = "vocal"
-                        if is_bass_named:
-                            st["clef"] = "bass"
+                        st["bracket_type"] = "bracket" if n_staves > 3 else "none"
+                        is_male = (score_hints and score_hints.get("choral_voicing") in ("Tenor_Bass", "TTBB", "solo_male")) or is_bass_named
+                        st["role"] = "vocal_men" if is_male else "vocal"
+                        if is_male:
+                            st["clef"] = "treble_8vb" if not is_bass_named else "bass"
                         elif is_treble_named:
                             st["clef"] = "treble"
                         else:
@@ -731,6 +791,38 @@ class PDFLayoutEngine:
 
         suggested_instructions = " ".join(prompt_parts)
 
+        # 5. Check if LearningManager recognizes this composer or layout topology
+        fp = ScoreStyleFingerprint(
+            staves_per_system=staves_per_system,
+            inter_staff_gap_ratio=1.0,
+            has_brace=has_piano,
+            composer_token=re.sub(r"[^\w]", "", composer.lower()) if composer else "",
+            is_scanned=len(all_text.strip()) == 0
+        )
+        matched_bp, conf = LearningManager.match_style(fp, composer or title)
+        learned_style_match = None
+
+        if matched_bp and conf >= 0.65:
+            learned_cfg = matched_bp.verified_config
+            learned_style_match = {
+                "blueprint_id": matched_bp.blueprint_id,
+                "name": matched_bp.name,
+                "confidence": round(conf * 100, 1),
+            }
+            if learned_cfg.get("time_signature"):
+                time_sig = learned_cfg["time_signature"]
+            if learned_cfg.get("choral_voicing"):
+                choral_voicing = learned_cfg["choral_voicing"]
+            if learned_cfg.get("tempo_bpm"):
+                tempo_bpm = float(learned_cfg["tempo_bpm"])
+            if learned_cfg.get("accompaniment_type"):
+                accompaniment_type = learned_cfg["accompaniment_type"]
+                has_piano = accompaniment_type in ("piano", "orchestra_reduction")
+            if learned_cfg.get("part_layout_summary"):
+                part_layout_summary = learned_cfg["part_layout_summary"]
+            if learned_cfg.get("custom_instructions"):
+                suggested_instructions = learned_cfg["custom_instructions"]
+
         return {
             "title": title,
             "composer": composer,
@@ -746,6 +838,7 @@ class PDFLayoutEngine:
             "voice_labels_detected": detected_labels,
             "custom_instructions": suggested_instructions,
             "suggested_custom_instructions": suggested_instructions,
+            "learned_style_match": learned_style_match,
         }
 
 

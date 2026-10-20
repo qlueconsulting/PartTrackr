@@ -16,6 +16,7 @@ from common.cism_schema import (
     BoundingBox,
 )
 from common.lockstep_utils import reconcile_cism_measures
+from common.learning_store import LearningManager, ScoreStyleFingerprint
 
 logger = logging.getLogger("omr_ai_svc.vision")
 
@@ -59,7 +60,9 @@ class VisionLLMAdapter:
     def build_ground_truth_prompt(
         cls,
         custom_instructions: Optional[str] = None,
-        score_hints: Optional[Dict[str, Any]] = None
+        score_hints: Optional[Dict[str, Any]] = None,
+        composer: str = "",
+        layout_data: Optional[Dict[str, Any]] = None,
     ) -> str:
         prompt = VISION_OMR_PROMPT
         facts = []
@@ -76,6 +79,8 @@ class VisionLLMAdapter:
                 facts.append(f"- Verified Accompaniment: {score_hints['accompaniment_type']}")
             if score_hints.get("has_piano") is not None:
                 facts.append(f"- Score Has Piano: {score_hints['has_piano']}")
+            if score_hints.get("staves_per_system"):
+                facts.append(f"- Staves Per System: {score_hints['staves_per_system']}")
             if score_hints.get("part_layout_summary"):
                 facts.append(f"- Part Layout: {score_hints['part_layout_summary']}")
 
@@ -83,9 +88,31 @@ class VisionLLMAdapter:
         if active_instr:
             facts.append(f"- User Score Directives: {active_instr}")
 
+        # Inject learned exemplar blueprints from self-learning memory
+        staves_cnt = 3
+        if score_hints and score_hints.get("staves_per_system"):
+            staves_cnt = int(score_hints["staves_per_system"])
+        elif layout_data and layout_data.get("staves_per_system"):
+            staves_cnt = int(layout_data["staves_per_system"])
+
+        time_sig = (score_hints.get("time_signature") if score_hints else None) or (layout_data.get("time_signature") if layout_data else None) or "4/4"
+        fingerprint = ScoreStyleFingerprint(
+            staves_per_system=staves_cnt,
+            time_signature=time_sig,
+            has_brace=bool(score_hints.get("accompaniment_type") in ("piano", "orchestra_reduction") if score_hints else True)
+        )
+        few_shot_context = LearningManager.get_few_shot_prompt_text(fingerprint, composer=composer)
+        if few_shot_context:
+            prompt += f"\n\n{few_shot_context}"
+
         if facts:
             prompt += "\n\nCRITICAL USER-VERIFIED GROUND TRUTH FACTS:\n" + "\n".join(facts)
             prompt += "\nYou MUST strictly conform to these ground-truth facts when identifying notes, rests, barlines, and staves."
+
+        prompt += "\n\nSTRICT NEGATIVE CONSTRAINTS (ZERO TOLERANCE FOR HALLUCINATION):\n"
+        prompt += "- DO NOT invent, guess, extrapolate, or hallucinate notes or rests.\n"
+        prompt += "- If a staff or measure contains no discernible notes or is empty, output a rest with is_rest: true, pitch: null.\n"
+        prompt += "- NEVER inject placeholder diatonic notes (such as C3, G2, E4, G4, C5). If you cannot read a notehead, emit a rest.\n"
         return prompt
 
     @classmethod
@@ -173,7 +200,10 @@ class VisionLLMAdapter:
                     ollama_url=ollama_endpoint if ollama_active[0] else None,
                     custom_instructions=active_instructions,
                     score_hints=score_hints,
-                    ollama_active_state=ollama_active
+                    ollama_active_state=ollama_active,
+                    quarter_length=quarter_length,
+                    composer=composer,
+                    layout_data=layout_data
                 )
                 engines_used.add(eng_name)
 
@@ -236,27 +266,30 @@ class VisionLLMAdapter:
         ollama_url: Optional[str],
         custom_instructions: Optional[str],
         score_hints: Optional[Dict[str, Any]] = None,
-        ollama_active_state: Optional[List[bool]] = None
+        ollama_active_state: Optional[List[bool]] = None,
+        quarter_length: float = 4.0,
+        composer: str = "",
+        layout_data: Optional[Dict[str, Any]] = None
     ) -> Tuple[Dict[str, TrackData], str]:
         # 1. Try Gemini API if key is present and crop image exists
         if api_key and m_crop_path and Path(m_crop_path).exists():
-            gemini_res = cls._call_gemini_vision(m_crop_path, api_key, custom_instructions, score_hints)
+            gemini_res = cls._call_gemini_vision(m_crop_path, api_key, custom_instructions, score_hints, composer=composer, layout_data=layout_data)
             if gemini_res:
-                return cls._format_staves_response(gemini_res, staves), "Gemini-2.0-Flash"
+                return cls._format_staves_response(gemini_res, staves, quarter_length=quarter_length), "Gemini-2.0-Flash"
 
         # 2. Try Local GPU Ollama if available
         if ollama_url and m_crop_path and Path(m_crop_path).exists():
-            ollama_res = cls._call_ollama_vision(m_crop_path, ollama_url, custom_instructions, score_hints)
+            ollama_res = cls._call_ollama_vision(m_crop_path, ollama_url, custom_instructions, score_hints, composer=composer, layout_data=layout_data)
             if ollama_res:
                 model_name = os.environ.get("OLLAMA_MODEL", "qwen2.5-vl:7b")
-                return cls._format_staves_response(ollama_res, staves), f"Ollama ({model_name})"
+                return cls._format_staves_response(ollama_res, staves, quarter_length=quarter_length), f"Ollama ({model_name})"
             else:
                 # Trip the circuit breaker for subsequent measures if Ollama fails
                 if ollama_active_state is not None:
                     ollama_active_state[0] = False
 
         # 3. Local Computer Vision note recognition from crop image
-        return cls._recognize_from_crop_cv(m_crop_path, staves), "OpenCV Computer Vision"
+        return cls._recognize_from_crop_cv(m_crop_path, staves, quarter_length=quarter_length), "OpenCV Computer Vision"
 
     @classmethod
     def _call_gemini_vision(
@@ -264,14 +297,16 @@ class VisionLLMAdapter:
         image_path: str,
         api_key: str,
         custom_instructions: Optional[str] = None,
-        score_hints: Optional[Dict[str, Any]] = None
+        score_hints: Optional[Dict[str, Any]] = None,
+        composer: str = "",
+        layout_data: Optional[Dict[str, Any]] = None
     ) -> Optional[Dict[str, Any]]:
         try:
             with open(image_path, "rb") as f:
                 img_b64 = base64.b64encode(f.read()).decode("ascii")
 
             url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={api_key}"
-            prompt = cls.build_ground_truth_prompt(custom_instructions, score_hints)
+            prompt = cls.build_ground_truth_prompt(custom_instructions, score_hints, composer=composer, layout_data=layout_data)
 
             payload = {
                 "contents": [{
@@ -297,14 +332,16 @@ class VisionLLMAdapter:
         image_path: str,
         ollama_url: str,
         custom_instructions: Optional[str] = None,
-        score_hints: Optional[Dict[str, Any]] = None
+        score_hints: Optional[Dict[str, Any]] = None,
+        composer: str = "",
+        layout_data: Optional[Dict[str, Any]] = None
     ) -> Optional[Dict[str, Any]]:
         model_name = os.environ.get("OLLAMA_MODEL", "qwen2.5-vl:7b")
         try:
             with open(image_path, "rb") as f:
                 img_b64 = base64.b64encode(f.read()).decode("ascii")
 
-            prompt = cls.build_ground_truth_prompt(custom_instructions, score_hints)
+            prompt = cls.build_ground_truth_prompt(custom_instructions, score_hints, composer=composer, layout_data=layout_data)
             payload = {
                 "model": model_name,
                 "prompt": prompt,
@@ -327,10 +364,35 @@ class VisionLLMAdapter:
     def _format_staves_response(
         cls,
         parsed_data: Dict[str, Any],
-        staves: List[StaffInfo]
+        staves: List[StaffInfo],
+        quarter_length: float = 4.0
     ) -> Dict[str, TrackData]:
         raw_staves: Dict[str, TrackData] = {}
         staves_arr = parsed_data.get("staves", [])
+        dur_type = "whole" if quarter_length >= 4.0 else ("half" if quarter_length >= 2.0 else "quarter")
+
+        for idx, st in enumerate(staves):
+            matched_notes = []
+            if idx < len(staves_arr):
+                for n_data in staves_arr[idx].get("notes", []):
+                    matched_notes.append(NoteElement(
+                        pitch=n_data.get("pitch"),
+                        duration_quarters=float(n_data.get("duration_quarters", 1.0)),
+                        duration_type="quarter",
+                        stem_direction=n_data.get("stem_direction"),
+                        lyric=n_data.get("lyric"),
+                        is_rest=bool(n_data.get("is_rest", False) or not n_data.get("pitch"))
+                    ))
+
+            if not matched_notes:
+                matched_notes = [NoteElement(pitch=None, duration_quarters=quarter_length, duration_type=dur_type, offset_quarters=0.0, is_rest=True)]
+
+            raw_staves[st.staff_id] = TrackData(
+                track_name=st.staff_id,
+                clef=st.clef,
+                elements=matched_notes
+            )
+        return raw_staves
 
         for idx, st in enumerate(staves):
             matched_notes = []
@@ -374,10 +436,13 @@ class VisionLLMAdapter:
     def _recognize_from_crop_cv(
         cls,
         m_crop_path: Optional[str],
-        staves: List[StaffInfo]
+        staves: List[StaffInfo],
+        quarter_length: float = 4.0
     ) -> Dict[str, TrackData]:
         if not m_crop_path or not Path(m_crop_path).exists():
-            return cls._create_baseline_staves(staves)
+            return cls._create_baseline_staves(staves, quarter_length=quarter_length)
+
+        dur_type_full = "whole" if quarter_length >= 4.0 else ("half" if quarter_length >= 2.0 else "quarter")
 
         try:
             from PIL import Image
@@ -445,27 +510,18 @@ class VisionLLMAdapter:
 
                 if not dedup_notes:
                     matched_elements = [
-                        NoteElement(pitch=None, duration_quarters=4.0, duration_type="whole", offset_quarters=0.0, is_rest=True)
+                        NoteElement(pitch=None, duration_quarters=quarter_length, duration_type=dur_type_full, offset_quarters=0.0, is_rest=True)
                     ]
                 else:
                     n_cnt = len(dedup_notes)
-                    if n_cnt == 1:
-                        note_specs = [(0.0, 4.0, "whole")]
-                    elif n_cnt == 2:
-                        note_specs = [(0.0, 2.0, "half"), (2.0, 2.0, "half")]
-                    elif n_cnt == 3:
-                        note_specs = [(0.0, 2.0, "half"), (2.0, 1.0, "quarter"), (3.0, 1.0, "quarter")]
-                    elif n_cnt == 4:
-                        note_specs = [(0.0, 1.0, "quarter"), (1.0, 1.0, "quarter"), (2.0, 1.0, "quarter"), (3.0, 1.0, "quarter")]
-                    else:
-                        note_specs = [(float(k * 0.5), 0.5, "eighth") for k in range(min(8, n_cnt))]
-
+                    dur_each = float(quarter_length / n_cnt)
                     matched_elements = []
-                    for idx_n, n_item in enumerate(dedup_notes[:len(note_specs)]):
-                        off_q, dur_q, dur_t = note_specs[idx_n]
+                    for idx_n, n_item in enumerate(dedup_notes):
+                        off_q = float(idx_n * dur_each)
+                        dur_t = "quarter" if abs(dur_each - 1.0) < 0.1 else ("half" if abs(dur_each - 2.0) < 0.1 else "eighth")
                         matched_elements.append(NoteElement(
                             pitch=n_item["pitch"],
-                            duration_quarters=dur_q,
+                            duration_quarters=dur_each,
                             duration_type=dur_t,
                             offset_quarters=off_q,
                             stem_direction=n_item["stem"],
@@ -481,29 +537,26 @@ class VisionLLMAdapter:
             return raw_staves
         except Exception as e:
             logger.warning(f"CV note extraction fallback error: {e}")
-            return cls._create_baseline_staves(staves)
+            return cls._create_baseline_staves(staves, quarter_length=quarter_length)
 
     @classmethod
-    def _create_baseline_staves(cls, staves: List[StaffInfo]) -> Dict[str, TrackData]:
-        """Creates baseline diatonic pitches for rehearsal testing when no external API is reachable."""
+    def _create_baseline_staves(cls, staves: List[StaffInfo], quarter_length: float = 4.0) -> Dict[str, TrackData]:
+        """Creates clean full-measure rests for rehearsal testing when no external API or notes are detected.
+        Guarantees ZERO made-up or hallucinated notes."""
         raw_staves: Dict[str, TrackData] = {}
+        dur_type = "whole" if quarter_length >= 4.0 else ("half" if quarter_length >= 2.0 else "quarter")
         for idx, st in enumerate(staves):
-            clef_val = st.clef
-            if st.role == "piano_lh":
-                notes = [NoteElement(pitch="C3", duration_quarters=2.0, duration_type="half", offset_quarters=0.0),
-                         NoteElement(pitch="G2", duration_quarters=2.0, duration_type="half", offset_quarters=2.0)]
-            elif st.role == "piano_rh":
-                notes = [NoteElement(pitch="E4", duration_quarters=1.0, duration_type="quarter", offset_quarters=0.0),
-                         NoteElement(pitch="G4", duration_quarters=1.0, duration_type="quarter", offset_quarters=1.0),
-                         NoteElement(pitch="C5", duration_quarters=2.0, duration_type="half", offset_quarters=2.0)]
-            elif clef_val == "bass":
-                notes = [NoteElement(pitch="C3", duration_quarters=4.0, duration_type="whole", offset_quarters=0.0)]
-            else:
-                notes = [NoteElement(pitch="G4", duration_quarters=4.0, duration_type="whole", offset_quarters=0.0)]
-
             raw_staves[st.staff_id] = TrackData(
                 track_name=st.staff_id,
-                clef=clef_val,
-                elements=notes
+                clef=st.clef,
+                elements=[
+                    NoteElement(
+                        pitch=None,
+                        duration_quarters=quarter_length,
+                        duration_type=dur_type,
+                        offset_quarters=0.0,
+                        is_rest=True
+                    )
+                ]
             )
         return raw_staves

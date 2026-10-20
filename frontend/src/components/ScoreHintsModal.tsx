@@ -40,7 +40,9 @@ export const ScoreHintsModal: React.FC<ScoreHintsModalProps> = ({
   const [accompanimentType, setAccompanimentType] = useState<string>('piano')
   const [timeSignature, setTimeSignature] = useState<string>('4/4')
   const [tempoBpm, setTempoBpm] = useState<string>('120')
+  const [stavesPerSystem, setStavesPerSystem] = useState<string>('3')
   const [customInstructions, setCustomInstructions] = useState<string>('')
+  const [saveAsTemplate, setSaveAsTemplate] = useState<boolean>(true)
 
   const [preflightData, setPreflightData] = useState<PreflightData | null>(null)
   const [isLoadingPreflight, setIsLoadingPreflight] = useState<boolean>(false)
@@ -58,6 +60,7 @@ export const ScoreHintsModal: React.FC<ScoreHintsModalProps> = ({
       setTempoBpm(hints.tempo_bpm ? String(Math.round(hints.tempo_bpm)) : '120')
       setChoralVoicing(hints.choral_voicing || 'SATB')
       setAccompanimentType(hints.accompaniment_type || (hints.has_piano ? 'piano' : 'auto'))
+      setStavesPerSystem(hints.staves_per_system ? String(hints.staves_per_system) : '3')
       setTotalMeasures(
         hints.total_measures != null
           ? String(hints.total_measures)
@@ -82,6 +85,7 @@ export const ScoreHintsModal: React.FC<ScoreHintsModalProps> = ({
           part_layout_summary: hints.part_layout_summary,
           custom_instructions: hints.custom_instructions,
           suggested_custom_instructions: hints.suggested_custom_instructions || hints.custom_instructions,
+          learned_style_match: hints.learned_style_match || null,
         })
       } else {
         // Fetch fresh preflight analysis
@@ -101,6 +105,7 @@ export const ScoreHintsModal: React.FC<ScoreHintsModalProps> = ({
         if (data.tempo_bpm) setTempoBpm(String(Math.round(data.tempo_bpm)))
         if (data.choral_voicing) setChoralVoicing(data.choral_voicing)
         if (data.accompaniment_type) setAccompanimentType(data.accompaniment_type)
+        if (data.staves_per_system) setStavesPerSystem(String(data.staves_per_system))
         if (data.suggested_custom_instructions && !customInstructions) {
           setCustomInstructions(data.suggested_custom_instructions)
         }
@@ -137,7 +142,9 @@ export const ScoreHintsModal: React.FC<ScoreHintsModalProps> = ({
       accompaniment_type: accompanimentType,
       time_signature: timeSignature.trim() || '4/4',
       tempo_bpm: tempoBpm.trim() ? parseFloat(tempoBpm.trim()) : 120.0,
+      staves_per_system: stavesPerSystem && stavesPerSystem !== 'auto' ? parseInt(stavesPerSystem, 10) : undefined,
       custom_instructions: customInstructions.trim() || null,
+      save_as_template: saveAsTemplate,
     }
 
     try {
@@ -216,6 +223,18 @@ export const ScoreHintsModal: React.FC<ScoreHintsModalProps> = ({
               </span>
             )}
           </div>
+
+          {preflightData?.learned_style_match && (
+            <div className="mb-2 p-2 rounded-lg bg-emerald-950/80 border border-emerald-500/40 text-emerald-300 text-xs flex items-center justify-between">
+              <span className="flex items-center gap-1.5 font-semibold">
+                <Sparkles className="w-4 h-4 text-emerald-400" />
+                Learned Style Matched: {preflightData.learned_style_match.name}
+              </span>
+              <span className="font-mono bg-emerald-900/60 text-emerald-200 px-2 py-0.5 rounded text-[11px] font-bold">
+                {Math.round(preflightData.learned_style_match.confidence * 100)}% match
+              </span>
+            </div>
+          )}
 
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
             <div className="bg-slate-900/90 border border-slate-800 rounded-lg p-2 text-center">
@@ -299,31 +318,51 @@ export const ScoreHintsModal: React.FC<ScoreHintsModalProps> = ({
             </div>
           </div>
 
-          {/* Parameter 2: Choral Voicing Format */}
-          <div>
-            <label className="block text-xs font-semibold text-slate-300 mb-1 flex items-center gap-1.5">
-              <Layers className="w-3.5 h-3.5 text-indigo-400" />
-              3. Choral Voicing & Staff Layout
-            </label>
-            <select
-              value={choralVoicing}
-              onChange={(e) => setChoralVoicing(e.target.value)}
-              className="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-lg text-sm text-white focus:outline-none focus:border-indigo-500"
-            >
-              <option value="SATB">SATB (Standard 4-Part Choral / Divisi)</option>
-              <option value="SA_TB">SA + TB (2-Staff Choral Score)</option>
-              <option value="SSAA">SSAA (Women's Choir - Voices S1..A2)</option>
-              <option value="TTBB">TTBB (Men's Choir - Voices T1..B2)</option>
-              <option value="SAB">SAB (Soprano, Alto, Baritone)</option>
-              <option value="Unison">Unison (Doubled across vocal stems)</option>
-              <option value="Auto">Auto (Score Bracket & Clef Detection)</option>
-            </select>
+          {/* Parameter 2: Staves Per System & Choral Voicing */}
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-1 flex items-center gap-1.5">
+                <Layers className="w-3.5 h-3.5 text-indigo-400" />
+                3. Staves Per System
+              </label>
+              <select
+                value={stavesPerSystem}
+                onChange={(e) => setStavesPerSystem(e.target.value)}
+                className="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-lg text-sm text-white focus:outline-none focus:border-indigo-500 cursor-pointer"
+              >
+                <option value="3">3 Staves (Top: Vocal, Bottom 2: Piano)</option>
+                <option value="4">4 Staves (SA + TB on 2 staves + Piano)</option>
+                <option value="2">2 Staves (A Cappella SA/TB or Piano Solo)</option>
+                <option value="1">1 Staff (Lead Sheet / Solo Melody)</option>
+                <option value="auto">Auto (Detect from Layout)</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-1 flex items-center gap-1.5">
+                <Layers className="w-3.5 h-3.5 text-indigo-400" />
+                4. Choral Voicing
+              </label>
+              <select
+                value={choralVoicing}
+                onChange={(e) => setChoralVoicing(e.target.value)}
+                className="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-lg text-sm text-white focus:outline-none focus:border-indigo-500 cursor-pointer"
+              >
+                <option value="SATB">SATB (Standard 4-Part Choral / Divisi)</option>
+                <option value="Tenor_Bass">Tenor & Bass / Men's Chorus (Solo Male / TB)</option>
+                <option value="SA_TB">SA + TB (2-Staff Choral Score)</option>
+                <option value="SSAA">SSAA (Women's Choir - Voices S1..A2)</option>
+                <option value="TTBB">TTBB (Men's Choir - Voices T1..B2)</option>
+                <option value="SAB">SAB (Soprano, Alto, Baritone)</option>
+                <option value="Unison">Unison (Doubled across vocal stems)</option>
+                <option value="Auto">Auto (Score Bracket & Clef Detection)</option>
+              </select>
+            </div>
           </div>
 
           {/* Parameter 3: Accompaniment Type */}
           <div>
             <label className="block text-xs font-semibold text-slate-300 mb-1">
-              4. Accompaniment Type
+              5. Accompaniment Type
             </label>
             <select
               value={accompanimentType}
@@ -343,7 +382,7 @@ export const ScoreHintsModal: React.FC<ScoreHintsModalProps> = ({
           {/* Parameter 4: Optional Total Measures Clamp */}
           <div>
             <label className="block text-xs font-semibold text-slate-300 mb-1">
-              5. Total Measures (Optional Clamp)
+              6. Total Measures (Optional Clamp)
             </label>
             <input
               type="number"
@@ -361,7 +400,7 @@ export const ScoreHintsModal: React.FC<ScoreHintsModalProps> = ({
             <label className="block text-xs font-semibold text-slate-300 mb-1 flex items-center justify-between">
               <span className="flex items-center gap-1.5 text-violet-300">
                 <Sparkles className="w-3.5 h-3.5 text-amber-300" />
-                6. Additional Information AI Prompt (Custom LLM Guidance)
+                7. Additional Information AI Prompt (Custom LLM Guidance)
               </span>
               <div className="flex items-center gap-2">
                 {preflightData?.suggested_custom_instructions && (
@@ -402,6 +441,26 @@ export const ScoreHintsModal: React.FC<ScoreHintsModalProps> = ({
             <p className="text-[11px] text-slate-500 mt-1">
               Add any piece-specific context to guide note extraction, tacet measures, or solo sections.
             </p>
+          </div>
+
+          {/* Self-Learning Blueprint Persistence */}
+          <div className="flex items-start gap-2.5 p-3 rounded-xl bg-violet-950/40 border border-violet-800/50">
+            <input
+              type="checkbox"
+              id="saveAsTemplate"
+              checked={saveAsTemplate}
+              onChange={(e) => setSaveAsTemplate(e.target.checked)}
+              className="mt-0.5 w-4 h-4 rounded border-slate-700 text-violet-600 focus:ring-violet-500 bg-slate-950 cursor-pointer"
+            />
+            <label htmlFor="saveAsTemplate" className="text-xs text-slate-300 cursor-pointer select-none">
+              <span className="font-semibold text-white flex items-center gap-1.5">
+                <Sparkles className="w-3.5 h-3.5 text-amber-300" />
+                Save as Learned Style Template
+              </span>
+              <span className="text-[11px] text-slate-400 block mt-0.5">
+                Enables PartTrackr to learn this composer's format permanently and auto-apply these facts to future scores with zero second-guessing.
+              </span>
+            </label>
           </div>
 
           {/* Reprocess Button */}

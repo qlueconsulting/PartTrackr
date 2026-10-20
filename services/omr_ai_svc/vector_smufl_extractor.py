@@ -156,7 +156,8 @@ class VectorSMuFLExtractor:
                         st=st,
                         bbox=bbox,
                         glyphs=glyphs,
-                        text_spans=text_spans
+                        text_spans=text_spans,
+                        quarter_length=quarter_length
                     )
                     raw_staves[st.staff_id] = TrackData(
                         track_name=st.staff_id,
@@ -212,11 +213,13 @@ class VectorSMuFLExtractor:
         st: StaffInfo,
         bbox: BoundingBox,
         glyphs: List[Dict[str, Any]],
-        text_spans: List[Dict[str, Any]]
+        text_spans: List[Dict[str, Any]],
+        quarter_length: float = 4.0
     ) -> List[NoteElement]:
         x0, x1 = bbox.x, bbox.x + bbox.w
         y_top = st.y_top - 12.0
         y_bot = st.y_bot + 12.0
+        dur_type_full = "whole" if quarter_length >= 4.0 else ("half" if quarter_length >= 2.0 else "quarter")
 
         # Find noteheads and rests in this measure on this staff
         box_glyphs = [
@@ -225,7 +228,7 @@ class VectorSMuFLExtractor:
         ]
 
         if not box_glyphs:
-            return [NoteElement(pitch=None, duration_quarters=4.0, duration_type="whole", offset_quarters=0.0, is_rest=True)]
+            return [NoteElement(pitch=None, duration_quarters=quarter_length, duration_type=dur_type_full, offset_quarters=0.0, is_rest=True)]
 
         # Notehead step to pitch calculation
         line_spacing = (st.y_bot - st.y_top) / 4.0 if (st.y_bot - st.y_top) > 0 else 6.0
@@ -271,7 +274,7 @@ class VectorSMuFLExtractor:
                 ))
 
         if not elements:
-            return [NoteElement(pitch=None, duration_quarters=4.0, duration_type="whole", offset_quarters=0.0, is_rest=True)]
+            return [NoteElement(pitch=None, duration_quarters=quarter_length, duration_type=dur_type_full, offset_quarters=0.0, is_rest=True)]
 
         return elements
 

@@ -22,6 +22,7 @@ class LayoutRequest(BaseModel):
     pdf_path: str
     output_dir: str
     dpi: int = Field(300, description="DPI for page rendering and crops")
+    score_hints: Optional[Dict[str, Any]] = Field(None, description="Score hints including staves_per_system, time_signature, etc.")
 
 
 class PreflightRequest(BaseModel):
@@ -63,7 +64,7 @@ def process_layout(req: LayoutRequest) -> Dict[str, Any]:
 
     try:
         logger.info(f"Processing PDF layout for job {req.job_id}: {pdf_file.name} at {req.dpi} DPI")
-        result = PDFLayoutEngine.process_pdf(pdf_file, out_dir, dpi=req.dpi)
+        result = PDFLayoutEngine.process_pdf(pdf_file, out_dir, dpi=req.dpi, score_hints=req.score_hints)
         result["job_id"] = req.job_id
         return result
     except Exception as e:

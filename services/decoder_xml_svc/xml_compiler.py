@@ -144,8 +144,8 @@ class XMLCompiler:
                                 n.lyric = el.lyric
                             m_part.insert(off_val, n)
                         except Exception:
-                            n = note.Note("C4", quarterLength=valid_dur)
-                            m_part.insert(off_val, n)
+                            r = note.Rest(quarterLength=valid_dur)
+                            m_part.insert(off_val, r)
 
                 if has_notes:
                     active_parts.append(p_name)

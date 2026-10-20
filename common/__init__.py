@@ -16,6 +16,12 @@ from common.cism_schema import (
 from common.lockstep_utils import (
     calculate_bar_quarter_length,
     clamp_and_pad_track_elements,
+    reconcile_cism_measures,
+)
+from common.learning_store import (
+    LearningManager,
+    ScoreStyleFingerprint,
+    StyleBlueprint,
 )
 
 __all__ = [
@@ -32,4 +38,8 @@ __all__ = [
     "ScoreCISM",
     "calculate_bar_quarter_length",
     "clamp_and_pad_track_elements",
+    "reconcile_cism_measures",
+    "LearningManager",
+    "ScoreStyleFingerprint",
+    "StyleBlueprint",
 ]

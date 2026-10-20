@@ -131,6 +131,11 @@ export interface PreflightData {
   voice_labels_detected?: string[]
   custom_instructions?: string | null
   suggested_custom_instructions?: string | null
+  learned_style_match?: {
+    blueprint_id: string
+    name: string
+    confidence: number
+  } | null
 }
 
 export interface JobData {
@@ -212,7 +217,10 @@ export interface ScoreHints {
   accompaniment_type?: string | null
   time_signature?: string | null
   tempo_bpm?: number | null
+  staves_per_system?: number | null
+  part_layout_summary?: string | null
   custom_instructions?: string | null
+  save_as_template?: boolean
 }
 
 export interface ScoreResponse {
