@@ -113,7 +113,27 @@ export interface DecoderResult {
   total_duration_seconds: number
 }
 
-export type PipelineStage = 'pending' | 'layout' | 'omr' | 'routing' | 'decoding' | 'completed' | 'failed'
+export type PipelineStage = 'pending' | 'awaiting_verification' | 'layout' | 'omr' | 'routing' | 'decoding' | 'completed' | 'failed'
+
+export interface VerificationCheck {
+  name: string
+  expected: string
+  actual: string
+  passed: boolean
+  status: 'MATCH' | 'RECONCILED' | 'REPAIRED'
+  details: string
+}
+
+export interface VerificationReport {
+  verified: boolean
+  timestamp: string
+  overall_status: string
+  match_score_pct: number
+  total_checks: number
+  passed_checks: number
+  summary: string
+  checks: VerificationCheck[]
+}
 
 export interface PreflightData {
   job_id?: string
@@ -156,6 +176,7 @@ export interface JobData {
   decoder_result?: DecoderResult | null
   overrides?: Record<string, any> | null
   score_hints?: ScoreHints | null
+  verification_report?: VerificationReport | null
   error_message?: string | null
 }
 

@@ -195,3 +195,119 @@ def test_gateway_learning_blueprints_endpoint():
     assert len(data) >= 1
     # Check that seed 3-staff male choir template is present
     assert any("3staff" in bp_id or "choral" in bp_id for bp_id in data.keys())
+
+
+def test_upload_pauses_for_ai_helps_verification(tmp_path):
+    pdf_fixture = Path("tests/fixtures/scanned_choir_score.pdf")
+    if not pdf_fixture.exists():
+        pytest.skip("Scanned choir score fixture not found")
+
+    with open(pdf_fixture, "rb") as f:
+        resp = client.post(
+            "/api/v1/jobs/upload",
+            files={"file": ("scanned_score.pdf", f, "application/pdf")}
+        )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    job_id = data["job_id"]
+
+    # 1. Pipeline MUST pause at awaiting_verification after scanning Page 1
+    assert data["status"] == "awaiting_verification"
+    assert "preflight" in data
+    assert data["preflight"]["staves_per_system"] == 3
+    assert "score_hints" in data
+
+    # 2. Verify job in DB is paused waiting for user input
+    job_resp = client.get(f"/api/v1/jobs/{job_id}")
+    assert job_resp.status_code == 200
+    assert job_resp.json()["status"] == "awaiting_verification"
+
+    # 3. User verifies AI helps and clicks "Confirm AI Helps & Process Score"
+    user_hints = {
+        "time_signature": "6/8",
+        "tempo_bpm": 108.0,
+        "staves_per_system": 3,
+        "choral_voicing": "Tenor_Bass",
+        "accompaniment_type": "piano",
+        "total_measures": 56,
+        "custom_instructions": "Bottom two staves are piano only; top staff is male vocal melody."
+    }
+    start_resp = client.post(f"/api/v1/jobs/{job_id}/start_processing", json=user_hints)
+    assert start_resp.status_code == 200
+    start_data = start_resp.json()
+    assert start_data["status"] == "pending"
+    assert start_data["score_hints"]["choral_voicing"] == "Tenor_Bass"
+    assert start_data["score_hints"]["staves_per_system"] == 3
+
+
+def test_loopback_verifier_closed_loop_reconciliation():
+    from common.loopback_verifier import LoopBackVerifier
+    from common.cism_schema import ScoreCISM, SystemData, MeasureData, StaffInfo, TrackData, NoteElement, BoundingBox
+
+    staves = [
+        StaffInfo(staff_id="st0", index=0, clef="treble_8vb", bracket_type="none", role="vocal_men", y_top=10, y_bot=30, has_lyrics=True),
+        StaffInfo(staff_id="st1", index=1, clef="treble", bracket_type="brace", role="piano_rh", y_top=40, y_bot=60, has_lyrics=False),
+        StaffInfo(staff_id="st2", index=2, clef="bass", bracket_type="brace", role="piano_lh", y_top=70, y_bot=90, has_lyrics=False),
+    ]
+
+    tracks = {
+        "tenor_1": TrackData(track_name="tenor_1", clef="treble_8vb", elements=[NoteElement(pitch="E4", duration_quarters=3.0, duration_type="half", offset_quarters=0.0, is_rest=False)]),
+        "tenor_2": TrackData(track_name="tenor_2", clef="treble_8vb", elements=[NoteElement(pitch="E4", duration_quarters=3.0, duration_type="half", offset_quarters=0.0, is_rest=False)]),
+        "baritone_1": TrackData(track_name="baritone_1", clef="bass", elements=[NoteElement(pitch="C3", duration_quarters=3.0, duration_type="half", offset_quarters=0.0, is_rest=False)]),
+        "baritone_2": TrackData(track_name="baritone_2", clef="bass", elements=[NoteElement(pitch="C3", duration_quarters=3.0, duration_type="half", offset_quarters=0.0, is_rest=False)]),
+        "bass_1": TrackData(track_name="bass_1", clef="bass", elements=[NoteElement(pitch="A2", duration_quarters=3.0, duration_type="half", offset_quarters=0.0, is_rest=False)]),
+        "bass_2": TrackData(track_name="bass_2", clef="bass", elements=[NoteElement(pitch="A2", duration_quarters=3.0, duration_type="half", offset_quarters=0.0, is_rest=False)]),
+        "soprano_1": TrackData(track_name="soprano_1", clef="treble", elements=[NoteElement(pitch=None, duration_quarters=3.0, duration_type="half", offset_quarters=0.0, is_rest=True)]),
+        "soprano_2": TrackData(track_name="soprano_2", clef="treble", elements=[NoteElement(pitch=None, duration_quarters=3.0, duration_type="half", offset_quarters=0.0, is_rest=True)]),
+        "alto_1": TrackData(track_name="alto_1", clef="treble", elements=[NoteElement(pitch=None, duration_quarters=3.0, duration_type="half", offset_quarters=0.0, is_rest=True)]),
+        "alto_2": TrackData(track_name="alto_2", clef="treble", elements=[NoteElement(pitch=None, duration_quarters=3.0, duration_type="half", offset_quarters=0.0, is_rest=True)]),
+        "piano": TrackData(track_name="piano", clef="treble", elements=[NoteElement(pitch=None, duration_quarters=3.0, duration_type="half", offset_quarters=0.0, is_rest=True)]),
+    }
+
+    measures = [
+        MeasureData(measure_number=i + 1, time_signature="6/8", tempo_bpm=108.0, quarter_length=3.0, tracks=tracks)
+        for i in range(10)
+    ]
+
+    cism = ScoreCISM(
+        score_id="loopback_test",
+        title="Loopback Verification Score",
+        composer="Stewart",
+        page_count=1,
+        total_systems=1,
+        total_measures=10,
+        has_piano=True,
+        systems=[
+            SystemData(
+                system_index=0,
+                page_num=1,
+                bounding_box=BoundingBox(x=0, y=0, w=500, h=500),
+                staves=staves,
+                measures=measures
+            )
+        ]
+    )
+
+    user_hints = {
+        "time_signature": "6/8",
+        "total_measures": 10,
+        "choral_voicing": "Tenor_Bass",
+        "accompaniment_type": "piano",
+        "custom_instructions": "Bottom two staves are piano accompaniment; top staff is male vocal melody."
+    }
+
+    reconciled_cism, report = LoopBackVerifier.verify_and_reconcile(
+        cism=cism,
+        score_hints=user_hints,
+        decoder_result={"total_measures": 10}
+    )
+
+    assert report["verified"] is True
+    assert report["match_score_pct"] == 100.0
+    assert report["total_checks"] >= 5
+    assert all(c["passed"] for c in report["checks"])
+    assert any(c["name"] == "Time Signature & Meter" and c["status"] == "MATCH" for c in report["checks"])
+    assert any(c["name"] == "Total Measure Count" and c["status"] == "MATCH" for c in report["checks"])
+    assert any(c["name"] == "Choral Voicing & Track Assignment" and c["passed"] for c in report["checks"])
+

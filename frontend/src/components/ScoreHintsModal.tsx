@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import {
   X,
   Sparkles,
@@ -9,6 +9,7 @@ import {
   Clock,
   Layers,
   RefreshCw,
+  RotateCcw,
 } from 'lucide-react'
 import type { JobData, ScoreHints, PreflightData } from '../types'
 
@@ -50,49 +51,65 @@ export const ScoreHintsModal: React.FC<ScoreHintsModalProps> = ({
   const [error, setError] = useState<string | null>(null)
   const [successMsg, setSuccessMsg] = useState<string | null>(null)
 
+  const lastInitializedJobIdRef = useRef<string | null>(null)
+  const userHasEditedRef = useRef<boolean>(false)
+  const isAwaitingVerification = job?.status === 'awaiting_verification'
+
   useEffect(() => {
-    if (job && isOpen) {
-      setError(null)
-      setSuccessMsg(null)
-
-      const hints = (job.score_hints as any) || {}
-      setTimeSignature(hints.time_signature || '4/4')
-      setTempoBpm(hints.tempo_bpm ? String(Math.round(hints.tempo_bpm)) : '120')
-      setChoralVoicing(hints.choral_voicing || 'SATB')
-      setAccompanimentType(hints.accompaniment_type || (hints.has_piano ? 'piano' : 'auto'))
-      setStavesPerSystem(hints.staves_per_system ? String(hints.staves_per_system) : '3')
-      setTotalMeasures(
-        hints.total_measures != null
-          ? String(hints.total_measures)
-          : job.total_measures > 0
-          ? String(job.total_measures)
-          : ''
-      )
-      const initialInstructions = hints.custom_instructions || hints.suggested_custom_instructions || ''
-      setCustomInstructions(initialInstructions)
-
-      if (hints.part_layout_summary) {
-        setPreflightData({
-          title: hints.title || job.title,
-          composer: hints.composer || job.composer,
-          page_count: hints.page_count || job.page_count,
-          time_signature: hints.time_signature || '4/4',
-          tempo_bpm: hints.tempo_bpm || 120,
-          choral_voicing: hints.choral_voicing || 'SATB',
-          accompaniment_type: hints.accompaniment_type || 'piano',
-          has_piano: Boolean(hints.has_piano),
-          staves_per_system: hints.staves_per_system || 3,
-          part_layout_summary: hints.part_layout_summary,
-          custom_instructions: hints.custom_instructions,
-          suggested_custom_instructions: hints.suggested_custom_instructions || hints.custom_instructions,
-          learned_style_match: hints.learned_style_match || null,
-        })
-      } else {
-        // Fetch fresh preflight analysis
-        fetchPreflight(job.job_id)
+    if (!isOpen || !job) {
+      if (!isOpen) {
+        lastInitializedJobIdRef.current = null
+        userHasEditedRef.current = false
       }
+      return
     }
-  }, [job, isOpen])
+
+    // Only populate on initial open or when switching to a completely different job
+    if (lastInitializedJobIdRef.current === job.job_id) {
+      return
+    }
+
+    lastInitializedJobIdRef.current = job.job_id
+    userHasEditedRef.current = false
+    setError(null)
+    setSuccessMsg(null)
+
+    const hints = (job.score_hints as any) || {}
+    setTimeSignature(hints.time_signature || '4/4')
+    setTempoBpm(hints.tempo_bpm ? String(Math.round(hints.tempo_bpm)) : '120')
+    setChoralVoicing(hints.choral_voicing || 'SATB')
+    setAccompanimentType(hints.accompaniment_type || (hints.has_piano ? 'piano' : 'auto'))
+    setStavesPerSystem(hints.staves_per_system ? String(hints.staves_per_system) : '3')
+    setTotalMeasures(
+      hints.total_measures != null
+        ? String(hints.total_measures)
+        : job.total_measures > 0
+        ? String(job.total_measures)
+        : ''
+    )
+    const initialInstructions = hints.custom_instructions || hints.suggested_custom_instructions || ''
+    setCustomInstructions(initialInstructions)
+
+    if (hints.part_layout_summary) {
+      setPreflightData({
+        title: hints.title || job.title,
+        composer: hints.composer || job.composer,
+        page_count: hints.page_count || job.page_count,
+        time_signature: hints.time_signature || '4/4',
+        tempo_bpm: hints.tempo_bpm || 120,
+        choral_voicing: hints.choral_voicing || 'SATB',
+        accompaniment_type: hints.accompaniment_type || 'piano',
+        has_piano: Boolean(hints.has_piano),
+        staves_per_system: hints.staves_per_system || 3,
+        part_layout_summary: hints.part_layout_summary,
+        custom_instructions: hints.custom_instructions,
+        suggested_custom_instructions: hints.suggested_custom_instructions || hints.custom_instructions,
+        learned_style_match: hints.learned_style_match || null,
+      })
+    } else {
+      fetchPreflight(job.job_id)
+    }
+  }, [isOpen, job?.job_id])
 
   const fetchPreflight = async (jobId: string) => {
     try {
@@ -101,13 +118,16 @@ export const ScoreHintsModal: React.FC<ScoreHintsModalProps> = ({
       if (res.ok) {
         const data: PreflightData = await res.json()
         setPreflightData(data)
-        if (data.time_signature) setTimeSignature(data.time_signature)
-        if (data.tempo_bpm) setTempoBpm(String(Math.round(data.tempo_bpm)))
-        if (data.choral_voicing) setChoralVoicing(data.choral_voicing)
-        if (data.accompaniment_type) setAccompanimentType(data.accompaniment_type)
-        if (data.staves_per_system) setStavesPerSystem(String(data.staves_per_system))
-        if (data.suggested_custom_instructions && !customInstructions) {
-          setCustomInstructions(data.suggested_custom_instructions)
+        // Guard: Only apply preflight values if user hasn't started manually typing/editing
+        if (!userHasEditedRef.current) {
+          if (data.time_signature) setTimeSignature(data.time_signature)
+          if (data.tempo_bpm) setTempoBpm(String(Math.round(data.tempo_bpm)))
+          if (data.choral_voicing) setChoralVoicing(data.choral_voicing)
+          if (data.accompaniment_type) setAccompanimentType(data.accompaniment_type)
+          if (data.staves_per_system) setStavesPerSystem(String(data.staves_per_system))
+          if (data.suggested_custom_instructions) {
+            setCustomInstructions(data.suggested_custom_instructions)
+          }
         }
       }
     } catch (e) {
@@ -117,15 +137,27 @@ export const ScoreHintsModal: React.FC<ScoreHintsModalProps> = ({
     }
   }
 
+  const handleResetToPreflight = () => {
+    if (!preflightData) return
+    userHasEditedRef.current = false
+    if (preflightData.time_signature) setTimeSignature(preflightData.time_signature)
+    if (preflightData.tempo_bpm) setTempoBpm(String(Math.round(preflightData.tempo_bpm)))
+    if (preflightData.choral_voicing) setChoralVoicing(preflightData.choral_voicing)
+    if (preflightData.accompaniment_type) setAccompanimentType(preflightData.accompaniment_type)
+    if (preflightData.staves_per_system) setStavesPerSystem(String(preflightData.staves_per_system))
+    setCustomInstructions(preflightData.suggested_custom_instructions || '')
+    setTotalMeasures('')
+  }
+
   if (!isOpen || !job) return null
 
   const handleChipClick = (chipText: string) => {
-    // Strip emoji from the chip for clean AI prompt text
+    userHasEditedRef.current = true
     const cleanText = chipText.replace(/^[^\w\s]+\s*/, '')
     setCustomInstructions((prev) => {
       const trimmed = prev.trim()
       if (!trimmed) return cleanText
-      if (trimmed.includes(cleanText)) return prev // Already present
+      if (trimmed.includes(cleanText)) return prev
       return `${trimmed}; ${cleanText}`
     })
   }
@@ -148,14 +180,18 @@ export const ScoreHintsModal: React.FC<ScoreHintsModalProps> = ({
     }
 
     try {
-      const res = await fetch(`/api/v1/jobs/${job.job_id}/reprocess`, {
+      const endpoint = isAwaitingVerification
+        ? `/api/v1/jobs/${job.job_id}/start_processing`
+        : `/api/v1/jobs/${job.job_id}/reprocess`
+
+      const res = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       })
 
       if (!res.ok) {
-        let errMsg = `Reprocessing request failed (${res.status})`
+        let errMsg = `Request failed (${res.status})`
         try {
           const errData = await res.json()
           errMsg = errData.detail || errMsg
@@ -166,7 +202,11 @@ export const ScoreHintsModal: React.FC<ScoreHintsModalProps> = ({
         throw new Error(errMsg)
       }
 
-      setSuccessMsg('Pipeline re-execution dispatched with AI hints!')
+      setSuccessMsg(
+        isAwaitingVerification
+          ? 'AI helps verified! Starting pipeline processing...'
+          : 'Pipeline re-execution dispatched with AI hints!'
+      )
       if (onReprocessTriggered) {
         onReprocessTriggered(job.job_id, payload)
       }
@@ -174,7 +214,7 @@ export const ScoreHintsModal: React.FC<ScoreHintsModalProps> = ({
         onClose()
       }, 700)
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Reprocessing failed'
+      const msg = err instanceof Error ? err.message : 'Processing failed'
       setError(msg)
     } finally {
       setIsReprocessing(false)
@@ -196,15 +236,16 @@ export const ScoreHintsModal: React.FC<ScoreHintsModalProps> = ({
         {/* Modal Header */}
         <div className="flex items-center gap-2.5 mb-1.5">
           <div className="w-9 h-9 rounded-xl bg-violet-500/20 border border-violet-500/30 flex items-center justify-center text-violet-400">
-            <Sparkles className="w-5 h-5" />
+            <Sparkles className="w-5 h-5 text-amber-300" />
           </div>
           <div>
             <h3 className="text-lg font-bold text-white flex items-center gap-2">
-              Score AI Helps & Reprocess
+              {isAwaitingVerification ? 'Verify AI Helps (Page 1 Scan Ready)' : 'Score AI Helps & Reprocess'}
             </h3>
             <p className="text-xs text-slate-400">
-              Guide OMR topology, time signature, tempo, and voice isolation for{' '}
-              <strong className="text-slate-200">{job.title || 'the current piece'}</strong>
+              {isAwaitingVerification
+                ? 'Review detected defaults from Page 1 and make adjustments before full score processing.'
+                : `Guide OMR topology, time signature, tempo, and voice isolation for ${job.title || 'the current piece'}.`}
             </p>
           </div>
         </div>
@@ -216,12 +257,24 @@ export const ScoreHintsModal: React.FC<ScoreHintsModalProps> = ({
               <Layers className="w-3.5 h-3.5" />
               Cursory Pre-Flight Detection (Page 1)
             </span>
-            {isLoadingPreflight && (
-              <span className="text-[11px] text-slate-400 flex items-center gap-1">
-                <Loader2 className="w-3 h-3 animate-spin" />
-                Scanning...
-              </span>
-            )}
+            <div className="flex items-center gap-2">
+              {isLoadingPreflight ? (
+                <span className="text-[11px] text-slate-400 flex items-center gap-1">
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                  Scanning...
+                </span>
+              ) : (
+                <button
+                  type="button"
+                  onClick={handleResetToPreflight}
+                  className="text-[11px] text-violet-400 hover:text-violet-300 underline font-normal cursor-pointer flex items-center gap-1"
+                  title="Revert all fields to initial Page 1 analysis"
+                >
+                  <RotateCcw className="w-3 h-3" />
+                  <span>Reset to Detected</span>
+                </button>
+              )}
+            </div>
           </div>
 
           {preflightData?.learned_style_match && (
@@ -296,7 +349,10 @@ export const ScoreHintsModal: React.FC<ScoreHintsModalProps> = ({
               <input
                 type="text"
                 value={timeSignature}
-                onChange={(e) => setTimeSignature(e.target.value)}
+                onChange={(e) => {
+                  userHasEditedRef.current = true
+                  setTimeSignature(e.target.value)
+                }}
                 placeholder="4/4, 6/8, 3/4, 2/4..."
                 className="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-lg text-sm text-white font-mono focus:outline-none focus:border-indigo-500"
               />
@@ -311,7 +367,10 @@ export const ScoreHintsModal: React.FC<ScoreHintsModalProps> = ({
                 min="30"
                 max="300"
                 value={tempoBpm}
-                onChange={(e) => setTempoBpm(e.target.value)}
+                onChange={(e) => {
+                  userHasEditedRef.current = true
+                  setTempoBpm(e.target.value)
+                }}
                 placeholder="120"
                 className="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-lg text-sm text-white font-mono focus:outline-none focus:border-indigo-500"
               />
@@ -327,7 +386,10 @@ export const ScoreHintsModal: React.FC<ScoreHintsModalProps> = ({
               </label>
               <select
                 value={stavesPerSystem}
-                onChange={(e) => setStavesPerSystem(e.target.value)}
+                onChange={(e) => {
+                  userHasEditedRef.current = true
+                  setStavesPerSystem(e.target.value)
+                }}
                 className="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-lg text-sm text-white focus:outline-none focus:border-indigo-500 cursor-pointer"
               >
                 <option value="3">3 Staves (Top: Vocal, Bottom 2: Piano)</option>
@@ -344,7 +406,10 @@ export const ScoreHintsModal: React.FC<ScoreHintsModalProps> = ({
               </label>
               <select
                 value={choralVoicing}
-                onChange={(e) => setChoralVoicing(e.target.value)}
+                onChange={(e) => {
+                  userHasEditedRef.current = true
+                  setChoralVoicing(e.target.value)
+                }}
                 className="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-lg text-sm text-white focus:outline-none focus:border-indigo-500 cursor-pointer"
               >
                 <option value="SATB">SATB (Standard 4-Part Choral / Divisi)</option>
@@ -366,7 +431,10 @@ export const ScoreHintsModal: React.FC<ScoreHintsModalProps> = ({
             </label>
             <select
               value={accompanimentType}
-              onChange={(e) => setAccompanimentType(e.target.value)}
+              onChange={(e) => {
+                userHasEditedRef.current = true
+                setAccompanimentType(e.target.value)
+              }}
               className="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-lg text-sm text-white focus:outline-none focus:border-indigo-500"
             >
               <option value="piano">Piano Accompaniment (Curved Brace / Bottom Staves)</option>
@@ -389,7 +457,10 @@ export const ScoreHintsModal: React.FC<ScoreHintsModalProps> = ({
               min="1"
               max="999"
               value={totalMeasures}
-              onChange={(e) => setTotalMeasures(e.target.value)}
+              onChange={(e) => {
+                userHasEditedRef.current = true
+                setTotalMeasures(e.target.value)
+              }}
               placeholder="e.g. 56 (Leave blank for automatic detection)"
               className="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-lg text-sm text-white focus:outline-none focus:border-indigo-500"
             />
@@ -406,7 +477,10 @@ export const ScoreHintsModal: React.FC<ScoreHintsModalProps> = ({
                 {preflightData?.suggested_custom_instructions && (
                   <button
                     type="button"
-                    onClick={() => setCustomInstructions(preflightData.suggested_custom_instructions || '')}
+                    onClick={() => {
+                      userHasEditedRef.current = true
+                      setCustomInstructions(preflightData.suggested_custom_instructions || '')
+                    }}
                     className="text-[11px] text-violet-400 hover:text-violet-300 underline cursor-pointer font-normal"
                     title="Reset to synthesized pre-flight directives"
                   >
@@ -434,7 +508,10 @@ export const ScoreHintsModal: React.FC<ScoreHintsModalProps> = ({
             <textarea
               rows={3}
               value={customInstructions}
-              onChange={(e) => setCustomInstructions(e.target.value)}
+              onChange={(e) => {
+                userHasEditedRef.current = true
+                setCustomInstructions(e.target.value)
+              }}
               placeholder="e.g. Bottom 2 staves are piano accompaniment; bars 1-4 are a piano prelude; measure 25 has soprano solo; tenor rests bars 1-8..."
               className="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-lg text-xs text-white placeholder-slate-500 focus:outline-none focus:border-violet-500 resize-none font-mono"
             />
@@ -449,7 +526,10 @@ export const ScoreHintsModal: React.FC<ScoreHintsModalProps> = ({
               type="checkbox"
               id="saveAsTemplate"
               checked={saveAsTemplate}
-              onChange={(e) => setSaveAsTemplate(e.target.checked)}
+              onChange={(e) => {
+                userHasEditedRef.current = true
+                setSaveAsTemplate(e.target.checked)
+              }}
               className="mt-0.5 w-4 h-4 rounded border-slate-700 text-violet-600 focus:ring-violet-500 bg-slate-950 cursor-pointer"
             />
             <label htmlFor="saveAsTemplate" className="text-xs text-slate-300 cursor-pointer select-none">
@@ -463,17 +543,22 @@ export const ScoreHintsModal: React.FC<ScoreHintsModalProps> = ({
             </label>
           </div>
 
-          {/* Reprocess Button */}
+          {/* Reprocess / Start Button */}
           <div className="pt-2">
             <button
               type="submit"
               disabled={isReprocessing}
-              className="w-full py-3 px-4 rounded-xl bg-gradient-to-r from-violet-600 via-indigo-600 to-purple-600 hover:from-violet-500 hover:via-indigo-500 hover:to-purple-500 text-white font-bold text-sm shadow-lg shadow-indigo-600/30 flex items-center justify-center gap-2 transition disabled:opacity-50"
+              className="w-full py-3 px-4 rounded-xl bg-gradient-to-r from-violet-600 via-indigo-600 to-purple-600 hover:from-violet-500 hover:via-indigo-500 hover:to-purple-500 text-white font-bold text-sm shadow-lg shadow-indigo-600/30 flex items-center justify-center gap-2 transition disabled:opacity-50 cursor-pointer"
             >
               {isReprocessing ? (
                 <>
                   <Loader2 className="w-4 h-4 animate-spin" />
-                  <span>Reprocessing with AI Helps...</span>
+                  <span>{isAwaitingVerification ? 'Starting Pipeline with AI Helps...' : 'Reprocessing with AI Helps...'}</span>
+                </>
+              ) : isAwaitingVerification ? (
+                <>
+                  <Sparkles className="w-4 h-4 text-amber-300" />
+                  <span>Confirm AI Helps & Process Score</span>
                 </>
               ) : (
                 <>

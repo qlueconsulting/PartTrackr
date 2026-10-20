@@ -76,6 +76,7 @@ async def upload_pdf_job(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     custom_instructions: Optional[str] = Form(None),
+    auto_start: Optional[bool] = Form(False),
     db: Session = Depends(get_db)
 ):
     if not file.filename.lower().endswith(".pdf"):
@@ -89,7 +90,7 @@ async def upload_pdf_job(
     with open(pdf_dest, "wb") as f:
         shutil.copyfileobj(file.file, f)
 
-    # Run quick cursory preflight analysis
+    # Run quick cursory preflight analysis on page 1
     preflight_hints = {}
     try:
         from services.pdf_layout_svc.layout_engine import PDFLayoutEngine
@@ -101,6 +102,13 @@ async def upload_pdf_job(
     final_composer = preflight_hints.get("composer") or "Unknown Composer"
     page_count = preflight_hints.get("page_count", 1)
 
+    initial_status = "pending" if auto_start else "awaiting_verification"
+    initial_msg = (
+        "File uploaded, initializing pipeline..."
+        if auto_start
+        else "Initial Page 1 pre-flight scan complete. Awaiting user verification in AI Helps..."
+    )
+
     job = Job(
         id=job_id,
         original_filename=file.filename,
@@ -108,30 +116,36 @@ async def upload_pdf_job(
         title=final_title,
         composer=final_composer,
         page_count=page_count,
-        status="pending",
-        stage_message="File uploaded, initializing pipeline...",
+        status=initial_status,
+        stage_message=initial_msg,
         score_hints=preflight_hints
     )
     db.add(job)
     db.commit()
 
-    effective_instructions = custom_instructions or preflight_hints.get("custom_instructions")
-    background_tasks.add_task(
-        PipelineOrchestrator.run_pipeline,
-        job_id=job_id,
-        job_dir=job_dir,
-        pdf_path=pdf_dest,
-        session_factory=SessionFactory,
-        custom_instructions=effective_instructions,
-        score_hints=preflight_hints
-    )
+    if auto_start:
+        effective_instructions = custom_instructions or preflight_hints.get("custom_instructions")
+        background_tasks.add_task(
+            PipelineOrchestrator.run_pipeline,
+            job_id=job_id,
+            job_dir=job_dir,
+            pdf_path=pdf_dest,
+            session_factory=SessionFactory,
+            custom_instructions=effective_instructions,
+            score_hints=preflight_hints
+        )
 
     return {
         "job_id": job_id,
         "filename": file.filename,
-        "status": "pending",
+        "status": initial_status,
+        "stage_message": initial_msg,
+        "title": final_title,
+        "composer": final_composer,
+        "page_count": page_count,
         "preflight": preflight_hints,
-        "message": "Job created. Use GET /api/v1/jobs/{job_id} or SSE /events to track progress."
+        "score_hints": preflight_hints,
+        "message": "Pre-flight scan ready. Please review AI helps and confirm to process." if not auto_start else "Job created. Use GET /api/v1/jobs/{job_id} or SSE /events to track progress."
     }
 
 
@@ -155,6 +169,7 @@ async def get_job_preflight(job_id: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/api/v1/jobs/{job_id}/start_processing")
 @app.post("/api/v1/jobs/{job_id}/reprocess")
 async def reprocess_job_with_hints(
     job_id: str,
@@ -178,8 +193,14 @@ async def reprocess_job_with_hints(
 
     dump_fn = getattr(hints, "model_dump", getattr(hints, "dict"))
     hints_dict = dump_fn(exclude_none=True)
+    is_initial_start = (job.status == "awaiting_verification")
+
     job.status = "pending"
-    job.stage_message = "Reprocessing score with user AI hints..."
+    job.stage_message = (
+        "User verified AI helps. Starting pipeline processing..."
+        if is_initial_start
+        else "Reprocessing score with user AI hints..."
+    )
     job.error_message = None
     job.score_hints = hints_dict
     db.commit()
@@ -240,6 +261,7 @@ def get_job_status(job_id: str, db: Session = Depends(get_db)):
         "decoder_result": job.decoder_result,
         "overrides": job.overrides,
         "score_hints": job.score_hints,
+        "verification_report": job.verification_report,
         "error_message": job.error_message,
     }
 
@@ -366,6 +388,7 @@ def list_jobs(limit: int = 10, db: Session = Depends(get_db)):
             "total_measures": j.total_measures,
             "total_duration_seconds": j.total_duration_seconds,
             "score_hints": j.score_hints,
+            "verification_report": j.verification_report,
             "created_at": j.created_at.isoformat() if j.created_at else None,
             "updated_at": j.updated_at.isoformat() if j.updated_at else None,
         }

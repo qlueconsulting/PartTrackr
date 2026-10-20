@@ -32,6 +32,7 @@ class Job(Base):
     decoder_result = Column(JSON, nullable=True)
     overrides = Column(JSON, nullable=True)
     score_hints = Column(JSON, nullable=True)
+    verification_report = Column(JSON, nullable=True)
     error_message = Column(Text, nullable=True)
 
 
@@ -39,13 +40,16 @@ def init_db(db_path: Path):
     db_path.parent.mkdir(parents=True, exist_ok=True)
     engine = create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
     Base.metadata.create_all(bind=engine)
-    # Ensure score_hints column exists in existing DBs
+    # Ensure score_hints & verification_report columns exist in existing DBs
     try:
         with engine.connect() as conn:
             from sqlalchemy import text
             cols = [row[1] for row in conn.execute(text("PRAGMA table_info(jobs);")).fetchall()]
             if "score_hints" not in cols:
                 conn.execute(text("ALTER TABLE jobs ADD COLUMN score_hints JSON;"))
+                conn.commit()
+            if "verification_report" not in cols:
+                conn.execute(text("ALTER TABLE jobs ADD COLUMN verification_report JSON;"))
                 conn.commit()
     except Exception:
         pass

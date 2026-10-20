@@ -209,6 +209,26 @@ class PipelineOrchestrator:
 
                 decoder_result = resp_decoder.json()
 
+                # Stage 5: Closed-Loop Verification & Invariant Enforcement
+                verification_report = None
+                try:
+                    from common.loopback_verifier import LoopBackVerifier
+                    from common.cism_schema import ScoreCISM
+                    routed_cism_obj = ScoreCISM(**routed_cism)
+                    _, verification_report = LoopBackVerifier.verify_and_reconcile(
+                        cism=routed_cism_obj,
+                        score_hints=score_hints,
+                        decoder_result=decoder_result
+                    )
+                    job.verification_report = verification_report
+                    append_job_log(
+                        job_dir, "success", "loopback-verifier",
+                        f"Closed-loop check complete: {verification_report['match_score_pct']}% match to user AI helps.",
+                        verification_report
+                    )
+                except Exception as ver_err:
+                    logger.warning(f"Loop-back verification non-fatal error: {ver_err}")
+
                 job.status = "completed"
                 job.stage_message = "Pipeline processing completed successfully."
                 job.decoder_result = decoder_result

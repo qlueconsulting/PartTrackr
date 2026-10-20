@@ -224,7 +224,7 @@ export const App: React.FC = () => {
           if (channelStates) {
             audioEngineRef.current?.setAllChannelStates(channelStates)
           }
-        } else if (jobData.status !== 'completed') {
+        } else if (jobData.status !== 'completed' && jobData.status !== 'awaiting_verification') {
           listenToJobEvents(jobId)
         }
       }
@@ -330,7 +330,7 @@ export const App: React.FC = () => {
       }
 
       const data = await res.json()
-      addLog('success', 'gateway-svc', `Upload accepted! Job ID: ${data.job_id}`, data)
+      addLog('success', 'gateway-svc', `Page 1 scan complete! Awaiting AI helps verification. Job ID: ${data.job_id}`, data)
       loadJobDetails(data.job_id)
       setIsHintsModalOpen(true)
     } catch (err: any) {
@@ -501,6 +501,8 @@ export const App: React.FC = () => {
           currentStage={currentJob?.status || 'pending'}
           stageMessage={currentJob?.stage_message || 'Awaiting PDF sheet music upload...'}
           totalMeasures={currentJob?.total_measures || 0}
+          verificationReport={currentJob?.verification_report}
+          onOpenHintsModal={() => setIsHintsModalOpen(true)}
         />
 
         {/* Mode 1: Diagnostic Studio */}

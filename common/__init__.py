@@ -23,6 +23,7 @@ from common.learning_store import (
     ScoreStyleFingerprint,
     StyleBlueprint,
 )
+from common.loopback_verifier import LoopBackVerifier
 
 __all__ = [
     "CANONICAL_11_PARTS",
@@ -42,4 +43,5 @@ __all__ = [
     "LearningManager",
     "ScoreStyleFingerprint",
     "StyleBlueprint",
+    "LoopBackVerifier",
 ]
