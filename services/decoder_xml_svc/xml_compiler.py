@@ -139,10 +139,20 @@ class XMLCompiler:
                     else:
                         has_notes = True
                         try:
-                            n = note.Note(el.pitch, quarterLength=valid_dur)
-                            if el.lyric:
-                                n.lyric = el.lyric
-                            m_part.insert(off_val, n)
+                            if el.is_chord and el.chord_pitches and len(el.chord_pitches) >= 2:
+                                ch = chord.Chord(el.chord_pitches, quarterLength=valid_dur)
+                                if el.lyric:
+                                    ch.lyric = el.lyric
+                                if el.tie:
+                                    ch.tie = music21.tie.Tie(el.tie)
+                                m_part.insert(off_val, ch)
+                            else:
+                                n = note.Note(el.pitch, quarterLength=valid_dur)
+                                if el.lyric:
+                                    n.lyric = el.lyric
+                                if el.tie:
+                                    n.tie = music21.tie.Tie(el.tie)
+                                m_part.insert(off_val, n)
                         except Exception:
                             r = note.Rest(quarterLength=valid_dur)
                             m_part.insert(off_val, r)

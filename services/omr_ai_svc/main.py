@@ -55,13 +55,14 @@ def process_omr(req: OMRRequest) -> ScoreCISM:
             score_cism = VectorSMuFLExtractor.extract_cism(pdf_file, req.layout_data, score_hints=req.score_hints)
             return score_cism
 
-        # 2. Vision-LLM Path: Multimodal recognition on crops for scanned/raster PDFs
-        logger.info(f"Job {req.job_id}: Running Vision-LLM OMR on measure crops for {pdf_file.name}...")
-        score_cism = VisionLLMAdapter.extract_cism_from_crops(
+        # 2. Blended Neuro-Symbolic OMR: Fused OCR + Morphological Geometric OMR + Music Theory + Vision-LLM
+        logger.info(f"Job {req.job_id}: Running Blended Sensor-Fusion OMR (OCR + Geometric OMR + Music Theory) on {pdf_file.name}...")
+        from services.omr_ai_svc.hybrid_fusion_engine import HybridOMRFusionEngine
+        score_cism = HybridOMRFusionEngine.extract_cism(
             layout_data=req.layout_data,
-            gemini_api_key=req.gemini_api_key,
             custom_instructions=custom_instr,
-            score_hints=req.score_hints
+            score_hints=req.score_hints,
+            gemini_api_key=req.gemini_api_key
         )
         return score_cism
 

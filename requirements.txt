@@ -11,4 +11,6 @@ scipy>=1.12.0
 httpx>=0.27.0
 requests>=2.31.0
 pymupdf>=1.24.0
+rapidocr-onnxruntime>=1.4.0
+opencv-python>=4.8.0
 pytest>=8.0.0

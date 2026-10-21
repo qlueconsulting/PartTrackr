@@ -36,6 +36,10 @@ class MIDIGenerator:
             p: MidiFile(ticks_per_beat=TICKS_PER_BEAT) for p in CANONICAL_11_PARTS
         }
 
+        DYNAMIC_VELOCITIES = {
+            "ppp": 40, "pp": 50, "p": 62, "mp": 74, "mf": 86, "f": 100, "ff": 114, "fff": 124
+        }
+
         # Conductor / Tempo Track
         conductor_track = MidiTrack()
         conductor_track.append(MetaMessage("track_name", name="Conductor", time=0))
@@ -46,7 +50,7 @@ class MIDIGenerator:
         tempo_us = int(mido.bpm2tempo(initial_bpm))
         conductor_track.append(MetaMessage("set_tempo", tempo=tempo_us, time=0))
 
-        # Build Sync Map (measure -> start_ms, duration_ms, beats -> ms)
+        # Build Conductor Tempo events and Sync Map
         sync_map = {
             "score_title": cism.title,
             "total_measures": len(all_measures),
@@ -54,14 +58,26 @@ class MIDIGenerator:
         }
 
         running_time_ms = 0.0
+        current_bpm = initial_bpm
+        cond_last_tick = 0
+        cumulative_quarters = Fraction(0)
 
         for m_data in all_measures:
             m_num = m_data.measure_number
             ts = m_data.time_signature
-            bpm = m_data.tempo_bpm
+            bpm = m_data.tempo_bpm or current_bpm
             bar_ql = float(calculate_bar_quarter_length(ts))
             ms_per_beat = (60.0 / bpm) * 1000.0
             measure_dur_ms = bar_ql * ms_per_beat
+
+            # Mid-score tempo change in Conductor track
+            if abs(bpm - current_bpm) > 0.5:
+                current_bpm = bpm
+                t_us = int(mido.bpm2tempo(current_bpm))
+                t_tick = int(cumulative_quarters * TICKS_PER_BEAT)
+                delta_t = max(0, t_tick - cond_last_tick)
+                cond_last_tick = t_tick
+                conductor_track.append(MetaMessage("set_tempo", tempo=t_us, time=delta_t))
 
             beats_data = []
             for b_i in range(int(bar_ql)):
@@ -80,6 +96,7 @@ class MIDIGenerator:
                 "beats": beats_data,
             })
             running_time_ms += measure_dur_ms
+            cumulative_quarters += Fraction(f"{bar_ql:.4f}")
 
         # Write sync map JSON
         sync_map_path = output_dir / "sync_map.json"
@@ -123,6 +140,10 @@ class MIDIGenerator:
 
         return main_midi_path, stem_paths, sync_map_path
 
+    DYNAMIC_VELOCITIES = {
+        "ppp": 40, "pp": 50, "p": 62, "mp": 74, "mf": 86, "f": 100, "ff": 114, "fff": 124
+    }
+
     @classmethod
     def _populate_track_notes(
         cls,
@@ -134,6 +155,7 @@ class MIDIGenerator:
     ):
         events = []
         cumulative_quarters = Fraction(0)
+        active_ties: Dict[int, Fraction] = {}
 
         for m_data in all_measures:
             bar_ql = calculate_bar_quarter_length(m_data.time_signature)
@@ -141,27 +163,65 @@ class MIDIGenerator:
             elems = t_data.elements if t_data else []
             sanitized = clamp_and_pad_track_elements(elems, bar_ql)
 
+            # Base velocity from dynamic mark
+            m_dyn = getattr(m_data, "dynamic_mark", None)
+            base_vel = cls.DYNAMIC_VELOCITIES.get(m_dyn.lower() if m_dyn else "", 85)
+
+            # Piano sustain pedal down at measure start
+            if part_name == "piano":
+                events.append((cumulative_quarters, "control_change", 64, 127))
+                events.append((cumulative_quarters + bar_ql - Fraction(1, 16), "control_change", 64, 0))
+
             for el in sanitized:
-                if not el.is_rest and el.pitch:
-                    midi_pitch = el.midi_pitch or cls._pitch_to_midi(el.pitch)
-                    if 0 <= midi_pitch <= 127:
-                        start_q = cumulative_quarters + Fraction(f"{el.offset_quarters:.4f}")
-                        end_q = start_q + Fraction(f"{el.duration_quarters:.4f}")
-                        events.append((start_q, "note_on", midi_pitch, 85))
-                        events.append((end_q, "note_off", midi_pitch, 0))
+                if not el.is_rest:
+                    pitches_to_emit = []
+                    if getattr(el, "is_chord", False) and getattr(el, "chord_pitches", None):
+                        for cp in el.chord_pitches:
+                            mp = cls._pitch_to_midi(cp)
+                            if 0 <= mp <= 127:
+                                pitches_to_emit.append(mp)
+                    elif el.pitch:
+                        mp = el.midi_pitch or cls._pitch_to_midi(el.pitch)
+                        if 0 <= mp <= 127:
+                            pitches_to_emit.append(mp)
+
+                    # Velocity with subtle metric accent
+                    vel = el.velocity or base_vel
+                    if el.offset_quarters == 0.0:
+                        vel = min(127, vel + 4)
+
+                    start_q = cumulative_quarters + Fraction(f"{el.offset_quarters:.4f}")
+                    end_q = start_q + Fraction(f"{el.duration_quarters:.4f}")
+
+                    for mp in pitches_to_emit:
+                        is_tie_continue = getattr(el, "tie", None) in ("continue", "stop")
+                        is_tie_start = getattr(el, "tie", None) in ("start", "continue")
+
+                        if not is_tie_continue or mp not in active_ties:
+                            events.append((start_q, "note_on", mp, vel))
+                            active_ties[mp] = start_q
+
+                        if not is_tie_start:
+                            events.append((end_q, "note_off", mp, 0))
+                            if mp in active_ties:
+                                del active_ties[mp]
 
             cumulative_quarters += bar_ql
 
-        events.sort(key=lambda x: (x[0], 0 if x[1] == "note_off" else 1))
+        events.sort(key=lambda x: (x[0], 0 if x[1] in ("note_off", "control_change") else 1))
 
         last_tick = 0
-        for q_time, ev_type, pitch, vel in events:
+        for q_time, ev_type, note_or_ctrl, vel in events:
             tick_time = int(q_time * TICKS_PER_BEAT)
             delta = max(0, tick_time - last_tick)
             last_tick = tick_time
 
-            main_msg = Message(ev_type, channel=channel, note=pitch, velocity=vel, time=delta)
-            single_msg = Message(ev_type, channel=0, note=pitch, velocity=vel, time=delta)
+            if ev_type == "control_change":
+                main_msg = Message("control_change", channel=channel, control=note_or_ctrl, value=vel, time=delta)
+                single_msg = Message("control_change", channel=0, control=note_or_ctrl, value=vel, time=delta)
+            else:
+                main_msg = Message(ev_type, channel=channel, note=note_or_ctrl, velocity=vel, time=delta)
+                single_msg = Message(ev_type, channel=0, note=note_or_ctrl, velocity=vel, time=delta)
 
             main_track.append(main_msg)
             single_track.append(single_msg)

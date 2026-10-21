@@ -23,6 +23,12 @@ class NoteElement(BaseModel):
     lyric: Optional[str] = Field(None, description="Underlying lyric text or syllable")
     tie: Optional[str] = Field(None, description="'start', 'stop', or 'continue'")
     accidental: Optional[str] = Field(None, description="'#', 'b', 'natural', etc.")
+    velocity: Optional[int] = Field(None, description="MIDI velocity 0-127")
+    gate_ratio: float = Field(0.95, description="Gate length ratio (e.g., 0.98 for legato, 0.80 for breath gap)")
+    slur: Optional[str] = Field(None, description="'start', 'stop', or None")
+    fermata: bool = Field(False, description="True if fermata is present over this note")
+    breath_after: bool = Field(False, description="True if choral breath comma occurs after this note")
+    dynamic_mark: Optional[str] = Field(None, description="'pp', 'p', 'mp', 'mf', 'f', 'ff', etc.")
     bounding_box: Optional[BoundingBox] = None
 
 
@@ -49,6 +55,10 @@ class MeasureData(BaseModel):
     time_signature: str = "4/4"
     tempo_bpm: float = 120.0
     key_signature_fifths: int = 0
+    key_signature_mode: str = "major"
+    tempo_directive: Optional[str] = Field(None, description="'poco rit.', 'a tempo', 'Poco meno mosso', etc.")
+    dynamic_mark: Optional[str] = Field(None, description="'pp', 'p', 'mp', 'mf', 'f', 'ff', etc.")
+    has_fermata: bool = Field(False, description="True if measure contains a fermata")
     quarter_length: float = 4.0
     is_pickup: bool = False
     bounding_box: Optional[BoundingBox] = None

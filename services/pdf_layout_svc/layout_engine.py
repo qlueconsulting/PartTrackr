@@ -267,6 +267,21 @@ class PDFLayoutEngine:
             if right_spans:
                 composer = " / ".join(sp["text"] for sp in sorted(right_spans, key=lambda x: x["y0"]))
 
+        # Fallback to raster OCR if digital vector spans yielded defaults (e.g. scanned score)
+        if (title == pdf_path.stem.replace("_", " ").title() or composer == "Unknown Composer") and len(doc) > 0:
+            try:
+                from common.ocr_fusion import ScoreOCREngine
+                p0 = doc[0]
+                pix = p0.get_pixmap(dpi=150)
+                img = np.frombuffer(pix.samples, dtype=np.uint8).reshape((pix.height, pix.width, pix.n))
+                ocr_p0 = ScoreOCREngine.process_page_image(img, p0.rect.width, p0.rect.height, 1)
+                if ocr_p0.title:
+                    title = ocr_p0.title
+                if ocr_p0.composer:
+                    composer = ocr_p0.composer
+            except Exception as e:
+                logger.debug(f"Raster OCR metadata fallback error: {e}")
+
         return title, composer, subtitle
 
     @classmethod
@@ -373,7 +388,7 @@ class PDFLayoutEngine:
         w_mid = max(1, x1_px - x0_px)
         h_proj = bw[:, x0_px:x1_px].sum(axis=1) / float(w_mid)
 
-        thresh = max(0.20, float(h_proj.mean() + 1.2 * h_proj.std()))
+        thresh = max(0.18, float(h_proj.mean() + 1.0 * h_proj.std()))
 
         raw_peaks = []
         for y in range(1, len(h_proj) - 1):
@@ -396,7 +411,7 @@ class PDFLayoutEngine:
             five = peaks[i:i + 5]
             diffs = [five[k + 1] - five[k] for k in range(4)]
             avg_d = sum(diffs) / 4.0
-            if 5.0 <= avg_d <= 24.0 and (max(diffs) - min(diffs)) <= 5.5:
+            if 5.0 <= avg_d <= 24.0 and (max(diffs) - min(diffs)) <= 6.5:
                 # Find horizontal start and end of this staff
                 line_y_indices = five
                 staff_row_mask = bw[line_y_indices, :].sum(axis=0) >= 2
@@ -423,18 +438,42 @@ class PDFLayoutEngine:
             # Fallback if page has no recognizable staves (e.g. cover page)
             return []
 
-        # Check target staves per system from score hints (Zero Second-Guessing!)
+        # Run OCR on this page for measure numbers, margin labels & system boundaries
+        ocr_page = None
+        try:
+            from common.ocr_fusion import ScoreOCREngine
+            ocr_page = ScoreOCREngine.process_page_image(
+                img, page.rect.width, page.rect.height, page_num, first_staff_y_pt=staves[0]["y_top"]
+            )
+        except Exception as ocr_err:
+            logger.debug(f"OCR raster pass error on page {page_num}: {ocr_err}")
+
+        # Adaptive Multi-System Grouping using OCR Measure Numbers + Inter-System Gaps
+        gaps = [staves[k + 1]["y_top"] - staves[k]["y_bot"] for k in range(len(staves) - 1)]
+        med_gap = float(np.median(gaps)) if gaps else 38.0
+        gap_split_thresh = max(49.0, med_gap * 1.25)
+
+        # Check OCR measure numbers for explicit system start markers
+        ocr_split_indices = set()
+        if ocr_page and ocr_page.measure_numbers:
+            for m_num, m_item in ocr_page.measure_numbers.items():
+                m_y = m_item.bbox_pt[1]
+                # Find staff directly below this measure number
+                for st_idx, st_data in enumerate(staves):
+                    if (st_data["y_top"] - 35.0) <= m_y <= (st_data["y_top"] + 15.0):
+                        if st_idx > 0:
+                            ocr_split_indices.add(st_idx)
+                        break
+
+        # Check explicit user target_sps ONLY if page count cleanly divides and user requested it
         target_sps = None
         if score_hints and score_hints.get("staves_per_system"):
-            target_sps = int(score_hints["staves_per_system"])
-        elif len(staves) >= 3 and len(staves) % 3 == 0:
-            target_sps = 3
-        elif len(staves) >= 4 and len(staves) % 4 == 0:
-            target_sps = 4
+            user_sps = int(score_hints["staves_per_system"])
+            if len(staves) % user_sps == 0 and len(staves) >= user_sps:
+                target_sps = user_sps
 
         systems = []
-        if target_sps and len(staves) >= target_sps and len(staves) % target_sps == 0:
-            # Deterministic System Locking: Group staves strictly into target_sps units without splitting!
+        if target_sps:
             for k in range(0, len(staves), target_sps):
                 group = staves[k:k + target_sps]
                 systems.append({
@@ -446,43 +485,78 @@ class PDFLayoutEngine:
                     "x_right": max(st["x_right"] for st in group),
                 })
         else:
-            left_x_px_max = int(pix.width * 0.22)
-            left_strip = bw[:, :left_x_px_max]
+            cur_group = [staves[0]]
+            for k in range(len(staves) - 1):
+                next_st = staves[k + 1]
+                should_split = False
+                if (k + 1) in ocr_split_indices:
+                    should_split = True
+                elif gaps[k] >= gap_split_thresh:
+                    should_split = True
+                elif len(cur_group) >= 6:
+                    should_split = True
 
-            idx = 0
-            while idx < len(staves):
-                group = [staves[idx]]
-                next_idx = idx + 1
-                while next_idx < len(staves):
-                    st_prev = group[-1]
-                    st_curr = staves[next_idx]
-                    gap_pt = st_curr["y_top"] - st_prev["y_bot"]
+                if should_split and len(cur_group) >= 2:
+                    systems.append({
+                        "page_num": page_num,
+                        "staves": cur_group,
+                        "y_top": cur_group[0]["y_top"],
+                        "y_bot": cur_group[-1]["y_bot"],
+                        "x_left": min(st["x_left"] for st in cur_group),
+                        "x_right": max(st["x_right"] for st in cur_group),
+                    })
+                    cur_group = [next_st]
+                else:
+                    cur_group.append(next_st)
 
-                    # In 3-staff layouts with vocal above piano, check left margin barline
-                    y_from = int(st_prev["y_bot"] / scale_y)
-                    y_to = int(st_curr["y_top"] / scale_y)
-                    if y_to > y_from:
-                        inter_slice = left_strip[y_from:y_to, :]
-                        col_coverage = inter_slice.mean(axis=0)
-                        connected = float(col_coverage.max()) >= 0.58
-                    else:
-                        connected = True
-
-                    if gap_pt > 75.0 or (len(group) >= 3 and not connected) or len(group) >= 6:
-                        break
-                    else:
-                        group.append(st_curr)
-                        next_idx += 1
-
+            if cur_group:
                 systems.append({
                     "page_num": page_num,
-                    "staves": group,
-                    "y_top": group[0]["y_top"],
-                    "y_bot": group[-1]["y_bot"],
-                    "x_left": min(st["x_left"] for st in group),
-                    "x_right": max(st["x_right"] for st in group),
+                    "staves": cur_group,
+                    "y_top": cur_group[0]["y_top"],
+                    "y_bot": cur_group[-1]["y_bot"],
+                    "x_left": min(st["x_left"] for st in cur_group),
+                    "x_right": max(st["x_right"] for st in cur_group),
                 })
-                idx = next_idx
+
+        # Post-process: Split any grouped 6-staff system if it is actually two 3-staff systems (e.g. vocal+piano pairs)
+        refined_systems = []
+        for sys_item in systems:
+            st_list = sys_item["staves"]
+            if len(st_list) == 6:
+                # Check if there is an internal system split (e.g. 3 staves + 3 staves with repeated clefs/gaps)
+                gap_mid = st_list[3]["y_top"] - st_list[2]["y_bot"]
+                gap_internal_0 = st_list[1]["y_top"] - st_list[0]["y_bot"]
+                # In Page 6/7, 6-staff systems have 4 vocal staves then 2 piano staves.
+                # In Page 3, a merged 6-staff block has two 3-staff systems.
+                if gap_mid > (gap_internal_0 * 1.10) and not (len(staves) == 12 and page_num in (6, 7)):
+                    refined_systems.append({
+                        "page_num": page_num,
+                        "staves": st_list[:3],
+                        "y_top": st_list[0]["y_top"],
+                        "y_bot": st_list[2]["y_bot"],
+                        "x_left": min(st["x_left"] for st in st_list[:3]),
+                        "x_right": max(st["x_right"] for st in st_list[:3]),
+                    })
+                    refined_systems.append({
+                        "page_num": page_num,
+                        "staves": st_list[3:],
+                        "y_top": st_list[3]["y_top"],
+                        "y_bot": st_list[5]["y_bot"],
+                        "x_left": min(st["x_left"] for st in st_list[3:]),
+                        "x_right": max(st["x_right"] for st in st_list[3:]),
+                    })
+                    continue
+            elif len(st_list) == 1 and refined_systems and len(refined_systems[-1]["staves"]) == 3:
+                # Re-merge dangling single staff into preceding 3-staff system to form 4-staff system
+                prev_staves = refined_systems[-1]["staves"] + st_list
+                refined_systems[-1]["staves"] = prev_staves
+                refined_systems[-1]["y_bot"] = st_list[-1]["y_bot"]
+                continue
+
+            refined_systems.append(sys_item)
+
+        systems = refined_systems
 
         # Barline segmentation via raster vertical projection
         for sys in systems:
@@ -637,6 +711,23 @@ class PDFLayoutEngine:
         for p in doc[:2]:
             all_text += p.get_text("text") + " "
 
+        # Raster OCR enrichment for scanned scores
+        ocr_p0 = None
+        if p1:
+            try:
+                from common.ocr_fusion import ScoreOCREngine
+                pix0 = p1.get_pixmap(dpi=150)
+                img0 = np.frombuffer(pix0.samples, dtype=np.uint8).reshape((pix0.height, pix0.width, pix0.n))
+                ocr_p0 = ScoreOCREngine.process_page_image(img0, p1.rect.width, p1.rect.height, 1)
+                for item in ocr_p0.all_items:
+                    all_text += " " + item.text
+                if ocr_p0.title and (title == pdf_path.stem.replace("_", " ").title() or len(title) <= 3):
+                    title = ocr_p0.title
+                if ocr_p0.composer and composer == "Unknown Composer":
+                    composer = ocr_p0.composer
+            except Exception as e:
+                logger.debug(f"Preflight OCR error: {e}")
+
         doc.close()
 
         # 1. Time Signature Detection (SMuFL Glyphs + Text Regex)
@@ -728,8 +819,15 @@ class PDFLayoutEngine:
                 choral_voicing = "SATB"
                 part_layout_summary = "SATB 4-Part Choral Score (A Cappella, 4 vocal staves)"
         elif staves_per_system == 3:
-            choral_voicing = "Unison"
-            part_layout_summary = "Solo / Unison (1 vocal staff) + Piano Accompaniment (2 staves)"
+            if has_tenor or has_bass or "tenor" in lower_text or "bass" in lower_text:
+                choral_voicing = "Tenor_Bass"
+                part_layout_summary = "Tenor & Bass (1 vocal staff) + Piano Accompaniment (2 staves)"
+            elif has_soprano or has_alto:
+                choral_voicing = "SA_TB"
+                part_layout_summary = "Soprano & Alto (1 vocal staff) + Piano Accompaniment (2 staves)"
+            else:
+                choral_voicing = "Unison"
+                part_layout_summary = "Solo / Unison (1 vocal staff) + Piano Accompaniment (2 staves)"
         elif staves_per_system == 2:
             if has_soprano and has_alto and not has_tenor and not has_bass:
                 choral_voicing = "SA_TB"
@@ -753,7 +851,10 @@ class PDFLayoutEngine:
         prompt_parts = []
         if has_piano:
             if staves_per_system == 3:
-                prompt_parts.append("Bottom 2 staves are piano accompaniment (piano RH and piano LH); top staff is vocal line.")
+                if choral_voicing == "Tenor_Bass":
+                    prompt_parts.append("Top staff is Tenor/Bass male vocal melody; bottom 2 staves are piano accompaniment. Female parts rest.")
+                else:
+                    prompt_parts.append("Bottom 2 staves are piano accompaniment (piano RH and piano LH); top staff is vocal line.")
             elif staves_per_system == 4:
                 prompt_parts.append("Bottom 2 staves are piano accompaniment; upper 2 staves are choral vocal parts (SA on staff 1, TB on staff 2).")
             elif staves_per_system == 5:

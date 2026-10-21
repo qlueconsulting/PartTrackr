@@ -24,6 +24,8 @@ from common.learning_store import (
     StyleBlueprint,
 )
 from common.loopback_verifier import LoopBackVerifier
+from common.ocr_fusion import ScoreOCREngine, ScoreOCRItem, ScoreOCRPageResult
+from common.music_theory_engine import MusicTheoryEngine
 
 __all__ = [
     "CANONICAL_11_PARTS",
@@ -44,4 +46,8 @@ __all__ = [
     "ScoreStyleFingerprint",
     "StyleBlueprint",
     "LoopBackVerifier",
+    "ScoreOCREngine",
+    "ScoreOCRItem",
+    "ScoreOCRPageResult",
+    "MusicTheoryEngine",
 ]
