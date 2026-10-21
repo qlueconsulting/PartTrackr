@@ -15,6 +15,7 @@ frontend/dist/
 storage/*
 !storage/.gitkeep
 test_storage/
+tests_output/
 
 # Environment & Logs
 .env

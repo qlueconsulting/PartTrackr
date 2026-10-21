@@ -135,8 +135,14 @@ class ScoreOCREngine:
             t_lower = text_str.lower()
             is_tempo = ("with " in t_lower or "tempo" in t_lower or any(tt in t_lower for tt in cls.TEMPO_TERMS)) and len(text_str) >= 4
 
-            # 1. Header Zone (above top system)
-            if pt_y1 < y_header_cutoff or (is_tempo and pt_y0 < (y_header_cutoff + 35.0)):
+            # 1. Measure Numbers in Left Margin (1-3 digits, below top-edge folio page number)
+            if re.match(r"^\d{1,3}$", text_str) and pt_x0 < (page_w_pt * 0.22) and pt_y1 > 28.0:
+                ocr_item.zone = "measure_number"
+                m_val = int(text_str)
+                res.measure_numbers[m_val] = ocr_item
+
+            # 2. Header Zone (above top system)
+            elif pt_y1 < y_header_cutoff or (is_tempo and pt_y0 < (y_header_cutoff + 35.0)):
                 ocr_item.zone = "header"
                 if is_tempo:
                     if not res.tempo_text:
@@ -158,18 +164,10 @@ class ScoreOCREngine:
                             res.title = text_str
                             res._best_title_h = box_h
 
-            # 2. Left Margin Zone (measure numbers and part labels)
+            # 3. Left Margin Zone (part labels)
             elif pt_x0 < (page_w_pt * 0.22):
-                if re.match(r"^\d{1,3}$", text_str):
-                    ocr_item.zone = "measure_number"
-                    m_val = int(text_str)
-                    res.measure_numbers[m_val] = ocr_item
-                elif any(v in text_str.lower() for v in cls.VOICE_TERMS):
-                    ocr_item.zone = "left_margin"
-                    res.margin_labels.append(ocr_item)
-                else:
-                    ocr_item.zone = "left_margin"
-                    res.margin_labels.append(ocr_item)
+                ocr_item.zone = "left_margin"
+                res.margin_labels.append(ocr_item)
 
             # 3. Directives (Dynamics, tempo, expression)
             elif any(d == text_str.lower() or text_str.lower().startswith(d) for d in cls.DYNAMIC_TERMS) or any(tt in text_str.lower() for tt in cls.TEMPO_TERMS):

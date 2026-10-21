@@ -200,3 +200,40 @@ def test_polyphonic_chords_and_midi_generation():
         assert midi_path.exists()
         assert midi_path.stat().st_size > 400
         assert sync_map.exists()
+
+
+def test_measure_anchor_reconciliation_and_zero_drift():
+    """Verify that layout engine reconciles OCR measure numbers with zero drift."""
+    if not TEST_PDF.exists():
+        pytest.skip("Test PDF not found")
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        out_path = Path(tmp_dir)
+        res = PDFLayoutEngine.process_pdf(TEST_PDF, out_path, dpi=150)
+        assert res["total_measures"] == 112
+        assert len(res["systems"]) == 24
+
+        sys1 = res["systems"][0]
+        assert sys1["measure_start"] == 1
+        assert sys1["measure_end"] == 5
+
+        sys2 = res["systems"][1]
+        assert sys2["measure_start"] == 6
+        assert sys2["measure_end"] == 10
+
+        sys3 = res["systems"][2]
+        assert sys3["measure_start"] == 11
+        assert sys3["measure_end"] == 15
+
+        sys4 = res["systems"][3]
+        assert sys4["measure_start"] == 16
+        assert sys4["measure_end"] == 19
+
+        sys5 = res["systems"][4]
+        assert sys5["measure_start"] == 20
+        assert sys5["measure_end"] == 23
+
+        sys24 = res["systems"][23]
+        assert sys24["measure_start"] == 108
+        assert sys24["measure_end"] == 112
+

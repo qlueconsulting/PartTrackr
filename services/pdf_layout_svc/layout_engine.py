@@ -20,6 +20,114 @@ class PDFLayoutEngine:
     """
 
     @classmethod
+    def _calibrate_system_bars(cls, bar_x: List[float], expected_m: int) -> List[float]:
+        expected_m = max(1, expected_m)
+        if len(bar_x) - 1 == expected_m:
+            return bar_x
+        x0, x1 = bar_x[0], bar_x[-1]
+        w = x1 - x0
+        target_pos = [x0 + (w / float(expected_m)) * j for j in range(1, expected_m)]
+        internal_cands = [b for b in bar_x[1:-1] if (x0 + 15.0) < b < (x1 - 15.0)]
+
+        if len(internal_cands) >= len(target_pos):
+            # Select subset of detected barlines closest to target positions
+            chosen = []
+            cands = list(internal_cands)
+            for t in target_pos:
+                best = min(cands, key=lambda c: abs(c - t))
+                chosen.append(best)
+                cands.remove(best)
+            chosen.sort()
+            return [x0] + chosen + [x1]
+        else:
+            # Interpolate missing barlines
+            res = [x0]
+            curr_cands = list(internal_cands)
+            for t in target_pos:
+                matched = False
+                if curr_cands:
+                    best = min(curr_cands, key=lambda c: abs(c - t))
+                    if abs(best - t) < (w / float(expected_m)) * 0.40:
+                        res.append(best)
+                        curr_cands.remove(best)
+                        matched = True
+                if not matched:
+                    res.append(round(t, 2))
+            res.append(x1)
+            return sorted(list(set(res)))
+
+    @classmethod
+    def _reconcile_and_calibrate_all_systems(
+        cls,
+        flat_systems: List[Dict[str, Any]],
+        score_hints: Optional[Dict[str, Any]] = None
+    ) -> List[int]:
+        if not flat_systems:
+            return []
+
+        start_m = 1
+        if score_hints and score_hints.get("starting_measure"):
+            try:
+                start_m = int(score_hints["starting_measure"])
+            except Exception:
+                start_m = 1
+
+        # 1. Collect and filter strictly monotonic anchors
+        raw_anchors = []
+        for idx, s in enumerate(flat_systems):
+            if s.get("start_measure_num") is not None:
+                raw_anchors.append((idx, int(s["start_measure_num"])))
+
+        clean_anchors = [(0, start_m)]
+        for idx, m_val in raw_anchors:
+            if idx == 0:
+                clean_anchors[0] = (0, m_val)
+                continue
+            prev_idx, prev_m = clean_anchors[-1]
+            min_m = prev_m + 2 * (idx - prev_idx)
+            max_m = prev_m + 10 * (idx - prev_idx)
+            if min_m <= m_val <= max_m:
+                clean_anchors.append((idx, m_val))
+
+        # 2. Determine target measure count for each system
+        target_counts: Dict[int, int] = {}
+        for i in range(len(clean_anchors) - 1):
+            idx_a, m_a = clean_anchors[i]
+            idx_b, m_b = clean_anchors[i + 1]
+            n_sys = idx_b - idx_a
+            total_m = m_b - m_a
+            base_cnt = total_m // n_sys
+            rem = total_m % n_sys
+            for k in range(n_sys):
+                target_counts[idx_a + k] = base_cnt + (1 if k < rem else 0)
+
+        last_idx, last_m = clean_anchors[-1]
+        remaining_sys = len(flat_systems) - last_idx
+        if score_hints and score_hints.get("total_measures"):
+            user_total = int(score_hints["total_measures"])
+            total_rem = max(remaining_sys, user_total - last_m + 1)
+            base_cnt = total_rem // remaining_sys
+            rem = total_rem % remaining_sys
+            for k in range(remaining_sys):
+                target_counts[last_idx + k] = base_cnt + (1 if k < rem else 0)
+        else:
+            for k in range(remaining_sys):
+                s_idx = last_idx + k
+                raw_cnt = max(1, len(flat_systems[s_idx].get("bar_x", [])) - 1)
+                target_counts[s_idx] = raw_cnt
+
+        # 3. Calibrate barlines in each system to match target counts
+        cur_m = start_m
+        for idx, sys_item in enumerate(flat_systems):
+            exp_cnt = target_counts.get(idx, max(1, len(sys_item.get("bar_x", [])) - 1))
+            sys_item["bar_x"] = cls._calibrate_system_bars(sys_item["bar_x"], exp_cnt)
+            sys_item["measure_start"] = cur_m
+            sys_item["measure_end"] = cur_m + exp_cnt - 1
+            cur_m = sys_item["measure_end"] + 1
+
+        return [target_counts.get(i, 4) for i in range(len(flat_systems))]
+
+    @classmethod
     def process_pdf(
         cls,
         pdf_path: Path,
@@ -35,36 +143,53 @@ class PDFLayoutEngine:
         page_count = len(doc)
         title, composer, subtitle = cls._extract_metadata(doc, pdf_path)
 
-        pages_data = []
-        all_systems_blueprint = []
-        global_system_idx = 1
-        global_measure_num = 1
-
+        # 1. Extract raw systems across all pages
+        raw_pages_info = []
+        flat_systems = []
         for p_idx in range(page_count):
             page = doc[p_idx]
             page_num = p_idx + 1
 
-            # 1. Render high-res PNG at specified DPI
             pix = page.get_pixmap(dpi=dpi)
             page_png_path = output_dir / f"page_{page_num}.png"
             pix.save(str(page_png_path))
 
+            systems = cls._extract_page_systems(page, page_num, score_hints=score_hints)
+            raw_pages_info.append({
+                "page_num": page_num,
+                "page": page,
+                "pix": pix,
+                "page_png_path": page_png_path,
+                "systems": systems,
+            })
+            for s in systems:
+                flat_systems.append(s)
+
+        # 2. Global measure anchor & barline reconciliation
+        cls._reconcile_and_calibrate_all_systems(flat_systems, score_hints=score_hints)
+
+        # 3. Generate system & measure crops and assemble blueprint
+        pages_data = []
+        all_systems_blueprint = []
+        global_system_idx = 1
+
+        for p_info in raw_pages_info:
+            page_num = p_info["page_num"]
+            page = p_info["page"]
+            pix = p_info["pix"]
+            page_png_path = p_info["page_png_path"]
+            systems = p_info["systems"]
+
             page_w_pt = page.rect.width
             page_h_pt = page.rect.height
-
-            # 2. Extract page systems, staff lines, and barlines in point coordinates
-            systems = cls._extract_page_systems(page, page_num, score_hints=score_hints)
 
             page_systems_data = []
             for sys in systems:
                 sys_idx = global_system_idx
                 global_system_idx += 1
 
-                # Starting measure override if printed in score
-                if sys.get("start_measure_num") is not None and sys["start_measure_num"] >= global_measure_num:
-                    global_measure_num = sys["start_measure_num"]
-
-                m_start = global_measure_num
+                m_start = sys["measure_start"]
+                m_end = sys["measure_end"]
                 bar_x = sys["bar_x"]
                 num_bars = max(1, len(bar_x) - 1)
 
@@ -84,8 +209,7 @@ class PDFLayoutEngine:
                 for b_i in range(num_bars):
                     bx0 = bar_x[b_i]
                     bx1 = bar_x[b_i + 1]
-                    m_num = global_measure_num
-                    global_measure_num += 1
+                    m_num = m_start + b_i
 
                     m_crop_path = crops_dir / f"measure_{m_num}.png"
                     m_rect_pt = pymupdf.Rect(
@@ -109,7 +233,7 @@ class PDFLayoutEngine:
                         },
                     })
 
-                m_end = global_measure_num - 1
+                m_end = sys["measure_end"]
 
                 staves_data = []
                 num_staves_in_sys = len(sys["staves"])
@@ -196,7 +320,7 @@ class PDFLayoutEngine:
             "page_count": page_count,
             "dpi": dpi,
             "total_systems": len(all_systems_blueprint),
-            "total_measures": global_measure_num - 1,
+            "total_measures": flat_systems[-1]["measure_end"] if flat_systems else 0,
             "has_piano": has_piano,
             "pages": pages_data,
             "systems": all_systems_blueprint,
@@ -558,32 +682,49 @@ class PDFLayoutEngine:
 
         systems = refined_systems
 
-        # Barline segmentation via raster vertical projection
-        for sys in systems:
-            y_t_px = max(0, int(sys["y_top"] / scale_y))
-            y_b_px = min(pix.height, int(sys["y_bot"] / scale_y))
-            v_slice = bw[y_t_px:y_b_px, :]
-            v_proj = v_slice.sum(axis=0) / max(1.0, float(v_slice.shape[0]))
-            v_thresh = max(0.22, float(v_proj.mean() + 1.8 * v_proj.std()))
+        # Multi-Staff Inter-Staff Gap Barline Verification (rejects single-staff note stems!)
+        for s_idx, sys_item in enumerate(systems):
+            staves = sys_item["staves"]
+            x_l = sys_item["x_left"]
+            x_r = sys_item["x_right"]
 
-            bar_pxs = []
-            min_dist_px = int(35.0 / scale_x)
-            for bx in range(int(pix.width * 0.08), int(pix.width * 0.92)):
-                if v_proj[bx] >= v_thresh and v_proj[bx] >= v_proj[bx - 1] and v_proj[bx] >= v_proj[bx + 1]:
-                    if not bar_pxs or (bx - bar_pxs[-1]) > min_dist_px:
-                        bar_pxs.append(bx)
+            # Anchor start_measure_num from OCR if located directly above this system
+            if ocr_page and ocr_page.measure_numbers:
+                sys_top_y = sys_item["y_top"]
+                for m_num, m_item in sorted(ocr_page.measure_numbers.items()):
+                    m_y = m_item.bbox_pt[1]
+                    if (sys_top_y - 45.0) <= m_y <= (sys_top_y + 15.0):
+                        sys_item["start_measure_num"] = m_num
+                        break
 
-            bars_pt = [bx * scale_x for bx in bar_pxs]
-            x_l = sys["x_left"]
-            x_r = sys["x_right"]
-            clean_bars = [x_l] + [b for b in bars_pt if (x_l + 18.0) < b < (x_r - 18.0)] + [x_r]
+            bar_candidates = []
+            if len(staves) >= 2:
+                # Inter-staff gap between bottom 2 staves (piano grand staff) has black ink ONLY on barlines
+                st_rh = staves[-2]
+                st_lh = staves[-1]
+                y0_gap_px = int(st_rh["y_bot"] / scale_y)
+                y1_gap_px = int(st_lh["y_top"] / scale_y)
+                if y1_gap_px > y0_gap_px:
+                    gap_h = y1_gap_px - y0_gap_px
+                    inter_slice = bw[y0_gap_px:y1_gap_px, :]
+                    col_coverage = inter_slice.sum(axis=0) / float(gap_h)
+                    min_dist_px = int(35.0 / scale_x)
+                    for bx in range(int(pix.width * 0.08), int(pix.width * 0.94)):
+                        if col_coverage[bx] >= 0.70:
+                            if not bar_candidates or (bx - bar_candidates[-1]) > min_dist_px:
+                                bar_candidates.append(bx)
+
+            bars_pt = [bx * scale_x for bx in bar_candidates]
+            preamble_margin = 42.0 if (page_num == 1 and s_idx == 0) else 28.0
+            filtered_bars = [b for b in bars_pt if (x_l + preamble_margin) < b < (x_r - 18.0)]
+            clean_bars = sorted(list(set([x_l] + filtered_bars + [x_r])))
 
             if len(clean_bars) < 3:
-                # Divide evenly into 4 standard measures per system
+                # Divide evenly into 4 standard measures per system if no clear barlines
                 w = x_r - x_l
                 clean_bars = [x_l + (w / 4.0) * k for k in range(5)]
 
-            sys["bar_x"] = clean_bars
+            sys_item["bar_x"] = clean_bars
 
         cls._classify_and_segment_systems(systems, page, None, score_hints=score_hints)
         return systems
@@ -624,14 +765,15 @@ class PDFLayoutEngine:
                 sys["bar_x"] = merged_bars
 
             # System start measure number from printed margins
-            sys_m_num = None
-            for b in text_blocks:
-                txt = b[4].strip()
-                if re.match(r"^\d+$", txt) and b[0] < 120.0:
-                    if (y0_ref - 35.0) <= b[1] <= (y0_ref + 15.0):
-                        sys_m_num = int(txt)
-                        break
-            sys["start_measure_num"] = sys_m_num
+            if sys.get("start_measure_num") is None:
+                sys_m_num = None
+                for b in text_blocks:
+                    txt = b[4].strip()
+                    if re.match(r"^\d+$", txt) and b[0] < 120.0:
+                        if (y0_ref - 35.0) <= b[1] <= (y0_ref + 15.0):
+                            sys_m_num = int(txt)
+                            break
+                sys["start_measure_num"] = sys_m_num
 
             # Classify staves using part labels and choral topology
             n_staves = len(sys["staves"])
