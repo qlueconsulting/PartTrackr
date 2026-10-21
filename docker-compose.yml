@@ -23,6 +23,11 @@ services:
       - voice-router-svc
       - decoder-xml-svc
     restart: unless-stopped
+    networks:
+      parttrackr_net:
+        aliases:
+          - gateway-svc
+          - parttrackr_gateway
 
   pdf-layout-svc:
     image: ghcr.io/qlueconsulting/parttrackr-layout:latest
@@ -35,6 +40,11 @@ services:
     volumes:
       - ./storage:/app/storage
     restart: unless-stopped
+    networks:
+      parttrackr_net:
+        aliases:
+          - pdf-layout-svc
+          - parttrackr_layout
 
   omr-ai-svc:
     image: ghcr.io/qlueconsulting/parttrackr-omr:latest
@@ -50,6 +60,11 @@ services:
       - OLLAMA_BASE_URL=http://ollama:11434
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
     restart: unless-stopped
+    networks:
+      parttrackr_net:
+        aliases:
+          - omr-ai-svc
+          - parttrackr_omr
 
   voice-router-svc:
     image: ghcr.io/qlueconsulting/parttrackr-router:latest
@@ -62,6 +77,11 @@ services:
     volumes:
       - ./storage:/app/storage
     restart: unless-stopped
+    networks:
+      parttrackr_net:
+        aliases:
+          - voice-router-svc
+          - parttrackr_router
 
   decoder-xml-svc:
     image: ghcr.io/qlueconsulting/parttrackr-decoder:latest
@@ -74,6 +94,11 @@ services:
     volumes:
       - ./storage:/app/storage
     restart: unless-stopped
+    networks:
+      parttrackr_net:
+        aliases:
+          - decoder-xml-svc
+          - parttrackr_decoder
 
   diagnostic-ui:
     image: ghcr.io/qlueconsulting/parttrackr-ui:latest
@@ -88,6 +113,11 @@ services:
     depends_on:
       - gateway-svc
     restart: unless-stopped
+    networks:
+      parttrackr_net:
+        aliases:
+          - diagnostic-ui
+          - parttrackr_ui
 
   # Optional Local GPU Vision LLM Service (Dual NVIDIA RTX 2060 Super 8GB + RTX 2060 6GB = 14GB VRAM)
   ollama:
@@ -105,3 +135,13 @@ services:
               count: all
               capabilities: [gpu]
     restart: unless-stopped
+    networks:
+      parttrackr_net:
+        aliases:
+          - ollama
+          - parttrackr_ollama
+
+networks:
+  parttrackr_net:
+    name: parttrackr_net
+    driver: bridge

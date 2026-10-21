@@ -200,3 +200,61 @@ def test_reconcile_total_measures_ground_truth(tmp_path):
     assert len(sync["measures"]) == 6
 
 
+@pytest.mark.anyio
+async def test_orchestrator_in_process_fallback_when_dns_fails(tmp_path, monkeypatch):
+    """Verify that when microservices HTTP endpoints fail DNS resolution, orchestrator falls back in-process."""
+    from services.gateway_svc.database import Job
+    from services.gateway_svc.main import SessionFactory
+    from services.gateway_svc.orchestrator import PipelineOrchestrator
+    import services.gateway_svc.orchestrator as orch_mod
+
+    # Force invalid hostnames that trigger DNS resolution failure
+    monkeypatch.setattr(orch_mod, "LAYOUT_SVC_URL", "http://non-existent-layout-svc.invalid:8006")
+    monkeypatch.setattr(orch_mod, "OMR_SVC_URL", "http://non-existent-omr-svc.invalid:8007")
+    monkeypatch.setattr(orch_mod, "ROUTER_SVC_URL", "http://non-existent-router-svc.invalid:8008")
+    monkeypatch.setattr(orch_mod, "DECODER_SVC_URL", "http://non-existent-decoder-svc.invalid:8009")
+
+    # Fast retries for testing
+    orig_post = orch_mod._post_with_retry_and_fallback
+    async def fast_post(endpoint_name, primary_url, path, payload, fallback_urls=None, max_retries=1, timeout_sec=600.0):
+        return await orig_post(endpoint_name, primary_url, path, payload, fallback_urls=[], max_retries=1, timeout_sec=1.0)
+    monkeypatch.setattr(orch_mod, "_post_with_retry_and_fallback", fast_post)
+
+    db = SessionFactory()
+    job_id = "test_dns_fallback"
+    existing = db.query(Job).filter(Job.id == job_id).first()
+    if existing:
+        db.delete(existing)
+        db.commit()
+
+    pdf_path = Path("tests/fixtures/Caroling_Final.pdf")
+    job = Job(
+        id=job_id,
+        original_filename="Caroling_Final.pdf",
+        pdf_path=str(pdf_path),
+        title="Caroling",
+        status="pending"
+    )
+    db.add(job)
+    db.commit()
+    db.close()
+
+    job_dir = tmp_path / "job_dns"
+    job_dir.mkdir(parents=True, exist_ok=True)
+
+    await PipelineOrchestrator.run_pipeline(
+        job_id=job_id,
+        job_dir=job_dir,
+        pdf_path=pdf_path,
+        session_factory=SessionFactory,
+    )
+
+    db = SessionFactory()
+    completed_job = db.query(Job).filter(Job.id == job_id).first()
+    assert completed_job.status == "completed", f"Job failed with: {completed_job.error_message}"
+    assert completed_job.routed_cism is not None
+    assert completed_job.decoder_result is not None
+    db.close()
+
+
+
