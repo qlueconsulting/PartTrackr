@@ -11,6 +11,7 @@ from common.cism_schema import (
     NoteElement,
 )
 from common.lockstep_utils import reconcile_cism_measures
+from common.music_theory_engine import MusicTheoryEngine
 
 logger = logging.getLogger("voice_router_svc")
 
@@ -328,32 +329,55 @@ class VoiceRouterEngine:
             r = [NoteElement(pitch=None, duration_quarters=bar_ql, duration_type="whole", is_rest=True)]
             return r, copy.deepcopy(r)
 
+        # Check if measure exhibits two distinct polyphonic stem streams
+        has_up_stems = any(el.stem_direction == "up" and not el.is_rest for el in elements)
+        has_down_stems = any(el.stem_direction == "down" and not el.is_rest for el in elements)
+        polyphonic_stem_voices = has_up_stems and has_down_stems
+
         up_list: List[NoteElement] = []
         low_list: List[NoteElement] = []
 
+        if polyphonic_stem_voices:
+            # Polyphonic 2-voice splitting by stem direction
+            for el in elements:
+                if el.is_rest:
+                    up_list.append(el.model_copy())
+                    low_list.append(el.model_copy())
+                elif el.stem_direction == "up":
+                    up_list.append(el.model_copy())
+                elif el.stem_direction == "down":
+                    low_list.append(el.model_copy())
+                else:
+                    # Unstemmed or shared notehead (unison or shared rhythm)
+                    up_list.append(el.model_copy())
+                    low_list.append(el.model_copy())
+
+            # Balance offsets and rests with MusicTheoryEngine
+            up_list = MusicTheoryEngine.solve_measure_rhythm(up_list, bar_quarter_length=bar_ql)
+            low_list = MusicTheoryEngine.solve_measure_rhythm(low_list, bar_quarter_length=bar_ql)
+            return up_list, low_list
+
         for el in elements:
             if el.is_chord and len(el.chord_pitches) >= 2:
-                # Top pitch to upper, bottom pitch to lower
-                sorted_p = sorted(el.chord_pitches)
+                # Top pitch to upper voice, bottom pitch to lower voice based on true MIDI pitch
+                sorted_p = sorted(
+                    el.chord_pitches,
+                    key=lambda p: MusicTheoryEngine.pitch_to_midi(p) if isinstance(p, str) else 60
+                )
                 el_up = el.model_copy()
                 el_up.pitch = sorted_p[-1]
+                el_up.midi_pitch = MusicTheoryEngine.pitch_to_midi(sorted_p[-1])
                 el_up.is_chord = False
                 el_up.chord_pitches = []
 
                 el_low = el.model_copy()
                 el_low.pitch = sorted_p[0]
+                el_low.midi_pitch = MusicTheoryEngine.pitch_to_midi(sorted_p[0])
                 el_low.is_chord = False
                 el_low.chord_pitches = []
 
                 up_list.append(el_up)
                 low_list.append(el_low)
-            elif el.stem_direction == "up":
-                up_list.append(el.model_copy())
-                # Lower part rests or doubles
-                low_list.append(el.model_copy())
-            elif el.stem_direction == "down":
-                low_list.append(el.model_copy())
-                up_list.append(el.model_copy())
             else:
                 up_list.append(el.model_copy())
                 low_list.append(el.model_copy())

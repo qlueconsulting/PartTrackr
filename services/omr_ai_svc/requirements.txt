@@ -9,3 +9,4 @@ requests>=2.31.0
 rapidocr-onnxruntime>=1.4.0
 onnxruntime>=1.17.0
 opencv-python>=4.8.0
+music21>=9.0.0
