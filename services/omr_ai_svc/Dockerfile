@@ -2,29 +2,37 @@ FROM python:3.10-slim
 
 WORKDIR /app
 
-ENV PYTHONUNBUFFERED=1
-ENV PYTHONPATH=/app
-ENV _JAVA_OPTIONS="-Djava.awt.headless=true"
-ENV JAVA_TOOL_OPTIONS="-Djava.awt.headless=true"
-ENV PATH="/opt/audiveris/bin:${PATH}"
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app \
+    _JAVA_OPTIONS="-Djava.awt.headless=true" \
+    JAVA_TOOL_OPTIONS="-Djava.awt.headless=true" \
+    AUDIVERIS_VERSION=5.11.0
 
-# Install Java 17 headless, Tesseract OCR, and graphical libs needed by headless Audiveris
+# Install Java 17 headless, Tesseract OCR, and headless graphics dependencies (libgl1 instead of obsolete libgl1-mesa-glx)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
+    wget \
     openjdk-17-jre-headless \
     tesseract-ocr \
     tesseract-ocr-eng \
-    libgl1-mesa-glx \
+    libgl1 \
     libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Audiveris 5.3 headless binary
-RUN mkdir -p /opt/audiveris && \
-    curl -fsSL -o /tmp/audiveris.tar.gz https://github.com/Audiveris/audiveris/releases/download/5.3.1/audiveris-5.3.1.tar.gz 2>/dev/null || true && \
-    if [ -f /tmp/audiveris.tar.gz ] && [ -s /tmp/audiveris.tar.gz ]; then \
-        tar -xzf /tmp/audiveris.tar.gz -C /opt/audiveris --strip-components=1 && rm /tmp/audiveris.tar.gz; \
+# Install Audiveris headless OMR CLI with safe download & fallback
+RUN mkdir -p /usr/share/desktop-directories /opt/audiveris && \
+    (wget -q https://github.com/Audiveris/audiveris/releases/download/${AUDIVERIS_VERSION}/Audiveris-${AUDIVERIS_VERSION}-ubuntu22.04-x86_64.deb -O /tmp/audiveris.deb 2>/dev/null || true) && \
+    if [ -f /tmp/audiveris.deb ] && [ -s /tmp/audiveris.deb ]; then \
+        dpkg-deb -x /tmp/audiveris.deb / && \
+        rm -f /tmp/audiveris.deb && \
+        REAL_BIN=$(find /opt -type f -name "Audiveris" 2>/dev/null | head -n 1) && \
+        if [ -n "$REAL_BIN" ]; then \
+            chmod +x "$REAL_BIN" && \
+            ln -sfn "$REAL_BIN" /usr/local/bin/audiveris && \
+            ln -sfn "$REAL_BIN" /usr/bin/audiveris; \
+        fi \
     else \
-        rm -f /tmp/audiveris.tar.gz; \
+        rm -f /tmp/audiveris.deb; \
     fi
 
 COPY services/omr_ai_svc/requirements.txt /app/requirements.txt

@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   gateway-svc:
     image: ghcr.io/qlueconsulting/parttrackr-gateway:latest

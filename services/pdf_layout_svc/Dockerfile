@@ -7,6 +7,8 @@ ENV PYTHONPATH=/app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
+    libgl1 \
+    libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY services/pdf_layout_svc/requirements.txt /app/requirements.txt
