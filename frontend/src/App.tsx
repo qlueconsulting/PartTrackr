@@ -133,6 +133,47 @@ export const App: React.FC = () => {
     return initial
   })
 
+  const handleSoloVocals = useCallback(() => {
+    setChannelStates((prev) => {
+      const next: Record<string, ChannelState> = {}
+      for (const p of CANONICAL_11_PARTS) {
+        if (p === 'piano') {
+          next[p] = { ...prev[p], muted: true, soloed: false }
+        } else {
+          next[p] = { ...prev[p], muted: false, soloed: true }
+        }
+      }
+      audioEngineRef.current?.setAllChannelStates(next)
+      return next
+    })
+  }, [])
+
+  const handleSoloPiano = useCallback(() => {
+    setChannelStates((prev) => {
+      const next: Record<string, ChannelState> = {}
+      for (const p of CANONICAL_11_PARTS) {
+        if (p === 'piano') {
+          next[p] = { ...prev[p], muted: false, soloed: true }
+        } else {
+          next[p] = { ...prev[p], muted: true, soloed: false }
+        }
+      }
+      audioEngineRef.current?.setAllChannelStates(next)
+      return next
+    })
+  }, [])
+
+  const handleResetMuteSolo = useCallback(() => {
+    setChannelStates((prev) => {
+      const next: Record<string, ChannelState> = {}
+      for (const p of CANONICAL_11_PARTS) {
+        next[p] = { ...prev[p], muted: false, soloed: false }
+      }
+      audioEngineRef.current?.setAllChannelStates(next)
+      return next
+    })
+  }, [])
+
   // Initialize Audio Engine & Initial Job Query
   useEffect(() => {
     const engine = new MidiAudioEngine()
@@ -521,6 +562,9 @@ export const App: React.FC = () => {
                   )
                 }}
                 currentPlayingMeasure={currentMeasure}
+                onSoloVocals={handleSoloVocals}
+                onSoloPiano={handleSoloPiano}
+                onResetMuteSolo={handleResetMuteSolo}
               />
             )}
 

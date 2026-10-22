@@ -775,12 +775,13 @@ class PDFLayoutEngine:
                             break
                 sys["start_measure_num"] = sys_m_num
 
-            # Classify staves using part labels and choral topology
+            # Clean two-step decryption:
+            # STEP 1: Search for Piano Staves across the entire piece using OCR labels and braces.
+            # Hard Rule: A piano part, if present, ALWAYS has exactly two staves (RH Treble + LH Bass).
+            # Hard Rule: Two staves on a page do NOT always mean it's a piano part (could be 2-part vocal).
             n_staves = len(sys["staves"])
-            for st_i, st in enumerate(sys["staves"]):
+            for st in sys["staves"]:
                 st_mid_y = (st["y_top"] + st["y_bot"]) / 2.0
-                
-                # Check for label words in the left margin
                 nearby_words = [
                     w[4].lower() for w in page_words
                     if w[0] < 130.0 and abs(((w[1] + w[3]) / 2.0) - st_mid_y) < 25.0
@@ -788,42 +789,101 @@ class PDFLayoutEngine:
                 label_txt = " ".join(nearby_words)
                 st["label"] = label_txt if label_txt else None
 
-                is_bass_named = any(k in label_txt for k in ("bass", "b.", "men", "tenor & bass", "t & b"))
-                is_treble_named = any(k in label_txt for k in ("soprano", "alto", "s.", "a.", "women", "s & a"))
+            # Detect piano evidence in this system or page margin
+            piano_terms = ("piano", "keyboard", "pno", "pianoforte", "organ", "org", "accompaniment")
+            has_system_piano_label = any(
+                st["label"] and any(term in st["label"].lower() for term in piano_terms)
+                for st in sys["staves"]
+            )
+            score_has_piano_hint = score_hints and score_hints.get("accompaniment_type") in ("piano", "orchestra_reduction")
+            is_a_cappella_hint = score_hints and score_hints.get("accompaniment_type") == "a_cappella"
 
+            piano_staff_indices = []
+            if not is_a_cappella_hint:
                 if n_staves >= 3:
-                    if st_i >= n_staves - 2:
-                        st["bracket_type"] = "brace"
-                        st["role"] = "piano_rh" if st_i == n_staves - 2 else "piano_lh"
-                        st["clef"] = "treble" if st_i == n_staves - 2 else "bass"
-                    else:
-                        st["bracket_type"] = "bracket" if n_staves > 3 else "none"
-                        is_male = (score_hints and score_hints.get("choral_voicing") in ("Tenor_Bass", "TTBB", "solo_male")) or is_bass_named
-                        st["role"] = "vocal_men" if is_male else "vocal"
-                        if is_male:
-                            st["clef"] = "treble_8vb" if not is_bass_named else "bass"
-                        elif is_treble_named:
-                            st["clef"] = "treble"
-                        else:
-                            st["clef"] = "bass" if (st_i == n_staves - 3 and n_staves >= 4) else "treble"
+                    # In a choral score with 3+ staves, piano accompaniment is anchored to the bottom 2 staves
+                    piano_staff_indices = [n_staves - 2, n_staves - 1]
                 elif n_staves == 2:
-                    if is_treble_named and is_bass_named:
-                        st["bracket_type"] = "bracket"
-                        st["role"] = "vocal"
-                        st["clef"] = "treble" if st_i == 0 else "bass"
-                    elif is_treble_named or is_bass_named:
-                        st["bracket_type"] = "bracket"
-                        st["role"] = "vocal"
-                        st["clef"] = "bass" if is_bass_named else "treble"
+                    # Exactly 2 staves: check if explicitly marked as piano via brace or label
+                    has_vocal_label = any(
+                        st["label"] and any(k in st["label"].lower() for k in ("soprano", "alto", "tenor", "bass", "men", "women", "choir", "s.", "a.", "t.", "b."))
+                        for st in sys["staves"]
+                    )
+                    has_curved_brace = any(st.get("bracket_type") == "brace" for st in sys["staves"])
+                    if (has_curved_brace or has_system_piano_label or score_has_piano_hint) and not has_vocal_label:
+                        piano_staff_indices = [0, 1]
                     else:
-                        # 2-staff piano accompaniment system (e.g. prelude, interlude)
-                        st["bracket_type"] = "brace"
-                        st["role"] = "piano_rh" if st_i == 0 else "piano_lh"
-                        st["clef"] = "treble" if st_i == 0 else "bass"
+                        piano_staff_indices = []  # 2-part vocal score without piano!
+
+            # Assign Step 1: Lock in Piano Staves (always exactly 2 staves when present)
+            if len(piano_staff_indices) == 2:
+                rh_idx, lh_idx = piano_staff_indices
+                sys["staves"][rh_idx]["bracket_type"] = "brace"
+                sys["staves"][rh_idx]["role"] = "piano_rh"
+                sys["staves"][rh_idx]["clef"] = "treble"
+                sys["staves"][rh_idx]["is_piano"] = True
+
+                sys["staves"][lh_idx]["bracket_type"] = "brace"
+                sys["staves"][lh_idx]["role"] = "piano_lh"
+                sys["staves"][lh_idx]["clef"] = "bass"
+                sys["staves"][lh_idx]["is_piano"] = True
+
+            # STEP 2: Identify Any Remaining Staves (Vocal parts)
+            # Check labels first; if unlabeled, fallback: Treble clef = Women, Bass clef = Men.
+            vocal_indices = [idx for idx in range(n_staves) if idx not in piano_staff_indices]
+            for v_idx in vocal_indices:
+                st = sys["staves"][v_idx]
+                st["is_piano"] = False
+                st["bracket_type"] = "bracket" if len(vocal_indices) > 1 else "none"
+                lbl = (st.get("label") or "").lower()
+
+                is_explicit_women = any(k in lbl for k in ("soprano", "alto", "women", "s.", "a.", "s & a", "s1", "s2", "a1", "a2"))
+                is_explicit_men = any(k in lbl for k in ("tenor", "baritone", "bass", "men", "t.", "b.", "t & b", "t1", "t2", "b1", "b2", "ttbb", "tb"))
+
+                voicing_hint = (score_hints.get("choral_voicing") or "").lower() if score_hints else ""
+                voicing_all_male = any(k in voicing_hint for k in ("male", "men", "tenor_bass", "ttbb", "solo_male"))
+                voicing_all_female = any(k in voicing_hint for k in ("female", "women", "soprano_alto", "ssaa", "solo_female"))
+
+                if is_explicit_men or voicing_all_male:
+                    st["role"] = "vocal_men"
+                    st["clef"] = "bass" if any(k in lbl for k in ("bass", "b.", "baritone")) else "treble_8vb"
+                elif is_explicit_women or voicing_all_female:
+                    st["role"] = "vocal_women"
+                    st["clef"] = "treble"
                 else:
-                    st["bracket_type"] = "bracket"
-                    st["role"] = "vocal"
-                    st["clef"] = "bass" if is_bass_named else "treble"
+                    # Unlabeled Clef Fallback Rule:
+                    # Treble clef staves are women parts; Bass clef staves are male parts.
+                    cur_clef = st.get("clef", "treble")
+                    if len(vocal_indices) == 1:
+                        # Single vocal line
+                        st["clef"] = cur_clef
+                        st["role"] = "vocal_men" if cur_clef in ("bass", "treble_8vb") else "vocal_women"
+                    elif len(vocal_indices) == 2:
+                        # 2 vocal lines: upper is Treble (women), lower is Bass (men)
+                        if v_idx == vocal_indices[0]:
+                            st["clef"] = "treble"
+                            st["role"] = "vocal_women"
+                        else:
+                            st["clef"] = "bass"
+                            st["role"] = "vocal_men"
+                    elif len(vocal_indices) >= 4:
+                        # 4 vocal lines: SATB
+                        rel_pos = vocal_indices.index(v_idx)
+                        if rel_pos == 0:
+                            st["clef"] = "treble"
+                            st["role"] = "vocal_women"  # Soprano
+                        elif rel_pos == 1:
+                            st["clef"] = "treble"
+                            st["role"] = "vocal_women"  # Alto
+                        elif rel_pos == 2:
+                            st["clef"] = "treble_8vb"
+                            st["role"] = "vocal_men"    # Tenor
+                        else:
+                            st["clef"] = "bass"
+                            st["role"] = "vocal_men"    # Bass
+                    else:
+                        st["clef"] = cur_clef
+                        st["role"] = "vocal_men" if cur_clef in ("bass", "treble_8vb") else "vocal_women"
 
     @classmethod
     def preflight_analysis(cls, pdf_path: Path) -> Dict[str, Any]:

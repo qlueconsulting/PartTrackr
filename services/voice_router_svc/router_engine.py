@@ -69,12 +69,16 @@ class VoiceRouterEngine:
                 vocal_staves = sys.staves[:-2]
             elif not piano_staves and len(sys.staves) == 2 and cism_out.has_piano:
                 has_vocal_label = any(
-                    st.label and any(k in st.label.lower() for k in ("soprano", "alto", "tenor", "bass", "men", "women"))
+                    st.label and any(k in st.label.lower() for k in ("soprano", "alto", "tenor", "bass", "men", "women", "choir", "s.", "a.", "t.", "b."))
                     for st in sys.staves
                 )
                 if not has_vocal_label:
                     piano_staves = sys.staves
                     vocal_staves = []
+
+            # Hard Rule: If piano part exists, it is ALWAYS exactly two staves (RH Treble + LH Bass)
+            if len(piano_staves) > 2:
+                piano_staves = piano_staves[-2:]
 
             for m in sys.measures:
                 m.tracks = cls._route_measure(
@@ -211,26 +215,49 @@ class VoiceRouterEngine:
 
     @classmethod
     def _route_two_vocal_staves(cls, st_upper: StaffInfo, st_lower: StaffInfo, m: MeasureData, tracks: Dict[str, TrackData]):
-        raw_sa = m.raw_staves.get(st_upper.staff_id)
-        raw_tb = m.raw_staves.get(st_lower.staff_id)
+        raw_top = m.raw_staves.get(st_upper.staff_id)
+        raw_bot = m.raw_staves.get(st_lower.staff_id)
 
-        sa_elems = raw_sa.elements if raw_sa else []
-        tb_elems = raw_tb.elements if raw_tb else []
+        top_elems = raw_top.elements if raw_top else []
+        bot_elems = raw_bot.elements if raw_bot else []
 
-        s_elems, a_elems = cls._split_divisi_elements(sa_elems, m.quarter_length)
-        t_elems, b_elems = cls._split_divisi_elements(tb_elems, m.quarter_length)
+        top_up, top_low = cls._split_divisi_elements(top_elems, m.quarter_length)
+        bot_up, bot_low = cls._split_divisi_elements(bot_elems, m.quarter_length)
 
-        tracks["soprano_1"].elements = copy.deepcopy(s_elems)
-        tracks["soprano_2"].elements = copy.deepcopy(s_elems)
-        tracks["alto_1"].elements = copy.deepcopy(a_elems)
-        tracks["alto_2"].elements = copy.deepcopy(a_elems)
+        is_both_treble = (st_upper.clef == "treble" and st_lower.clef == "treble")
+        is_both_bass = (st_upper.clef in ("bass", "treble_8vb") and st_lower.clef in ("bass", "treble_8vb"))
 
-        tracks["tenor_1"].elements = copy.deepcopy(t_elems)
-        tracks["tenor_2"].elements = copy.deepcopy(t_elems)
-        tracks["baritone_1"].elements = copy.deepcopy(b_elems)
-        tracks["baritone_2"].elements = copy.deepcopy(b_elems)
-        tracks["bass_1"].elements = copy.deepcopy(b_elems)
-        tracks["bass_2"].elements = copy.deepcopy(b_elems)
+        if is_both_treble:
+            # Both staves are Treble -> All female / women parts (SSAA / SA)
+            tracks["soprano_1"].elements = copy.deepcopy(top_up)
+            tracks["soprano_2"].elements = copy.deepcopy(top_low)
+            tracks["alto_1"].elements = copy.deepcopy(bot_up)
+            tracks["alto_2"].elements = copy.deepcopy(bot_low)
+            for p in ["tenor_1", "tenor_2", "baritone_1", "baritone_2", "bass_1", "bass_2"]:
+                tracks[p].elements = [NoteElement(pitch=None, duration_quarters=m.quarter_length, duration_type="whole", is_rest=True)]
+        elif is_both_bass:
+            # Both staves are Bass/Treble_8vb -> All male / men parts (TTBB / TB)
+            for p in ["soprano_1", "soprano_2", "alto_1", "alto_2"]:
+                tracks[p].elements = [NoteElement(pitch=None, duration_quarters=m.quarter_length, duration_type="whole", is_rest=True)]
+            tracks["tenor_1"].elements = copy.deepcopy(top_up)
+            tracks["tenor_2"].elements = copy.deepcopy(top_low)
+            tracks["baritone_1"].elements = copy.deepcopy(bot_up)
+            tracks["baritone_2"].elements = copy.deepcopy(bot_up)
+            tracks["bass_1"].elements = copy.deepcopy(bot_low)
+            tracks["bass_2"].elements = copy.deepcopy(bot_low)
+        else:
+            # Treble staff on top (Women: Soprano/Alto), Bass staff on bottom (Men: Tenor/Bass)
+            tracks["soprano_1"].elements = copy.deepcopy(top_up)
+            tracks["soprano_2"].elements = copy.deepcopy(top_up)
+            tracks["alto_1"].elements = copy.deepcopy(top_low)
+            tracks["alto_2"].elements = copy.deepcopy(top_low)
+
+            tracks["tenor_1"].elements = copy.deepcopy(bot_up)
+            tracks["tenor_2"].elements = copy.deepcopy(bot_up)
+            tracks["baritone_1"].elements = copy.deepcopy(bot_low)
+            tracks["baritone_2"].elements = copy.deepcopy(bot_low)
+            tracks["bass_1"].elements = copy.deepcopy(bot_low)
+            tracks["bass_2"].elements = copy.deepcopy(bot_low)
 
     @classmethod
     def _route_four_vocal_staves(cls, staves: List[StaffInfo], m: MeasureData, tracks: Dict[str, TrackData]):

@@ -190,15 +190,19 @@ def test_polyphonic_chords_and_midi_generation():
             )]
         )
 
-        # 1. Compile MusicXML
-        xml_path, stem_xmls, summary = XMLCompiler.compile_score(cism, tmp_path / "xml")
+        # 1. Compile MusicXML (Master, Piano-only partition, Vocals-only partition)
+        xml_path, piano_xml, vocals_xml, stem_xmls, summary = XMLCompiler.compile_score(cism, tmp_path / "xml")
         assert xml_path.exists()
         assert xml_path.stat().st_size > 500
+        assert piano_xml.exists()
+        assert vocals_xml.exists()
 
-        # 2. Compile MIDI
-        midi_path, stem_midis, sync_map = MIDIGenerator.compile_midi_and_sync_map(cism, tmp_path / "midi")
+        # 2. Compile MIDI (Master, Piano-only partition, Vocals-only partition)
+        midi_path, piano_midi, vocals_midi, stem_midis, sync_map = MIDIGenerator.compile_midi_and_sync_map(cism, tmp_path / "midi")
         assert midi_path.exists()
         assert midi_path.stat().st_size > 400
+        assert piano_midi.exists()
+        assert vocals_midi.exists()
         assert sync_map.exists()
 
 

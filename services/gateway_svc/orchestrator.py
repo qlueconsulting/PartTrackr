@@ -362,12 +362,16 @@ class PipelineOrchestrator:
                             target_tempo_bpm=score_hints.get("tempo_bpm") if score_hints else None,
                         )
                     out_compiled = job_dir / "compiled"
-                    xml_path, stem_xmls, summary = XMLCompiler.compile_score(routed_cism_obj, out_compiled)
-                    midi_path, stem_midis, sync_map = MIDIGenerator.compile_midi_and_sync_map(routed_cism_obj, out_compiled)
+                    xml_path, piano_xml_path, vocals_xml_path, stem_xmls, summary = XMLCompiler.compile_score(routed_cism_obj, out_compiled)
+                    midi_path, piano_midi_path, vocals_midi_path, stem_midis, sync_map = MIDIGenerator.compile_midi_and_sync_map(routed_cism_obj, out_compiled)
                     decoder_result = {
                         "status": "success",
                         "score_musicxml_path": str(xml_path),
+                        "score_piano_musicxml_path": str(piano_xml_path),
+                        "score_vocals_musicxml_path": str(vocals_xml_path),
                         "score_midi_path": str(midi_path),
+                        "score_piano_midi_path": str(piano_midi_path),
+                        "score_vocals_midi_path": str(vocals_midi_path),
                         "sync_map_path": str(sync_map),
                         "total_measures": len(summary) if isinstance(summary, list) else len(routed_cism.get("systems", [{}])[0].get("measures", [])),
                         "total_duration_seconds": float(len(summary) * 2.0) if isinstance(summary, list) else 0.0,

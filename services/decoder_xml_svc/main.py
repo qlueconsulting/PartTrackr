@@ -61,14 +61,14 @@ def compile_score(req: DecodeRequest) -> Dict[str, Any]:
         elif has_piano is not None:
             cism.has_piano = has_piano
 
-        # 1. Compile MusicXML and individual stems
-        main_xml_path, stem_xml_paths, measure_summary = XMLCompiler.compile_score(
+        # 1. Compile MusicXML, partitioned Piano & Vocals XML, and individual stems
+        main_xml_path, piano_xml_path, vocals_xml_path, stem_xml_paths, measure_summary = XMLCompiler.compile_score(
             cism=cism,
             output_dir=out_dir
         )
 
-        # 2. Compile 11-channel MIDI, individual stem MIDIs, and sync map
-        main_midi_path, stem_midi_paths, sync_map_path = MIDIGenerator.compile_midi_and_sync_map(
+        # 2. Compile 11-channel MIDI, partitioned Piano & Vocals MIDIs, and sync map
+        main_midi_path, piano_midi_path, vocals_midi_path, stem_midi_paths, sync_map_path = MIDIGenerator.compile_midi_and_sync_map(
             cism=cism,
             output_dir=out_dir
         )
@@ -84,7 +84,11 @@ def compile_score(req: DecodeRequest) -> Dict[str, Any]:
             "job_id": req.job_id,
             "status": "completed",
             "score_musicxml_path": str(main_xml_path),
+            "score_piano_musicxml_path": str(piano_xml_path),
+            "score_vocals_musicxml_path": str(vocals_xml_path),
             "score_midi_path": str(main_midi_path),
+            "score_piano_midi_path": str(piano_midi_path),
+            "score_vocals_midi_path": str(vocals_midi_path),
             "sync_map_path": str(sync_map_path),
             "stems": stems_manifest,
             "measure_summary": measure_summary,

@@ -26,7 +26,7 @@ class MIDIGenerator:
         cls,
         cism: ScoreCISM,
         output_dir: Path
-    ) -> Tuple[Path, Dict[str, Path], Path]:
+    ) -> Tuple[Path, Path, Path, Dict[str, Path], Path]:
         output_dir.mkdir(parents=True, exist_ok=True)
         stems_dir = output_dir / "stems"
         stems_dir.mkdir(parents=True, exist_ok=True)
@@ -138,7 +138,27 @@ class MIDIGenerator:
         main_midi_path = output_dir / "score_11ch.mid"
         midi_file.save(str(main_midi_path))
 
-        return main_midi_path, stem_paths, sync_map_path
+        # Write partitioned Piano MIDI file
+        piano_midi = MidiFile(ticks_per_beat=TICKS_PER_BEAT)
+        piano_midi.tracks.append(conductor_track)
+        piano_track_found = [t for t in midi_file.tracks if any(m.type == "track_name" and m.name == PART_METADATA["piano"]["display_name"] for m in t)]
+        if piano_track_found:
+            piano_midi.tracks.append(piano_track_found[0])
+        piano_midi_path = output_dir / "score_piano.mid"
+        piano_midi.save(str(piano_midi_path))
+
+        # Write partitioned Vocals MIDI file (all vocal tracks)
+        vocals_midi = MidiFile(ticks_per_beat=TICKS_PER_BEAT)
+        vocals_midi.tracks.append(conductor_track)
+        for t in midi_file.tracks:
+            is_piano = any(m.type == "track_name" and m.name == PART_METADATA["piano"]["display_name"] for m in t)
+            is_cond = any(m.type == "track_name" and m.name == "Conductor" for m in t)
+            if not is_piano and not is_cond:
+                vocals_midi.tracks.append(t)
+        vocals_midi_path = output_dir / "score_vocals.mid"
+        vocals_midi.save(str(vocals_midi_path))
+
+        return main_midi_path, piano_midi_path, vocals_midi_path, stem_paths, sync_map_path
 
     DYNAMIC_VELOCITIES = {
         "ppp": 40, "pp": 50, "p": 62, "mp": 74, "mf": 86, "f": 100, "ff": 114, "fff": 124

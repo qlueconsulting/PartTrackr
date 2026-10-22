@@ -371,6 +371,30 @@ def serve_job_file(job_id: str, file_subpath: str):
     return FileResponse(file_path, media_type=media_map.get(ext, "application/octet-stream"))
 
 
+@app.get("/api/v1/jobs/{job_id}/piano_musicxml")
+def get_piano_musicxml(job_id: str):
+    file_path = STORAGE_DIR / "jobs" / job_id / "compiled" / "score_piano.musicxml"
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="score_piano.musicxml not found for this job")
+    return FileResponse(file_path, media_type="application/vnd.recordare.musicxml+xml", filename=f"{job_id}_piano.musicxml")
+
+
+@app.get("/api/v1/jobs/{job_id}/vocals_musicxml")
+def get_vocals_musicxml(job_id: str):
+    file_path = STORAGE_DIR / "jobs" / job_id / "compiled" / "score_vocals.musicxml"
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="score_vocals.musicxml not found for this job")
+    return FileResponse(file_path, media_type="application/vnd.recordare.musicxml+xml", filename=f"{job_id}_vocals.musicxml")
+
+
+@app.get("/api/v1/jobs/{job_id}/score_musicxml")
+def get_score_musicxml(job_id: str):
+    file_path = STORAGE_DIR / "jobs" / job_id / "compiled" / "score.musicxml"
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="score.musicxml not found for this job")
+    return FileResponse(file_path, media_type="application/vnd.recordare.musicxml+xml", filename=f"{job_id}_score.musicxml")
+
+
 @app.get("/api/v1/jobs")
 def list_jobs(limit: int = 10, db: Session = Depends(get_db)):
     """Returns the most recent jobs submitted (up to limit, defaults to 10) with full metadata and score hints."""

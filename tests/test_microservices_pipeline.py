@@ -49,15 +49,19 @@ def test_microservices_end_to_end(tmp_path):
 
     # Step 4: Decoder XML Service Engine
     compiled_dir = tmp_path / "compiled"
-    main_xml_path, stem_xml_paths, measure_summary = XMLCompiler.compile_score(routed_cism, compiled_dir)
+    main_xml_path, piano_xml_path, vocals_xml_path, stem_xml_paths, measure_summary = XMLCompiler.compile_score(routed_cism, compiled_dir)
     assert main_xml_path.exists()
+    assert piano_xml_path.exists()
+    assert vocals_xml_path.exists()
     assert len(stem_xml_paths) == 11
     for p_name in CANONICAL_11_PARTS:
         assert stem_xml_paths[p_name].exists()
 
     # Step 5: MIDI & Sync Map Compilation
-    main_midi_path, stem_midi_paths, sync_map_path = MIDIGenerator.compile_midi_and_sync_map(routed_cism, compiled_dir)
+    main_midi_path, piano_midi_path, vocals_midi_path, stem_midi_paths, sync_map_path = MIDIGenerator.compile_midi_and_sync_map(routed_cism, compiled_dir)
     assert main_midi_path.exists()
+    assert piano_midi_path.exists()
+    assert vocals_midi_path.exists()
     assert sync_map_path.exists()
     assert len(stem_midi_paths) == 11
 
@@ -189,11 +193,17 @@ def test_reconcile_total_measures_ground_truth(tmp_path):
 
     # 4. Decoder XML compile with score_hints
     compiled_dir = tmp_path / "compiled_hints"
-    main_xml, stems, summary = XMLCompiler.compile_score(routed, compiled_dir)
+    main_xml, piano_xml, vocals_xml, stems, summary = XMLCompiler.compile_score(routed, compiled_dir)
     assert len(summary) == 6
     assert summary[-1]["measure_number"] == 6
+    assert main_xml.exists()
+    assert piano_xml.exists()
+    assert vocals_xml.exists()
 
-    main_midi, stem_midis, sync_map_path = MIDIGenerator.compile_midi_and_sync_map(routed, compiled_dir)
+    main_midi, piano_midi, vocals_midi, stem_midis, sync_map_path = MIDIGenerator.compile_midi_and_sync_map(routed, compiled_dir)
+    assert main_midi.exists()
+    assert piano_midi.exists()
+    assert vocals_midi.exists()
     with open(sync_map_path, "r", encoding="utf-8") as f:
         sync = json.load(f)
     assert sync["total_measures"] == 6
@@ -307,6 +317,92 @@ async def test_orchestrator_handles_missing_module_gracefully(tmp_path, monkeypa
     assert "pdf-layout-svc (http://unreachable-layout:8006) is unreachable" in failed_job.error_message
     assert "parttrackr_net" in failed_job.error_message
     db.close()
+
+
+def test_partitioned_musicxml_and_two_step_staff_decryption(tmp_path):
+    """
+    Verifies the two-step decryption:
+    1. Piano staves detection: always 2 staves (RH treble + LH bass with brace).
+    2. Remaining staves: treble = women, bass = men.
+    3. Partitioned MusicXML output: score_piano.musicxml and score_vocals.musicxml
+       are strictly synchronized by measure number.
+    """
+    from services.decoder_xml_svc.xml_compiler import XMLCompiler
+    from services.decoder_xml_svc.midi_generator import MIDIGenerator
+    from common.cism_schema import ScoreCISM, SystemData, MeasureData, StaffInfo, TrackData, NoteElement, BoundingBox
+
+    st_vocal = StaffInfo(staff_id="s0_vocal", index=0, clef="treble", bracket_type="none", role="vocal_women", y_top=50, y_bot=90)
+    st_p_rh = StaffInfo(staff_id="s0_p_rh", index=1, clef="treble", bracket_type="brace", role="piano_rh", y_top=130, y_bot=170)
+    st_p_lh = StaffInfo(staff_id="s0_p_lh", index=2, clef="bass", bracket_type="brace", role="piano_lh", y_top=190, y_bot=230)
+
+    m1 = MeasureData(
+        measure_number=1,
+        time_signature="4/4",
+        tempo_bpm=120,
+        quarter_length=4.0,
+        raw_staves={
+            "s0_vocal": TrackData(track_name="vocal", clef="treble", elements=[NoteElement(pitch="E5", duration_quarters=4.0)]),
+            "s0_p_rh": TrackData(track_name="p_rh", clef="treble", elements=[NoteElement(pitch="G4", duration_quarters=4.0)]),
+            "s0_p_lh": TrackData(track_name="p_lh", clef="bass", elements=[NoteElement(pitch="C3", duration_quarters=4.0)]),
+        },
+        tracks={
+            "soprano_1": TrackData(track_name="soprano_1", clef="treble", elements=[NoteElement(pitch="E5", duration_quarters=4.0)]),
+            "soprano_2": TrackData(track_name="soprano_2", clef="treble", elements=[NoteElement(pitch="E5", duration_quarters=4.0)]),
+            "alto_1": TrackData(track_name="alto_1", clef="treble", elements=[NoteElement(pitch=None, duration_quarters=4.0, is_rest=True)]),
+            "alto_2": TrackData(track_name="alto_2", clef="treble", elements=[NoteElement(pitch=None, duration_quarters=4.0, is_rest=True)]),
+            "tenor_1": TrackData(track_name="tenor_1", clef="treble_8vb", elements=[NoteElement(pitch=None, duration_quarters=4.0, is_rest=True)]),
+            "tenor_2": TrackData(track_name="tenor_2", clef="treble_8vb", elements=[NoteElement(pitch=None, duration_quarters=4.0, is_rest=True)]),
+            "baritone_1": TrackData(track_name="baritone_1", clef="bass", elements=[NoteElement(pitch=None, duration_quarters=4.0, is_rest=True)]),
+            "baritone_2": TrackData(track_name="baritone_2", clef="bass", elements=[NoteElement(pitch=None, duration_quarters=4.0, is_rest=True)]),
+            "bass_1": TrackData(track_name="bass_1", clef="bass", elements=[NoteElement(pitch=None, duration_quarters=4.0, is_rest=True)]),
+            "bass_2": TrackData(track_name="bass_2", clef="bass", elements=[NoteElement(pitch=None, duration_quarters=4.0, is_rest=True)]),
+            "piano": TrackData(track_name="piano", clef="grand", elements=[NoteElement(pitch="G4", duration_quarters=4.0), NoteElement(pitch="C3", duration_quarters=4.0)]),
+        }
+    )
+
+    sys0 = SystemData(
+        system_index=0,
+        page_num=1,
+        measure_start=1,
+        measure_end=1,
+        bounding_box=BoundingBox(x=0, y=50, w=600, h=200),
+        staves=[st_vocal, st_p_rh, st_p_lh],
+        measures=[m1]
+    )
+
+    cism = ScoreCISM(
+        score_id="test_partitioned",
+        title="Partitioned Test Score",
+        composer="Test Composer",
+        total_systems=1,
+        total_measures=1,
+        has_piano=True,
+        systems=[sys0]
+    )
+
+    out_dir = tmp_path / "partition_test"
+    main_xml, piano_xml, vocals_xml, stems, summary = XMLCompiler.compile_score(cism, out_dir)
+
+    assert main_xml.exists()
+    assert piano_xml.exists()
+    assert vocals_xml.exists()
+
+    with open(piano_xml, "r", encoding="utf-8") as f:
+        piano_content = f.read()
+    assert "brace" in piano_content
+    assert "Piano RH" in piano_content
+    assert "Piano LH" in piano_content
+
+    with open(vocals_xml, "r", encoding="utf-8") as f:
+        vocals_content = f.read()
+    assert "bracket" in vocals_content
+    assert "Choir" in vocals_content
+
+    main_midi, piano_midi, vocals_midi, stem_midis, sync_map = MIDIGenerator.compile_midi_and_sync_map(cism, out_dir)
+    assert main_midi.exists()
+    assert piano_midi.exists()
+    assert vocals_midi.exists()
+
 
 
 

@@ -1,7 +1,7 @@
 from fractions import Fraction
 import logging
 from pathlib import Path
-from typing import Dict, List, Any, Tuple
+from typing import Dict, List, Any, Tuple, Optional
 import music21
 from music21 import stream, note, chord, meter, tempo, clef, layout, metadata
 
@@ -39,11 +39,72 @@ class XMLCompiler:
             return 0.25
 
     @classmethod
+    def _pitch_to_midi_num(cls, pitch_str: Optional[str]) -> int:
+        if not pitch_str:
+            return 60
+        import re
+        m = re.match(r"^([A-Ga-g])([#b]?)(-?\d+)$", pitch_str.strip())
+        if not m:
+            return 60
+        step, acc, oct_str = m.groups()
+        step = step.upper()
+        octave = int(oct_str)
+        note_map = {"C": 0, "D": 2, "E": 4, "F": 5, "G": 7, "A": 9, "B": 11}
+        val = note_map.get(step, 0)
+        if acc == "#":
+            val += 1
+        elif acc == "b":
+            val -= 1
+        return (octave + 1) * 12 + val
+
+    @classmethod
+    def _populate_measure_from_elements(
+        cls,
+        m_part: music21.stream.Measure,
+        elements: List[NoteElement],
+        bar_ql: Fraction
+    ) -> bool:
+        sanitized_elems = clamp_and_pad_track_elements(elements, bar_ql)
+        has_notes = False
+        for el in sanitized_elems:
+            raw_dur = float(el.duration_quarters)
+            valid_dur = cls._quantize_musicxml_duration(raw_dur)
+            if valid_dur <= 0.05:
+                continue
+
+            off_val = round(float(el.offset_quarters) * 4.0) / 4.0
+
+            if el.is_rest or not el.pitch:
+                r = note.Rest(quarterLength=valid_dur)
+                m_part.insert(off_val, r)
+            else:
+                has_notes = True
+                try:
+                    if el.is_chord and el.chord_pitches and len(el.chord_pitches) >= 2:
+                        ch = chord.Chord(el.chord_pitches, quarterLength=valid_dur)
+                        if el.lyric:
+                            ch.lyric = el.lyric
+                        if el.tie:
+                            ch.tie = music21.tie.Tie(el.tie)
+                        m_part.insert(off_val, ch)
+                    else:
+                        n = note.Note(el.pitch, quarterLength=valid_dur)
+                        if el.lyric:
+                            n.lyric = el.lyric
+                        if el.tie:
+                            n.tie = music21.tie.Tie(el.tie)
+                        m_part.insert(off_val, n)
+                except Exception:
+                    r = note.Rest(quarterLength=valid_dur)
+                    m_part.insert(off_val, r)
+        return has_notes
+
+    @classmethod
     def compile_score(
         cls,
         cism: ScoreCISM,
         output_dir: Path
-    ) -> Tuple[Path, Dict[str, Path], List[Dict[str, Any]]]:
+    ) -> Tuple[Path, Path, Path, Dict[str, Path], List[Dict[str, Any]]]:
         output_dir.mkdir(parents=True, exist_ok=True)
         stems_dir = output_dir / "stems"
         stems_dir.mkdir(parents=True, exist_ok=True)
@@ -98,6 +159,25 @@ class XMLCompiler:
         current_ts_str = "4/4"
         current_tempo_bpm = 120.0
 
+        # Dedicated 2-staff Piano Score (Piano RH Treble + Piano LH Bass in curly brace)
+        sc_piano = stream.Score()
+        sc_piano.metadata = sc.metadata
+        p_piano_rh = stream.Part(id="piano_rh")
+        p_piano_rh.partName = "Piano RH"
+        p_piano_rh.insert(0, clef.TrebleClef())
+        inst_rh = music21.instrument.Instrument()
+        inst_rh.midiProgram = 0
+        p_piano_rh.insert(0, inst_rh)
+
+        p_piano_lh = stream.Part(id="piano_lh")
+        p_piano_lh.partName = "Piano LH"
+        p_piano_lh.insert(0, clef.BassClef())
+        inst_lh = music21.instrument.Instrument()
+        inst_lh.midiProgram = 0
+        p_piano_lh.insert(0, inst_lh)
+
+        sc_piano.append(layout.StaffGroup([p_piano_rh, p_piano_lh], symbol="brace", name="Piano"))
+
         for m_idx, m_data in enumerate(all_measures):
             m_num = m_data.measure_number
             ts_str = m_data.time_signature or current_ts_str
@@ -121,48 +201,49 @@ class XMLCompiler:
                 track_data = m_data.tracks.get(p_name)
                 elements = track_data.elements if track_data else []
 
-                # Enforce Rule B clamping & padding
-                sanitized_elems = clamp_and_pad_track_elements(elements, bar_ql)
-
-                has_notes = False
-                for el in sanitized_elems:
-                    raw_dur = float(el.duration_quarters)
-                    valid_dur = cls._quantize_musicxml_duration(raw_dur)
-                    if valid_dur <= 0.05:
-                        continue
-
-                    off_val = round(float(el.offset_quarters) * 4.0) / 4.0
-
-                    if el.is_rest or not el.pitch:
-                        r = note.Rest(quarterLength=valid_dur)
-                        m_part.insert(off_val, r)
-                    else:
-                        has_notes = True
-                        try:
-                            if el.is_chord and el.chord_pitches and len(el.chord_pitches) >= 2:
-                                ch = chord.Chord(el.chord_pitches, quarterLength=valid_dur)
-                                if el.lyric:
-                                    ch.lyric = el.lyric
-                                if el.tie:
-                                    ch.tie = music21.tie.Tie(el.tie)
-                                m_part.insert(off_val, ch)
-                            else:
-                                n = note.Note(el.pitch, quarterLength=valid_dur)
-                                if el.lyric:
-                                    n.lyric = el.lyric
-                                if el.tie:
-                                    n.tie = music21.tie.Tie(el.tie)
-                                m_part.insert(off_val, n)
-                        except Exception:
-                            r = note.Rest(quarterLength=valid_dur)
-                            m_part.insert(off_val, r)
-
+                has_notes = cls._populate_measure_from_elements(m_part, elements, bar_ql)
                 if has_notes:
                     active_parts.append(p_name)
                 else:
                     resting_parts.append(p_name)
 
                 parts[p_name].append(m_part)
+
+            # Build synchronized measures for 2-staff piano partition
+            m_rh = stream.Measure(number=m_num)
+            m_lh = stream.Measure(number=m_num)
+            if m_idx == 0 or (m_idx > 0 and all_measures[m_idx - 1].time_signature != ts_str):
+                m_rh.timeSignature = meter.TimeSignature(ts_str)
+                m_lh.timeSignature = meter.TimeSignature(ts_str)
+            if m_idx == 0 or (m_idx > 0 and all_measures[m_idx - 1].tempo_bpm != tempo_bpm):
+                m_rh.insert(0, tempo.MetronomeMark(number=tempo_bpm))
+                m_lh.insert(0, tempo.MetronomeMark(number=tempo_bpm))
+
+            piano_track = m_data.tracks.get("piano")
+            piano_elements = piano_track.elements if piano_track else []
+            rh_elems = []
+            lh_elems = []
+            has_split = False
+            for el in piano_elements:
+                if el.is_rest or not el.pitch:
+                    rh_elems.append(el)
+                    lh_elems.append(el)
+                else:
+                    has_split = True
+                    midi_p = el.midi_pitch or cls._pitch_to_midi_num(el.pitch)
+                    if midi_p >= 60:
+                        rh_elems.append(el)
+                    else:
+                        lh_elems.append(el)
+
+            if not has_split:
+                rh_elems = piano_elements
+                lh_elems = piano_elements
+
+            cls._populate_measure_from_elements(m_rh, rh_elems, bar_ql)
+            cls._populate_measure_from_elements(m_lh, lh_elems, bar_ql)
+            p_piano_rh.append(m_rh)
+            p_piano_lh.append(m_lh)
 
             measure_summary.append({
                 "measure_number": m_num,
@@ -183,6 +264,21 @@ class XMLCompiler:
         main_xml_path = output_dir / "score.musicxml"
         sc.write("musicxml", fp=str(main_xml_path))
 
+        # Write partitioned Vocals-only MusicXML (score_vocals.musicxml)
+        sc_vocals = stream.Score()
+        sc_vocals.metadata = sc.metadata
+        sc_vocals.append(layout.StaffGroup(vocal_parts, symbol="bracket", name="Choir"))
+        for vp in vocal_parts:
+            sc_vocals.append(vp)
+        vocals_xml_path = output_dir / "score_vocals.musicxml"
+        sc_vocals.write("musicxml", fp=str(vocals_xml_path))
+
+        # Write partitioned Piano-only MusicXML (score_piano.musicxml) with 2 staves
+        sc_piano.append(p_piano_rh)
+        sc_piano.append(p_piano_lh)
+        piano_xml_path = output_dir / "score_piano.musicxml"
+        sc_piano.write("musicxml", fp=str(piano_xml_path))
+
         # Write individual stem MusicXML files
         stem_paths: Dict[str, Path] = {}
         for p_name in CANONICAL_11_PARTS:
@@ -193,4 +289,4 @@ class XMLCompiler:
             single_sc.write("musicxml", fp=str(stem_xml))
             stem_paths[p_name] = stem_xml
 
-        return main_xml_path, stem_paths, measure_summary
+        return main_xml_path, piano_xml_path, vocals_xml_path, stem_paths, measure_summary
