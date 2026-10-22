@@ -14,11 +14,17 @@ services:
       - OMR_SVC_URL=http://omr-ai-svc:8007
       - ROUTER_SVC_URL=http://voice-router-svc:8008
       - DECODER_SVC_URL=http://decoder-xml-svc:8009
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
-      - pdf-layout-svc
-      - omr-ai-svc
-      - voice-router-svc
-      - decoder-xml-svc
+      pdf-layout-svc:
+        condition: service_healthy
+      omr-ai-svc:
+        condition: service_healthy
+      voice-router-svc:
+        condition: service_healthy
+      decoder-xml-svc:
+        condition: service_healthy
     restart: unless-stopped
     networks:
       parttrackr_net:
@@ -33,6 +39,12 @@ services:
       - "8006:8006"
     volumes:
       - ./parttrackr_storage:/app/storage
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8006/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 3s
     restart: unless-stopped
     networks:
       parttrackr_net:
@@ -50,6 +62,12 @@ services:
     environment:
       - OLLAMA_BASE_URL=http://ollama:11434
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8007/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 3s
     restart: unless-stopped
     networks:
       parttrackr_net:
@@ -64,6 +82,12 @@ services:
       - "8008:8008"
     volumes:
       - ./parttrackr_storage:/app/storage
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8008/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 3s
     restart: unless-stopped
     networks:
       parttrackr_net:
@@ -78,6 +102,12 @@ services:
       - "8009:8009"
     volumes:
       - ./parttrackr_storage:/app/storage
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8009/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 3s
     restart: unless-stopped
     networks:
       parttrackr_net:

@@ -257,4 +257,57 @@ async def test_orchestrator_in_process_fallback_when_dns_fails(tmp_path, monkeyp
     db.close()
 
 
+@pytest.mark.anyio
+async def test_orchestrator_handles_missing_module_gracefully(tmp_path, monkeypatch):
+    """Verify that when HTTP fails and fallback module is missing, an informative RuntimeError is stored."""
+    from services.gateway_svc.database import Job
+    from services.gateway_svc.main import SessionFactory
+    from services.gateway_svc.orchestrator import PipelineOrchestrator
+    import services.gateway_svc.orchestrator as orch_mod
+    import builtins
+
+    monkeypatch.setattr(orch_mod, "LAYOUT_SVC_URL", "http://unreachable-layout:8006")
+    async def fast_post(*args, **kwargs):
+        import httpx
+        raise httpx.ConnectError("[Errno -3] Temporary failure in name resolution")
+    monkeypatch.setattr(orch_mod, "_post_with_retry_and_fallback", fast_post)
+
+    real_import = builtins.__import__
+    def fake_import(name, *args, **kwargs):
+        if "pdf_layout_svc" in name:
+            raise ImportError(f"No module named '{name}'")
+        return real_import(name, *args, **kwargs)
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+
+    db = SessionFactory()
+    job_id = "test_import_err_job"
+    existing = db.query(Job).filter(Job.id == job_id).first()
+    if existing:
+        db.delete(existing)
+        db.commit()
+
+    job = Job(id=job_id, original_filename="dummy.pdf", pdf_path="dummy.pdf", title="Dummy", status="pending")
+    db.add(job)
+    db.commit()
+    db.close()
+
+    job_dir = tmp_path / "job_import_err"
+    job_dir.mkdir(parents=True, exist_ok=True)
+
+    await PipelineOrchestrator.run_pipeline(
+        job_id=job_id,
+        job_dir=job_dir,
+        pdf_path=Path("dummy.pdf"),
+        session_factory=SessionFactory,
+    )
+
+    db = SessionFactory()
+    failed_job = db.query(Job).filter(Job.id == job_id).first()
+    assert failed_job.status == "failed"
+    assert "pdf-layout-svc (http://unreachable-layout:8006) is unreachable" in failed_job.error_message
+    assert "parttrackr_net" in failed_job.error_message
+    db.close()
+
+
+
 

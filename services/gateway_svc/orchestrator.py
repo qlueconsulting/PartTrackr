@@ -25,6 +25,7 @@ def _get_fallback_urls(primary_url: str, default_service_name: str, container_al
         primary_url,
         f"http://{default_service_name}:{port}",
         f"http://{container_alias}:{port}",
+        f"http://host.docker.internal:{port}",
     ]
     seen = set()
     res = []
@@ -164,8 +165,16 @@ class PipelineOrchestrator:
             except (httpx.ConnectError, httpx.ConnectTimeout) as conn_err:
                 logger.warning(f"Layout HTTP endpoint unreachable ({conn_err}). Executing PDFLayoutEngine directly in-process...")
                 append_job_log(job_dir, "warning", "pdf-layout-svc", f"Layout HTTP unreachable ({conn_err}). Executing in-process fallback...")
-                from services.pdf_layout_svc.layout_engine import PDFLayoutEngine
-                layout_data = PDFLayoutEngine.process_pdf(pdf_path, job_dir / "layout", dpi=300, score_hints=score_hints)
+                try:
+                    from services.pdf_layout_svc.layout_engine import PDFLayoutEngine
+                    layout_data = PDFLayoutEngine.process_pdf(pdf_path, job_dir / "layout", dpi=300, score_hints=score_hints)
+                except ImportError as imp_err:
+                    logger.error(f"In-process fallback failed because module is not available in container: {imp_err}")
+                    append_job_log(job_dir, "error", "pdf-layout-svc", f"Layout service unreachable ({conn_err}) and in-process fallback unavailable ({imp_err}).")
+                    raise RuntimeError(
+                        f"pdf-layout-svc ({LAYOUT_SVC_URL}) is unreachable ({conn_err}). "
+                        f"Ensure pdf-layout-svc container is running and healthy on parttrackr_net."
+                    ) from conn_err
 
             job.layout_data = layout_data
             job.title = layout_data.get("title", job.title)
@@ -221,15 +230,23 @@ class PipelineOrchestrator:
             except (httpx.ConnectError, httpx.ConnectTimeout) as conn_err:
                 logger.warning(f"OMR HTTP endpoint unreachable ({conn_err}). Executing HybridOMRFusionEngine directly in-process...")
                 append_job_log(job_dir, "warning", "omr-ai-svc", f"OMR HTTP unreachable ({conn_err}). Executing in-process fallback...")
-                from services.omr_ai_svc.vector_smufl_extractor import VectorSMuFLExtractor
-                if VectorSMuFLExtractor.can_extract(pdf_path):
-                    cism_obj = VectorSMuFLExtractor.extract_cism(pdf_path, layout_data, score_hints=score_hints)
-                else:
-                    from services.omr_ai_svc.hybrid_fusion_engine import HybridOMRFusionEngine
-                    cism_obj = HybridOMRFusionEngine.extract_cism(
-                        layout_data=layout_data, custom_instructions=active_instructions, score_hints=score_hints
-                    )
-                raw_cism = cism_obj.model_dump()
+                try:
+                    from services.omr_ai_svc.vector_smufl_extractor import VectorSMuFLExtractor
+                    if VectorSMuFLExtractor.can_extract(pdf_path):
+                        cism_obj = VectorSMuFLExtractor.extract_cism(pdf_path, layout_data, score_hints=score_hints)
+                    else:
+                        from services.omr_ai_svc.hybrid_fusion_engine import HybridOMRFusionEngine
+                        cism_obj = HybridOMRFusionEngine.extract_cism(
+                            layout_data=layout_data, custom_instructions=active_instructions, score_hints=score_hints
+                        )
+                    raw_cism = cism_obj.model_dump()
+                except ImportError as imp_err:
+                    logger.error(f"In-process fallback failed because module is not available in container: {imp_err}")
+                    append_job_log(job_dir, "error", "omr-ai-svc", f"OMR service unreachable ({conn_err}) and in-process fallback unavailable ({imp_err}).")
+                    raise RuntimeError(
+                        f"omr-ai-svc ({OMR_SVC_URL}) is unreachable ({conn_err}). "
+                        f"Ensure omr-ai-svc container is running and healthy on parttrackr_net."
+                    ) from conn_err
 
             job.raw_cism = raw_cism
             db.commit()
@@ -274,11 +291,19 @@ class PipelineOrchestrator:
             except (httpx.ConnectError, httpx.ConnectTimeout) as conn_err:
                 logger.warning(f"Voice router HTTP endpoint unreachable ({conn_err}). Executing VoiceRouterEngine directly in-process...")
                 append_job_log(job_dir, "warning", "voice-router-svc", f"Voice router HTTP unreachable ({conn_err}). Executing in-process fallback...")
-                from services.voice_router_svc.router_engine import VoiceRouterEngine
-                from common.cism_schema import ScoreCISM
-                cism_obj = ScoreCISM(**raw_cism)
-                routed_cism_obj = VoiceRouterEngine.route_score(cism_obj, overrides=job.overrides, score_hints=score_hints)
-                routed_cism = routed_cism_obj.model_dump()
+                try:
+                    from services.voice_router_svc.router_engine import VoiceRouterEngine
+                    from common.cism_schema import ScoreCISM
+                    cism_obj = ScoreCISM(**raw_cism)
+                    routed_cism_obj = VoiceRouterEngine.route_score(cism_obj, overrides=job.overrides, score_hints=score_hints)
+                    routed_cism = routed_cism_obj.model_dump()
+                except ImportError as imp_err:
+                    logger.error(f"In-process fallback failed because module is not available in container: {imp_err}")
+                    append_job_log(job_dir, "error", "voice-router-svc", f"Voice router service unreachable ({conn_err}) and in-process fallback unavailable ({imp_err}).")
+                    raise RuntimeError(
+                        f"voice-router-svc ({ROUTER_SVC_URL}) is unreachable ({conn_err}). "
+                        f"Ensure voice-router-svc container is running and healthy on parttrackr_net."
+                    ) from conn_err
 
             job.routed_cism = routed_cism
             db.commit()
@@ -322,73 +347,81 @@ class PipelineOrchestrator:
             except (httpx.ConnectError, httpx.ConnectTimeout) as conn_err:
                 logger.warning(f"Decoder HTTP endpoint unreachable ({conn_err}). Executing XMLCompiler & MIDIGenerator in-process...")
                 append_job_log(job_dir, "warning", "decoder-xml-svc", f"Decoder HTTP unreachable ({conn_err}). Executing in-process fallback...")
-                from services.decoder_xml_svc.xml_compiler import XMLCompiler
-                from services.decoder_xml_svc.midi_generator import MIDIGenerator
-                from common.cism_schema import ScoreCISM
-                from common.lockstep_utils import reconcile_cism_measures
-                routed_cism_obj = ScoreCISM(**routed_cism)
-                target_measures = score_hints.get("total_measures") if score_hints else None
-                if target_measures:
-                    routed_cism_obj = reconcile_cism_measures(
-                        routed_cism_obj,
-                        target_total_measures=int(target_measures),
-                        target_time_signature=score_hints.get("time_signature") if score_hints else None,
-                        target_tempo_bpm=score_hints.get("tempo_bpm") if score_hints else None,
-                    )
-                out_compiled = job_dir / "compiled"
-                xml_path, stem_xmls, summary = XMLCompiler.compile_score(routed_cism_obj, out_compiled)
-                midi_path, stem_midis, sync_map = MIDIGenerator.compile_midi_and_sync_map(routed_cism_obj, out_compiled)
-                decoder_result = {
-                    "status": "success",
-                    "score_musicxml_path": str(xml_path),
-                    "score_midi_path": str(midi_path),
-                    "sync_map_path": str(sync_map),
-                    "total_measures": len(summary) if isinstance(summary, list) else len(routed_cism.get("systems", [{}])[0].get("measures", [])),
-                    "total_duration_seconds": float(len(summary) * 2.0) if isinstance(summary, list) else 0.0,
-                }
-
-                # Stage 5: Closed-Loop Verification & Invariant Enforcement
-                verification_report = None
                 try:
-                    from common.loopback_verifier import LoopBackVerifier
+                    from services.decoder_xml_svc.xml_compiler import XMLCompiler
+                    from services.decoder_xml_svc.midi_generator import MIDIGenerator
                     from common.cism_schema import ScoreCISM
+                    from common.lockstep_utils import reconcile_cism_measures
                     routed_cism_obj = ScoreCISM(**routed_cism)
-                    _, verification_report = LoopBackVerifier.verify_and_reconcile(
-                        cism=routed_cism_obj,
-                        score_hints=score_hints,
-                        decoder_result=decoder_result
-                    )
-                    job.verification_report = verification_report
-                    append_job_log(
-                        job_dir, "success", "loopback-verifier",
-                        f"Closed-loop check complete: {verification_report['match_score_pct']}% match to user AI helps.",
-                        verification_report
-                    )
-                except Exception as ver_err:
-                    logger.warning(f"Loop-back verification non-fatal error: {ver_err}")
-
-                job.status = "completed"
-                job.stage_message = "Pipeline processing completed successfully."
-                job.decoder_result = decoder_result
-                if score_hints and score_hints.get("total_measures"):
-                    job.total_measures = int(score_hints["total_measures"])
-                else:
-                    job.total_measures = decoder_result.get("total_measures", 0)
-                job.total_duration_seconds = decoder_result.get("total_duration_seconds", 0.0)
-                job.error_message = None
-                db.commit()
-
-                append_job_log(
-                    job_dir, "success", "decoder-xml-svc",
-                    f"Compilation complete: {job.total_measures} measures validated, {job.total_duration_seconds:.1f}s duration. MusicXML & 11-channel MIDI ready.",
-                    {
-                        "total_measures": job.total_measures,
-                        "total_duration_seconds": job.total_duration_seconds,
-                        "musicxml": decoder_result.get("score_musicxml_path"),
-                        "midi": decoder_result.get("score_midi_path"),
-                        "sync_map": decoder_result.get("sync_map_path"),
+                    target_measures = score_hints.get("total_measures") if score_hints else None
+                    if target_measures:
+                        routed_cism_obj = reconcile_cism_measures(
+                            routed_cism_obj,
+                            target_total_measures=int(target_measures),
+                            target_time_signature=score_hints.get("time_signature") if score_hints else None,
+                            target_tempo_bpm=score_hints.get("tempo_bpm") if score_hints else None,
+                        )
+                    out_compiled = job_dir / "compiled"
+                    xml_path, stem_xmls, summary = XMLCompiler.compile_score(routed_cism_obj, out_compiled)
+                    midi_path, stem_midis, sync_map = MIDIGenerator.compile_midi_and_sync_map(routed_cism_obj, out_compiled)
+                    decoder_result = {
+                        "status": "success",
+                        "score_musicxml_path": str(xml_path),
+                        "score_midi_path": str(midi_path),
+                        "sync_map_path": str(sync_map),
+                        "total_measures": len(summary) if isinstance(summary, list) else len(routed_cism.get("systems", [{}])[0].get("measures", [])),
+                        "total_duration_seconds": float(len(summary) * 2.0) if isinstance(summary, list) else 0.0,
                     }
+                except ImportError as imp_err:
+                    logger.error(f"In-process fallback failed because module is not available in container: {imp_err}")
+                    append_job_log(job_dir, "error", "decoder-xml-svc", f"Decoder service unreachable ({conn_err}) and in-process fallback unavailable ({imp_err}).")
+                    raise RuntimeError(
+                        f"decoder-xml-svc ({DECODER_SVC_URL}) is unreachable ({conn_err}). "
+                        f"Ensure decoder-xml-svc container is running and healthy on parttrackr_net."
+                    ) from conn_err
+
+            # Stage 5: Closed-Loop Verification & Invariant Enforcement
+            verification_report = None
+            try:
+                from common.loopback_verifier import LoopBackVerifier
+                from common.cism_schema import ScoreCISM
+                routed_cism_obj = ScoreCISM(**routed_cism)
+                _, verification_report = LoopBackVerifier.verify_and_reconcile(
+                    cism=routed_cism_obj,
+                    score_hints=score_hints,
+                    decoder_result=decoder_result
                 )
+                job.verification_report = verification_report
+                append_job_log(
+                    job_dir, "success", "loopback-verifier",
+                    f"Closed-loop check complete: {verification_report['match_score_pct']}% match to user AI helps.",
+                    verification_report
+                )
+            except Exception as ver_err:
+                logger.warning(f"Loop-back verification non-fatal error: {ver_err}")
+
+            job.status = "completed"
+            job.stage_message = "Pipeline processing completed successfully."
+            job.decoder_result = decoder_result
+            if score_hints and score_hints.get("total_measures"):
+                job.total_measures = int(score_hints["total_measures"])
+            else:
+                job.total_measures = decoder_result.get("total_measures", 0)
+            job.total_duration_seconds = decoder_result.get("total_duration_seconds", 0.0)
+            job.error_message = None
+            db.commit()
+
+            append_job_log(
+                job_dir, "success", "decoder-xml-svc",
+                f"Compilation complete: {job.total_measures} measures validated, {job.total_duration_seconds:.1f}s duration. MusicXML & 11-channel MIDI ready.",
+                {
+                    "total_measures": job.total_measures,
+                    "total_duration_seconds": job.total_duration_seconds,
+                    "musicxml": decoder_result.get("score_musicxml_path"),
+                    "midi": decoder_result.get("score_midi_path"),
+                    "sync_map": decoder_result.get("sync_map_path"),
+                }
+            )
 
         except Exception as e:
             err_str = str(e)

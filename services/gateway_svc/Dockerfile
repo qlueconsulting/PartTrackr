@@ -14,6 +14,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY common /app/common
 COPY services/gateway_svc /app/services/gateway_svc
+COPY services/voice_router_svc /app/services/voice_router_svc
 
 EXPOSE 8005
 
