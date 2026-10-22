@@ -24,7 +24,12 @@ from common.learning_store import (
     StyleBlueprint,
 )
 from common.loopback_verifier import LoopBackVerifier
-from common.ocr_fusion import ScoreOCREngine, ScoreOCRItem, ScoreOCRPageResult
+try:
+    from common.ocr_fusion import ScoreOCREngine, ScoreOCRItem, ScoreOCRPageResult
+except Exception:
+    ScoreOCREngine = None
+    ScoreOCRItem = None
+    ScoreOCRPageResult = None
 from common.music_theory_engine import MusicTheoryEngine
 
 __all__ = [

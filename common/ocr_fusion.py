@@ -2,7 +2,10 @@ import logging
 import re
 from dataclasses import dataclass, field
 from typing import List, Dict, Tuple, Optional, Any
-import numpy as np
+try:
+    import numpy as np
+except Exception:
+    np = None
 
 logger = logging.getLogger("common.ocr_fusion")
 

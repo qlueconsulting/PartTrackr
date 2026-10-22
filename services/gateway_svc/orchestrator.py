@@ -26,6 +26,8 @@ def _get_fallback_urls(primary_url: str, default_service_name: str, container_al
         f"http://{default_service_name}:{port}",
         f"http://{container_alias}:{port}",
         f"http://host.docker.internal:{port}",
+        f"http://127.0.0.1:{port}",
+        f"http://localhost:{port}",
     ]
     seen = set()
     res = []
@@ -168,13 +170,12 @@ class PipelineOrchestrator:
                 try:
                     from services.pdf_layout_svc.layout_engine import PDFLayoutEngine
                     layout_data = PDFLayoutEngine.process_pdf(pdf_path, job_dir / "layout", dpi=300, score_hints=score_hints)
-                except ImportError as imp_err:
-                    logger.error(f"In-process fallback failed because module is not available in container: {imp_err}")
-                    append_job_log(job_dir, "error", "pdf-layout-svc", f"Layout service unreachable ({conn_err}) and in-process fallback unavailable ({imp_err}).")
+                except Exception as fallback_err:
+                    logger.error(f"In-process fallback failed for pdf-layout-svc: {fallback_err}\n{traceback.format_exc()}")
+                    append_job_log(job_dir, "error", "pdf-layout-svc", f"Layout service unreachable ({conn_err}) and in-process fallback failed ({fallback_err}).")
                     raise RuntimeError(
-                        f"pdf-layout-svc ({LAYOUT_SVC_URL}) is unreachable ({conn_err}). "
-                        f"Ensure pdf-layout-svc container is running and healthy on parttrackr_net."
-                    ) from conn_err
+                        f"pdf-layout-svc ({LAYOUT_SVC_URL}) is unreachable ({conn_err}) and in-process fallback failed: {fallback_err}."
+                    ) from fallback_err
 
             job.layout_data = layout_data
             job.title = layout_data.get("title", job.title)
@@ -240,13 +241,12 @@ class PipelineOrchestrator:
                             layout_data=layout_data, custom_instructions=active_instructions, score_hints=score_hints
                         )
                     raw_cism = cism_obj.model_dump()
-                except ImportError as imp_err:
-                    logger.error(f"In-process fallback failed because module is not available in container: {imp_err}")
-                    append_job_log(job_dir, "error", "omr-ai-svc", f"OMR service unreachable ({conn_err}) and in-process fallback unavailable ({imp_err}).")
+                except Exception as fallback_err:
+                    logger.error(f"In-process fallback failed for omr-ai-svc: {fallback_err}\n{traceback.format_exc()}")
+                    append_job_log(job_dir, "error", "omr-ai-svc", f"OMR service unreachable ({conn_err}) and in-process fallback failed ({fallback_err}).")
                     raise RuntimeError(
-                        f"omr-ai-svc ({OMR_SVC_URL}) is unreachable ({conn_err}). "
-                        f"Ensure omr-ai-svc container is running and healthy on parttrackr_net."
-                    ) from conn_err
+                        f"omr-ai-svc ({OMR_SVC_URL}) is unreachable ({conn_err}) and in-process fallback failed: {fallback_err}."
+                    ) from fallback_err
 
             job.raw_cism = raw_cism
             db.commit()
@@ -297,13 +297,12 @@ class PipelineOrchestrator:
                     cism_obj = ScoreCISM(**raw_cism)
                     routed_cism_obj = VoiceRouterEngine.route_score(cism_obj, overrides=job.overrides, score_hints=score_hints)
                     routed_cism = routed_cism_obj.model_dump()
-                except ImportError as imp_err:
-                    logger.error(f"In-process fallback failed because module is not available in container: {imp_err}")
-                    append_job_log(job_dir, "error", "voice-router-svc", f"Voice router service unreachable ({conn_err}) and in-process fallback unavailable ({imp_err}).")
+                except Exception as fallback_err:
+                    logger.error(f"In-process fallback failed for voice-router-svc: {fallback_err}\n{traceback.format_exc()}")
+                    append_job_log(job_dir, "error", "voice-router-svc", f"Voice router service unreachable ({conn_err}) and in-process fallback failed ({fallback_err}).")
                     raise RuntimeError(
-                        f"voice-router-svc ({ROUTER_SVC_URL}) is unreachable ({conn_err}). "
-                        f"Ensure voice-router-svc container is running and healthy on parttrackr_net."
-                    ) from conn_err
+                        f"voice-router-svc ({ROUTER_SVC_URL}) is unreachable ({conn_err}) and in-process fallback failed: {fallback_err}."
+                    ) from fallback_err
 
             job.routed_cism = routed_cism
             db.commit()
@@ -376,13 +375,12 @@ class PipelineOrchestrator:
                         "total_measures": len(summary) if isinstance(summary, list) else len(routed_cism.get("systems", [{}])[0].get("measures", [])),
                         "total_duration_seconds": float(len(summary) * 2.0) if isinstance(summary, list) else 0.0,
                     }
-                except ImportError as imp_err:
-                    logger.error(f"In-process fallback failed because module is not available in container: {imp_err}")
-                    append_job_log(job_dir, "error", "decoder-xml-svc", f"Decoder service unreachable ({conn_err}) and in-process fallback unavailable ({imp_err}).")
+                except Exception as fallback_err:
+                    logger.error(f"In-process fallback failed for decoder-xml-svc: {fallback_err}\n{traceback.format_exc()}")
+                    append_job_log(job_dir, "error", "decoder-xml-svc", f"Decoder service unreachable ({conn_err}) and in-process fallback failed ({fallback_err}).")
                     raise RuntimeError(
-                        f"decoder-xml-svc ({DECODER_SVC_URL}) is unreachable ({conn_err}). "
-                        f"Ensure decoder-xml-svc container is running and healthy on parttrackr_net."
-                    ) from conn_err
+                        f"decoder-xml-svc ({DECODER_SVC_URL}) is unreachable ({conn_err}) and in-process fallback failed: {fallback_err}."
+                    ) from fallback_err
 
             # Stage 5: Closed-Loop Verification & Invariant Enforcement
             verification_report = None
