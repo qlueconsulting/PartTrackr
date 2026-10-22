@@ -69,6 +69,9 @@ services:
     volumes:
       - ./storage:/app/storage
     environment:
+      - STORAGE_DIR=/app/storage
+      - _JAVA_OPTIONS=-Djava.awt.headless=true
+      - JAVA_TOOL_OPTIONS=-Djava.awt.headless=true
       - OLLAMA_BASE_URL=http://ollama:11434
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
     healthcheck:
@@ -76,7 +79,7 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
-      start_period: 3s
+      start_period: 10s
     restart: unless-stopped
     networks:
       parttrackr_net:
