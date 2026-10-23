@@ -110,8 +110,27 @@ class GeometricOMREngine:
         key_fifths: int = 0,
         quarter_length: float = 4.0,
         time_signature: str = "4/4",
-        text_mask_np: Optional[np.ndarray] = None
+        text_mask_np: Optional[np.ndarray] = None,
+        staff_crop_paths: Optional[Dict[str, str]] = None
     ) -> Dict[str, TrackData]:
+        # Pass 2: Revisit line-by-line using isolated staff tracks if available
+        if staff_crop_paths:
+            raw_staves: Dict[str, TrackData] = {}
+            for st in staves:
+                st_crop = staff_crop_paths.get(st.staff_id)
+                if st_crop and Path(st_crop).exists():
+                    raw_staves[st.staff_id] = cls.recognize_single_staff_crop(
+                        crop_image_path=st_crop,
+                        staff=st,
+                        key_fifths=key_fifths,
+                        quarter_length=quarter_length,
+                        time_signature=time_signature,
+                        text_mask_np=text_mask_np
+                    )
+                else:
+                    raw_staves[st.staff_id] = cls._empty_single_staff(st, quarter_length)
+            return raw_staves
+
         if not crop_image_path:
             return cls._empty_staves(staves, quarter_length)
         crop_path = Path(crop_image_path)
@@ -167,6 +186,231 @@ class GeometricOMREngine:
         except Exception as e:
             logger.warning(f"Geometric OMR recognition error on {crop_image_path}: {e}")
             return cls._empty_staves(staves, quarter_length)
+
+    @classmethod
+    def recognize_single_staff_crop(
+        cls,
+        crop_image_path: str,
+        staff: StaffInfo,
+        key_fifths: int = 0,
+        quarter_length: float = 4.0,
+        time_signature: str = "4/4",
+        text_mask_np: Optional[np.ndarray] = None
+    ) -> TrackData:
+        if not crop_image_path:
+            return cls._empty_single_staff(staff, quarter_length)
+        crop_path = Path(crop_image_path)
+        if not crop_path.exists():
+            return cls._empty_single_staff(staff, quarter_length)
+
+        try:
+            im = Image.open(str(crop_path)).convert("L")
+            arr = np.array(im)
+            h_img, w_img = arr.shape
+            bw = (arr < 190).astype(np.uint8)
+
+            if text_mask_np is not None and text_mask_np.shape == bw.shape:
+                bw[text_mask_np == 1] = 0
+
+            track, conf = cls._extract_single_staff_from_bitmap(
+                bw=bw,
+                arr=arr,
+                staff=staff,
+                key_fifths=key_fifths,
+                quarter_length=quarter_length,
+                time_signature=time_signature
+            )
+
+            # Adaptive retry with CLAHE if confidence is low
+            if conf < 0.65:
+                try:
+                    import cv2
+                    clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
+                    enhanced = clahe.apply(arr)
+                    _, bw_retry = cv2.threshold(enhanced, 0, 1, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+                    if text_mask_np is not None and text_mask_np.shape == bw_retry.shape:
+                        bw_retry[text_mask_np == 1] = 0
+                    kernel = np.ones((2, 2), np.uint8)
+                    bw_retry = cv2.morphologyEx(bw_retry, cv2.MORPH_CLOSE, kernel)
+
+                    retry_track, retry_conf = cls._extract_single_staff_from_bitmap(
+                        bw=bw_retry,
+                        arr=arr,
+                        staff=staff,
+                        key_fifths=key_fifths,
+                        quarter_length=quarter_length,
+                        time_signature=time_signature
+                    )
+                    if retry_conf > conf:
+                        track = retry_track
+                except Exception as retry_err:
+                    logger.debug(f"Retry enhancement skipped on single staff: {retry_err}")
+
+            return track
+
+        except Exception as e:
+            logger.warning(f"Geometric OMR single-staff recognition error on {crop_image_path}: {e}")
+            return cls._empty_single_staff(staff, quarter_length)
+
+    @classmethod
+    def _extract_single_staff_from_bitmap(
+        cls,
+        bw: np.ndarray,
+        arr: np.ndarray,
+        staff: StaffInfo,
+        key_fifths: int,
+        quarter_length: float,
+        time_signature: str
+    ) -> Tuple[TrackData, float]:
+        h_img, w_img = bw.shape
+        staves_lines = cls.calibrate_crop_staff_lines(bw, num_staves=1)
+
+        if staves_lines and len(staves_lines[0]) == 5:
+            five = staves_lines[0]
+        else:
+            mid_y = h_img / 2.0
+            sp = max(4.0, h_img / 8.0)
+            five = [int(mid_y - 2.0 * sp + k * sp) for k in range(5)]
+
+        spacing = max(4.0, (five[4] - five[0]) / 4.0)
+        step_px = max(1.0, spacing / 2.0)
+        y_top_staff = five[0]
+        y_bot_staff = five[4]
+
+        bw_clean = cls.remove_staff_lines(bw, [five])
+        labeled, num_features = ndimage.label(bw_clean)
+        objects = ndimage.find_objects(labeled)
+
+        y_lo = max(0, int(y_top_staff - 3.0 * spacing))
+        y_hi = min(h_img, int(y_bot_staff + 3.0 * spacing))
+
+        notes_found: List[Dict[str, Any]] = []
+
+        is_bass = (staff.clef in ("bass", "f")) or (staff.role in ("piano_lh", "vocal_men") and staff.clef == "bass")
+        is_treble_8vb = (staff.clef == "treble_8vb") or (staff.role == "vocal_men" and staff.clef == "treble")
+
+        for sl in objects:
+            yc = (sl[0].start + sl[0].stop) / 2.0
+            xc = (sl[1].start + sl[1].stop) / 2.0
+            obj_h = sl[0].stop - sl[0].start
+            obj_w = sl[1].stop - sl[1].start
+            area = bw_clean[sl].sum()
+
+            if y_lo <= yc <= y_hi:
+                if (0.35 * spacing) <= obj_h <= (3.5 * spacing) and (0.35 * spacing) <= obj_w <= (3.5 * spacing) and area >= 10:
+                    step_val = int(round((y_bot_staff - yc) / step_px))
+                    step_map = cls.BASS_STEPS if is_bass else cls.TREBLE_STEPS
+                    default_step = ('D', 3) if is_bass else ('B', 4)
+                    step_info = step_map.get(step_val, default_step)
+
+                    pitch_str, midi_num = MusicTheoryEngine.resolve_step_to_pitch(
+                        step=step_info[0],
+                        octave=step_info[1],
+                        key_fifths=key_fifths,
+                        clef="bass" if is_bass else "treble"
+                    )
+
+                    if is_treble_8vb and midi_num > 55:
+                        midi_num -= 12
+                        pitch_str = MusicTheoryEngine.midi_to_pitch_name(midi_num)
+
+                    cy, cx = int(yc), int(xc)
+                    core_r = max(1, int(spacing * 0.28))
+                    y0_c, y1_c = max(0, cy - core_r), min(h_img, cy + core_r + 1)
+                    x0_c, x1_c = max(0, cx - core_r), min(w_img, cx + core_r + 1)
+                    core_area = (y1_c - y0_c) * (x1_c - x0_c)
+                    core_ink = bw[y0_c:y1_c, x0_c:x1_c].sum() if core_area > 0 else 0
+                    fill_ratio = core_ink / float(max(1, core_area))
+                    is_filled = fill_ratio >= 0.48
+
+                    top_strip = bw[max(0, cy - int(2.5 * spacing)):cy, max(0, cx - 3):min(w_img, cx + 4)]
+                    bot_strip = bw[cy:min(h_img, cy + int(2.5 * spacing)), max(0, cx - 3):min(w_img, cx + 4)]
+                    stem = "up" if top_strip.sum() >= bot_strip.sum() else "down"
+
+                    notes_found.append({
+                        "x": xc,
+                        "y": yc,
+                        "pitch": pitch_str,
+                        "midi": midi_num,
+                        "is_filled": is_filled,
+                        "stem": stem,
+                        "w": obj_w,
+                    })
+
+        notes_found.sort(key=lambda n: n["x"])
+
+        grouped_events: List[Dict[str, Any]] = []
+        for n in notes_found:
+            if not grouped_events or (n["x"] - grouped_events[-1]["x"]) > (spacing * 0.65):
+                grouped_events.append({
+                    "x": n["x"],
+                    "pitches": [n["pitch"]],
+                    "midis": [n["midi"]],
+                    "is_filled": n["is_filled"],
+                    "stem": n["stem"],
+                })
+            else:
+                if n["pitch"] not in grouped_events[-1]["pitches"]:
+                    grouped_events[-1]["pitches"].append(n["pitch"])
+                    grouped_events[-1]["midis"].append(n["midi"])
+
+        if not grouped_events:
+            dur_type = "whole" if quarter_length >= 4.0 else ("half" if quarter_length >= 2.0 else "quarter")
+            matched_elements = [
+                NoteElement(pitch=None, duration_quarters=quarter_length, duration_type=dur_type, offset_quarters=0.0, is_rest=True)
+            ]
+        else:
+            matched_elements = []
+            bar_w = max(1.0, float(w_img))
+            n_cnt = len(grouped_events)
+
+            for ev in grouped_events:
+                rel_x = max(0.0, min(1.0, (ev["x"] / bar_w)))
+                off_q = round(rel_x * quarter_length * 2.0) / 2.0
+                is_chord = len(ev["pitches"]) >= 2
+
+                if not ev["is_filled"]:
+                    dur_q = 3.0 if (quarter_length == 3.0 and n_cnt == 1) else (2.0 if quarter_length >= 2.0 else 1.0)
+                else:
+                    dur_q = 1.0 if n_cnt <= 4 else 0.5
+
+                dur_t = "quarter" if abs(dur_q - 1.0) < 0.1 else ("half" if abs(dur_q - 2.0) < 0.1 else "eighth")
+
+                primary_pitch = sorted(ev["pitches"])[-1]
+                matched_elements.append(NoteElement(
+                    pitch=primary_pitch,
+                    midi_pitch=ev["midis"][-1],
+                    duration_quarters=dur_q,
+                    duration_type=dur_t,
+                    offset_quarters=off_q,
+                    stem_direction=ev["stem"],
+                    is_chord=is_chord,
+                    chord_pitches=sorted(ev["pitches"]),
+                    is_rest=False
+                ))
+
+            matched_elements = MusicTheoryEngine.solve_measure_rhythm(
+                matched_elements,
+                bar_quarter_length=quarter_length,
+                time_signature=time_signature
+            )
+
+        track = TrackData(
+            track_name=staff.staff_id,
+            clef=staff.clef,
+            elements=matched_elements
+        )
+        conf = 0.92 if len(notes_found) > 0 else 0.75
+        return track, conf
+
+    @classmethod
+    def _empty_single_staff(cls, staff: StaffInfo, quarter_length: float) -> TrackData:
+        dur_type = "whole" if quarter_length >= 4.0 else ("half" if quarter_length >= 2.0 else "quarter")
+        return TrackData(
+            track_name=staff.staff_id,
+            clef=staff.clef,
+            elements=[NoteElement(pitch=None, duration_quarters=quarter_length, duration_type=dur_type, offset_quarters=0.0, is_rest=True)]
+        )
 
     @classmethod
     def _extract_from_bitmap(

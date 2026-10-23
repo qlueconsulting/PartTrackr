@@ -487,6 +487,11 @@ class AudiverisEngine:
             elif len(parts) == 2 and not any(tr["has_lyrics"] for tr in traits):
                 piano_indices = {0, 1}
 
+        # Cross-reference with layout_data Pass 1 blueprint staves if available
+        layout_staves = []
+        if layout_data and layout_data.get("systems") and layout_data["systems"][0].get("staves"):
+            layout_staves = layout_data["systems"][0]["staves"]
+
         staves_info: List[StaffInfo] = []
         piano_sorted_idx = sorted(list(piano_indices))
         for idx, p in enumerate(parts):
@@ -512,6 +517,18 @@ class AudiverisEngine:
                     role = "vocal_women"
 
             st_id = f"st_{idx}"
+            # Synchronize with Pass 1 layout staves if counts match
+            if len(parts) == len(layout_staves) and idx < len(layout_staves):
+                lst = layout_staves[idx]
+                if lst.get("role"):
+                    role = lst["role"]
+                if lst.get("clef"):
+                    clef_str = lst["clef"]
+                if lst.get("bracket_type"):
+                    bracket = lst["bracket_type"]
+                if lst.get("staff_id"):
+                    st_id = lst["staff_id"]
+
             staves_info.append(
                 StaffInfo(
                     staff_id=st_id,

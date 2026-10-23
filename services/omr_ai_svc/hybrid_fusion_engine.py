@@ -121,13 +121,14 @@ class HybridOMRFusionEngine:
                         if m_num >= int(mod_m):
                             curr_key_fifths = int(mod_f)
 
-                # 1. Run Geometric Staff-Removed OMR
+                # 1. Run Geometric Staff-Removed OMR (Pass 2 isolated staff revisit if crops exist)
                 raw_staves = GeometricOMREngine.recognize_measure_crop(
                     crop_image_path=m_crop,
                     staves=staves_out,
                     key_fifths=curr_key_fifths,
                     quarter_length=quarter_length,
-                    time_signature=time_sig
+                    time_signature=time_sig,
+                    staff_crop_paths=m_dict.get("staff_crop_paths")
                 )
 
                 # 2. Layer 1 OCR Cross-Validation: Check for silent vocal measures before choral entry

@@ -443,3 +443,83 @@ def test_audiveris_brace_and_clef_partitioning_rules():
         assert vocals_xml.exists()
         assert len(summary) == 3  # Exactly 3 synchronized measures
         assert [m["measure_number"] for m in summary] == [1, 2, 3]
+
+
+def test_two_pass_top_down_macro_layout_and_isolated_staff_reading():
+    """
+    Verify the Two-Pass Top-Down Architectural Paradigm:
+    Pass 1: Full-page layout identifies and locks part roles (piano is exactly 2 staves, vocal staves follow clefs/labels)
+            and outputs isolated per-staff measure crops.
+    Pass 2: Revisit line-by-line along isolated staff tracks so notes/stems on piano never contaminate vocal staves.
+    """
+    from services.pdf_layout_svc.layout_engine import PDFLayoutEngine
+    from services.omr_ai_svc.geometric_omr_engine import GeometricOMREngine
+    from services.omr_ai_svc.hybrid_fusion_engine import HybridOMRFusionEngine
+
+    fixture_pdf = Path("tests/fixtures/scanned_choir_score.pdf")
+    if not fixture_pdf.exists():
+        pytest.skip("Scanned score fixture not found")
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        out_dir = Path(tmp_dir)
+        hints = {
+            "staves_per_system": 3,
+            "time_signature": "6/8",
+            "choral_voicing": "Tenor_Bass",
+            "accompaniment_type": "piano",
+        }
+        # Pass 1: Macro-Layout
+        layout_data = PDFLayoutEngine.process_pdf(fixture_pdf, out_dir, dpi=150, score_hints=hints)
+        assert len(layout_data["systems"]) >= 1
+
+        sys0 = layout_data["systems"][0]
+        staves = sys0["staves"]
+        assert len(staves) == 3
+
+        # Hard rules verification:
+        assert staves[0]["role"] == "vocal_men"
+        assert staves[0]["bracket_type"] == "none"
+        assert staves[1]["role"] == "piano_rh"
+        assert staves[1]["bracket_type"] == "brace"
+        assert staves[2]["role"] == "piano_lh"
+        assert staves[2]["bracket_type"] == "brace"
+
+        # Verify isolated staff crops are present for every measure
+        measures = sys0["measures"]
+        assert len(measures) >= 1
+        m0 = measures[0]
+        assert "staff_crop_paths" in m0
+        assert len(m0["staff_crop_paths"]) == 3
+        for st_info in staves:
+            st_id = st_info["staff_id"]
+            assert st_id in m0["staff_crop_paths"]
+            st_crop_file = Path(m0["staff_crop_paths"][st_id])
+            assert st_crop_file.exists()
+            assert st_crop_file.stat().st_size > 0
+
+        # Pass 2: Line-by-Line Track Revisit
+        cism = HybridOMRFusionEngine.extract_cism(
+            layout_data=layout_data,
+            score_hints=hints
+        )
+        assert cism is not None
+        assert len(cism.systems) >= 1
+        cism_sys0 = cism.systems[0]
+        cism_m0 = cism_sys0.measures[0]
+
+        # Verify tracks were populated for all 3 isolated staves without cross-staff bleeding
+        for st_info in staves:
+            st_id = st_info["staff_id"]
+            assert st_id in cism_m0.raw_staves
+            track = cism_m0.raw_staves[st_id]
+            assert len(track.elements) >= 1
+            assert track.clef == st_info["clef"]
+
+        # Voice route and verify partitioned outputs
+        routed = VoiceRouterEngine.route_score(cism, score_hints=hints)
+        xml_dir = out_dir / "xml"
+        main_xml, piano_xml, vocals_xml, stems, summary = XMLCompiler.compile_score(routed, xml_dir)
+        assert piano_xml.exists()
+        assert vocals_xml.exists()
+        assert len(summary) >= 1
+

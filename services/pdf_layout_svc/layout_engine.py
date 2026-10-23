@@ -204,7 +204,36 @@ class PDFLayoutEngine:
                 pix_sys = page.get_pixmap(dpi=dpi, clip=sys_rect_pt)
                 pix_sys.save(str(sys_crop_path))
 
-                # Build measure boxes and crops
+                num_staves_in_sys = len(sys["staves"])
+                voicing_str = (score_hints.get("choral_voicing") or "").lower() if score_hints else ""
+                custom_str = (score_hints.get("custom_instructions") or "").lower() if score_hints else ""
+                is_male = any(k in voicing_str or k in custom_str for k in ("male", "men", "tenor", "baritone", "bass", "tb", "ttbb"))
+
+                # Precompute isolated vertical bounds for each staff track in this system
+                # to completely prevent cross-staff notehead and stem bleeding.
+                staff_y_bounds = []
+                for st_i, st in enumerate(sys["staves"]):
+                    st_y_top = st["y_top"]
+                    st_y_bot = st["y_bot"]
+                    st_h = max(15.0, st_y_bot - st_y_top)
+
+                    if st_i == 0:
+                        crop_y0 = max(0.0, st_y_top - min(30.0, st_h * 1.0))
+                    else:
+                        prev_bot = sys["staves"][st_i - 1]["y_bot"]
+                        gap_above = max(0.0, st_y_top - prev_bot)
+                        crop_y0 = max(0.0, st_y_top - min(st_h * 0.85, gap_above * 0.45))
+
+                    if st_i == num_staves_in_sys - 1:
+                        crop_y1 = min(page_h_pt, st_y_bot + min(35.0, st_h * 1.1))
+                    else:
+                        next_top = sys["staves"][st_i + 1]["y_top"]
+                        gap_below = max(0.0, next_top - st_y_bot)
+                        crop_y1 = min(page_h_pt, st_y_bot + min(st_h * 0.85, gap_below * 0.45))
+
+                    staff_y_bounds.append((crop_y0, crop_y1))
+
+                # Build measure boxes and crops (both unified multi-staff crop and isolated single-staff crops)
                 measures_data = []
                 for b_i in range(num_bars):
                     bx0 = bar_x[b_i]
@@ -221,10 +250,27 @@ class PDFLayoutEngine:
                     pix_m = page.get_pixmap(dpi=dpi, clip=m_rect_pt)
                     pix_m.save(str(m_crop_path))
 
+                    # Isolated single-staff measure crops for line-by-line revisiting
+                    staff_crop_paths = {}
+                    for st_i, st in enumerate(sys["staves"]):
+                        st_id = f"sys{sys_idx}_st{st_i}"
+                        crop_y0, crop_y1 = staff_y_bounds[st_i]
+                        st_m_rect_pt = pymupdf.Rect(
+                            max(0.0, bx0 - 2.0),
+                            crop_y0,
+                            min(page_w_pt, bx1 + 2.0),
+                            crop_y1,
+                        )
+                        st_crop_path = crops_dir / f"measure_{m_num}_staff_{st_i}.png"
+                        pix_st_m = page.get_pixmap(dpi=dpi, clip=st_m_rect_pt)
+                        pix_st_m.save(str(st_crop_path))
+                        staff_crop_paths[st_id] = str(st_crop_path)
+
                     measures_data.append({
                         "measure_number": m_num,
                         "bar_index_in_system": b_i,
                         "crop_image_path": str(m_crop_path),
+                        "staff_crop_paths": staff_crop_paths,
                         "bounding_box": {
                             "x": bx0,
                             "y": sys["y_top"],
@@ -236,34 +282,53 @@ class PDFLayoutEngine:
                 m_end = sys["measure_end"]
 
                 staves_data = []
-                num_staves_in_sys = len(sys["staves"])
-                is_3staff_vocal_piano = (num_staves_in_sys == 3)
-                voicing_str = (score_hints.get("choral_voicing") or "").lower() if score_hints else ""
-                custom_str = (score_hints.get("custom_instructions") or "").lower() if score_hints else ""
-                is_male = any(k in voicing_str or k in custom_str for k in ("male", "men", "tenor", "baritone", "bass", "tb", "ttbb"))
-
                 for st_i, st in enumerate(sys["staves"]):
-                    if is_3staff_vocal_piano:
-                        if st_i == 0:
-                            role = "vocal_men" if is_male else "vocal"
-                            bracket_type = "none"
-                            clef = "treble_8vb" if is_male else st.get("clef", "treble")
-                            label = "Men" if is_male else (st.get("label") or "Solo / Choir")
-                        elif st_i == 1:
-                            role = "piano_rh"
-                            bracket_type = "brace"
-                            clef = "treble"
-                            label = "Piano RH"
+                    role = st.get("role")
+                    clef = st.get("clef", "treble")
+                    bracket_type = st.get("bracket_type")
+                    label = st.get("label")
+
+                    # If not explicitly locked, derive from two-pass top-down rules
+                    if not role:
+                        if st.get("is_piano"):
+                            role = "piano_rh" if st_i == num_staves_in_sys - 2 else "piano_lh"
+                        elif is_male:
+                            role = "vocal_men"
+                        elif clef == "bass":
+                            role = "vocal_men"
                         else:
-                            role = "piano_lh"
-                            bracket_type = "brace"
-                            clef = "bass"
+                            role = "vocal_women"
+
+                    # If user specified male choir hint and staff is vocal, lock role to vocal_men
+                    if is_male and role.startswith("vocal"):
+                        role = "vocal_men"
+
+                    if not bracket_type:
+                        bracket_type = "brace" if role in ("piano_rh", "piano_lh") else ("bracket" if num_staves_in_sys > 2 else "none")
+
+                    if not label:
+                        if role == "piano_rh":
+                            label = "Piano RH"
+                        elif role == "piano_lh":
                             label = "Piano LH"
-                    else:
-                        bracket_type = st.get("bracket_type", "bracket" if st_i < num_staves_in_sys - 2 else "brace")
-                        role = st.get("role", "vocal")
-                        clef = st.get("clef", "treble")
-                        label = st.get("label")
+                        elif role == "vocal_men":
+                            label = "Men"
+                        elif role == "vocal_women":
+                            label = "Women"
+                        else:
+                            label = "Vocal"
+
+                    # System-level single staff crop strip
+                    sys_staff_crop_path = crops_dir / f"system_{sys_idx}_staff_{st_i}.png"
+                    crop_y0, crop_y1 = staff_y_bounds[st_i]
+                    st_sys_rect_pt = pymupdf.Rect(
+                        max(0.0, sys["x_left"] - 25.0),
+                        crop_y0,
+                        min(page_w_pt, sys["x_right"] + 15.0),
+                        crop_y1,
+                    )
+                    pix_sys_st = page.get_pixmap(dpi=dpi, clip=st_sys_rect_pt)
+                    pix_sys_st.save(str(sys_staff_crop_path))
 
                     staves_data.append({
                         "staff_id": f"sys{sys_idx}_st{st_i}",
@@ -271,8 +336,10 @@ class PDFLayoutEngine:
                         "clef": clef,
                         "bracket_type": bracket_type,
                         "role": role,
+                        "is_piano": (role in ("piano_rh", "piano_lh") or bracket_type == "brace"),
                         "y_top": st["y_top"],
                         "y_bot": st["y_bot"],
+                        "crop_image_path": str(sys_staff_crop_path),
                         "has_lyrics": st.get("has_lyrics", False),
                         "label": label,
                     })
