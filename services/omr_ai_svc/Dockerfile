@@ -8,11 +8,11 @@ ENV PYTHONUNBUFFERED=1 \
     JAVA_TOOL_OPTIONS="-Djava.awt.headless=true" \
     AUDIVERIS_VERSION=5.11.0
 
-# Install Java 17 headless, Tesseract OCR, and headless graphics dependencies (libgl1 instead of obsolete libgl1-mesa-glx)
+# Install Java headless, Tesseract OCR, and headless graphics dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     wget \
-    openjdk-17-jre-headless \
+    default-jre-headless \
     tesseract-ocr \
     tesseract-ocr-eng \
     libgl1 \
