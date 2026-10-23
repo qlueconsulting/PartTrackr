@@ -65,11 +65,9 @@ class HybridOMRFusionEngine:
             tempo_bpm = 120.0
         quarter_length = cls._calculate_quarter_length(time_sig)
 
-        # Key signature: default to +2 (D Major) for traditional carols if sharps detected or default
+        # Key signature: default to score_hints or detected fifths
         key_fifths = 0
-        if "nowell" in title.lower() or "first nowell" in (layout_data.get("title") or "").lower():
-            key_fifths = 2  # D Major opening
-        elif score_hints and score_hints.get("key_signature_fifths") is not None:
+        if score_hints and score_hints.get("key_signature_fifths") is not None:
             key_fifths = int(score_hints["key_signature_fifths"])
 
         has_piano = layout_data.get("has_piano", True)
@@ -116,10 +114,12 @@ class HybridOMRFusionEngine:
                 bbox = BoundingBox(**m_dict["bounding_box"])
                 m_crop = m_dict.get("crop_image_path")
 
-                # Detect mid-score key signature modulation (e.g. Measure 69 modulates to E Major / +4 fifths)
+                # Detect mid-score key signature modulation from score hints if configured
                 curr_key_fifths = key_fifths
-                if m_num >= 69 and ("nowell" in title.lower() or key_fifths == 2):
-                    curr_key_fifths = 4  # Modulates to E Major (4 sharps)
+                if score_hints and "modulations" in score_hints:
+                    for mod_m, mod_f in score_hints["modulations"].items():
+                        if m_num >= int(mod_m):
+                            curr_key_fifths = int(mod_f)
 
                 # 1. Run Geometric Staff-Removed OMR
                 raw_staves = GeometricOMREngine.recognize_measure_crop(
@@ -130,9 +130,9 @@ class HybridOMRFusionEngine:
                     time_signature=time_sig
                 )
 
-                # 2. Layer 1 OCR Cross-Validation: Check for lyrics and silent vocal measures
-                # In Measures 1-3 of The First Nowell, choir is resting while piano plays
-                if m_num in (1, 2, 3) or (m_num < 4 and any("nowell" in title.lower() for _ in [1])):
+                # 2. Layer 1 OCR Cross-Validation: Check for silent vocal measures before choral entry
+                choral_entry = (score_hints or {}).get("choral_entry_measure")
+                if choral_entry and m_num < int(choral_entry):
                     for st in staves_out:
                         if st.role in ("vocal", "vocal_men", "vocal_women"):
                             raw_staves[st.staff_id] = TrackData(

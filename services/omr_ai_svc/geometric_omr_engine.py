@@ -289,9 +289,9 @@ class GeometricOMREngine:
                     is_chord = len(ev["pitches"]) >= 2
 
                     if not ev["is_filled"]:
-                        dur_q = 3.0 if quarter_length == 3.0 and n_cnt == 1 else (2.0 if quarter_length >= 2.0 else 1.0)
+                        dur_q = 3.0 if (quarter_length == 3.0 and n_cnt == 1) else (2.0 if quarter_length >= 2.0 else 1.0)
                     else:
-                        dur_q = float(quarter_length / n_cnt) if n_cnt <= 4 else 0.5
+                        dur_q = 1.0 if n_cnt <= 4 else 0.5
 
                     dur_t = "quarter" if abs(dur_q - 1.0) < 0.1 else ("half" if abs(dur_q - 2.0) < 0.1 else "eighth")
 

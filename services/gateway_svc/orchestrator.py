@@ -174,7 +174,7 @@ class PipelineOrchestrator:
                     logger.error(f"In-process fallback failed for pdf-layout-svc: {fallback_err}\n{traceback.format_exc()}")
                     append_job_log(job_dir, "error", "pdf-layout-svc", f"Layout service unreachable ({conn_err}) and in-process fallback failed ({fallback_err}).")
                     raise RuntimeError(
-                        f"pdf-layout-svc ({LAYOUT_SVC_URL}) is unreachable ({conn_err}) and in-process fallback failed: {fallback_err}."
+                        f"pdf-layout-svc ({LAYOUT_SVC_URL}) is unreachable ({conn_err}) and in-process fallback failed: {fallback_err}. Ensure container is running on parttrackr_net."
                     ) from fallback_err
 
             job.layout_data = layout_data
@@ -245,7 +245,7 @@ class PipelineOrchestrator:
                     logger.error(f"In-process fallback failed for omr-ai-svc: {fallback_err}\n{traceback.format_exc()}")
                     append_job_log(job_dir, "error", "omr-ai-svc", f"OMR service unreachable ({conn_err}) and in-process fallback failed ({fallback_err}).")
                     raise RuntimeError(
-                        f"omr-ai-svc ({OMR_SVC_URL}) is unreachable ({conn_err}) and in-process fallback failed: {fallback_err}."
+                        f"omr-ai-svc ({OMR_SVC_URL}) is unreachable ({conn_err}) and in-process fallback failed: {fallback_err}. Ensure container is running on parttrackr_net."
                     ) from fallback_err
 
             job.raw_cism = raw_cism
@@ -301,7 +301,7 @@ class PipelineOrchestrator:
                     logger.error(f"In-process fallback failed for voice-router-svc: {fallback_err}\n{traceback.format_exc()}")
                     append_job_log(job_dir, "error", "voice-router-svc", f"Voice router service unreachable ({conn_err}) and in-process fallback failed ({fallback_err}).")
                     raise RuntimeError(
-                        f"voice-router-svc ({ROUTER_SVC_URL}) is unreachable ({conn_err}) and in-process fallback failed: {fallback_err}."
+                        f"voice-router-svc ({ROUTER_SVC_URL}) is unreachable ({conn_err}) and in-process fallback failed: {fallback_err}. Ensure container is running on parttrackr_net."
                     ) from fallback_err
 
             job.routed_cism = routed_cism
@@ -379,7 +379,7 @@ class PipelineOrchestrator:
                     logger.error(f"In-process fallback failed for decoder-xml-svc: {fallback_err}\n{traceback.format_exc()}")
                     append_job_log(job_dir, "error", "decoder-xml-svc", f"Decoder service unreachable ({conn_err}) and in-process fallback failed ({fallback_err}).")
                     raise RuntimeError(
-                        f"decoder-xml-svc ({DECODER_SVC_URL}) is unreachable ({conn_err}) and in-process fallback failed: {fallback_err}."
+                        f"decoder-xml-svc ({DECODER_SVC_URL}) is unreachable ({conn_err}) and in-process fallback failed: {fallback_err}. Ensure container is running on parttrackr_net."
                     ) from fallback_err
 
             # Stage 5: Closed-Loop Verification & Invariant Enforcement

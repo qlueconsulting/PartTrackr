@@ -55,16 +55,23 @@ class AudiverisEngine:
             if not c:
                 continue
             resolved = shutil.which(c)
-            if resolved:
+            if resolved and os.path.isfile(resolved) and os.access(resolved, os.X_OK):
                 return resolved
             p = Path(c)
-            if p.exists() and p.is_file():
+            if p.exists() and p.is_file() and os.access(str(p), os.X_OK):
                 return str(p)
         return None
 
     @classmethod
     def is_installed(cls) -> bool:
-        return cls.find_audiveris_binary() is not None
+        bin_path = cls.find_audiveris_binary()
+        if not bin_path:
+            return False
+        try:
+            res = subprocess.run([bin_path, "-batch", "-help"], capture_output=True, timeout=15)
+            return res.returncode == 0
+        except Exception:
+            return False
 
     @classmethod
     def process_pdf_to_cism(
@@ -93,8 +100,7 @@ class AudiverisEngine:
             "-export",
             "-output",
             str(work_dir),
-            "-option",
-            "org.audiveris.omr.sheet.BookManager.useSeparateBookFolders=false",
+            "--",
             str(pdf_path)
         ]
 
@@ -123,11 +129,43 @@ class AudiverisEngine:
         if not exported_files:
             # Check if Audiveris saved directly in the PDF directory
             exported_files = sorted(
-                list(pdf_path.parent.glob("*.mxl")) +
-                list(pdf_path.parent.glob("*.xml")) +
-                list(pdf_path.parent.glob("*.musicxml")),
+                list(pdf_path.parent.rglob("*.mxl")) +
+                list(pdf_path.parent.rglob("*.xml")) +
+                list(pdf_path.parent.rglob("*.musicxml")),
                 key=_natural_sort_key
             )
+
+        # Fallback retry: If PDF produced no files, retry using pre-rendered 300 DPI page images from layout_data
+        if not exported_files and layout_data and layout_data.get("pages"):
+            page_images = [
+                Path(p["image_path"]) for p in layout_data["pages"]
+                if p.get("image_path") and Path(p["image_path"]).exists()
+            ]
+            if page_images:
+                logger.info(f"Retrying Audiveris OMR with {len(page_images)} pre-rendered 300 DPI page images...")
+                img_cmd = [
+                    str(bin_path),
+                    "-batch",
+                    "-export",
+                    "-output",
+                    str(work_dir),
+                    "--"
+                ] + [str(p) for p in page_images]
+                img_res = subprocess.run(
+                    img_cmd,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=300,
+                    env=env
+                )
+                logger.info(f"Audiveris image retry finished with exit code {img_res.returncode}")
+                exported_files = sorted(
+                    list(work_dir.rglob("*.mxl")) +
+                    list(work_dir.rglob("*.xml")) +
+                    list(work_dir.rglob("*.musicxml")),
+                    key=_natural_sort_key
+                )
 
         if not exported_files:
             err_msg = (
@@ -413,22 +451,67 @@ class AudiverisEngine:
         measures_by_part = [list(p.getElementsByClass(stream.Measure)) for p in parts]
         total_measures = max((len(m_list) for m_list in measures_by_part), default=0)
 
-        # Detect piano parts
-        has_piano = any("piano" in (p.partName or "").lower() or "piano" in p.id.lower() for p in parts)
-        if (score_hints or {}).get("accompaniment_type") == "piano":
-            has_piano = True
+        # Step 1: Detect curved braces and piano naming from score layout, groups, and hints
+        brace_part_ids = set()
+        for sg in score.getElementsByClass(layout.StaffGroup):
+            sym = getattr(sg, "symbol", "")
+            if sym in ("brace", "curly"):
+                for p in sg:
+                    if hasattr(p, "id"):
+                        brace_part_ids.add(p.id)
+
+        traits = [cls._inspect_part_traits(p) for p in parts]
+        for idx, tr in enumerate(traits):
+            pid = parts[idx].id
+            tr["is_brace"] = pid in brace_part_ids or tr["is_piano_named"]
+
+        has_piano = bool(
+            (score_hints or {}).get("accompaniment_type") == "piano"
+            or (layout_data or {}).get("has_piano", False)
+            or any(tr["is_brace"] for tr in traits)
+            or any(tr["is_piano_named"] for tr in traits)
+            or (len(parts) >= 3 and not traits[-1]["has_lyrics"] and not traits[-2]["has_lyrics"])
+        )
+        if (score_hints or {}).get("accompaniment_type") == "a_cappella":
+            has_piano = False
+
+        # Identify piano indices: piano is ALWAYS exactly two staves
+        piano_indices = set()
+        if has_piano:
+            explicit_piano = [i for i, tr in enumerate(traits) if tr["is_brace"] or tr["is_piano_named"]]
+            if len(explicit_piano) == 2:
+                piano_indices = set(explicit_piano)
+            elif len(parts) >= 3:
+                # Bottom-up anchor: in choral scores with piano, bottom 2 staves are piano
+                piano_indices = {len(parts) - 2, len(parts) - 1}
+            elif len(parts) == 2 and not any(tr["has_lyrics"] for tr in traits):
+                piano_indices = {0, 1}
 
         staves_info: List[StaffInfo] = []
+        piano_sorted_idx = sorted(list(piano_indices))
         for idx, p in enumerate(parts):
-            p_name = (p.partName or p.id).lower()
-            is_pno = "piano" in p_name or "pno" in p_name
-            st_id = f"st_{idx}"
+            tr = traits[idx]
             first_clef = p.flatten().getElementsByClass(clef.Clef).first()
             clef_str = "bass" if isinstance(first_clef, (clef.BassClef, clef.FClef)) else "treble"
 
-            role = "piano_rh" if (is_pno and idx == len(parts) - 2) else ("piano_lh" if (is_pno and idx == len(parts) - 1) else "vocal")
-            bracket = "brace" if is_pno else "bracket"
+            if idx in piano_indices:
+                bracket = "brace"
+                role = "piano_rh" if idx == piano_sorted_idx[0] else "piano_lh"
+                clef_str = "treble" if role == "piano_rh" else "bass"
+            else:
+                bracket = "bracket"
+                # Step 2: Unlabeled remaining staves: Treble = women parts, Bass = male parts
+                p_name_lower = (p.partName or p.id or "").lower()
+                if any(k in p_name_lower for k in ("men", "male", "tenor", "bass", "baritone", "t.", "b.")):
+                    role = "vocal_men"
+                elif any(k in p_name_lower for k in ("women", "soprano", "alto", "s.", "a.")):
+                    role = "vocal_women"
+                elif clef_str == "bass" or tr["is_bass"]:
+                    role = "vocal_men"
+                else:
+                    role = "vocal_women"
 
+            st_id = f"st_{idx}"
             staves_info.append(
                 StaffInfo(
                     staff_id=st_id,
@@ -438,8 +521,8 @@ class AudiverisEngine:
                     role=role,
                     y_top=100.0 * idx,
                     y_bot=100.0 * idx + 50.0,
-                    has_lyrics=(role == "vocal"),
-                    label=p.partName
+                    has_lyrics=(bracket != "brace" and tr["has_lyrics"]),
+                    label=p.partName or ("Piano RH" if role == "piano_rh" else ("Piano LH" if role == "piano_lh" else ("Women" if role == "vocal_women" else "Men")))
                 )
             )
 

@@ -352,3 +352,94 @@ def test_partitioned_musicxml_and_midi_generation():
         assert "score_11ch.mid" in main_mid.name
         assert "score_piano.mid" in piano_mid.name
         assert "score_vocals.mid" in vocals_mid.name
+
+
+def test_audiveris_brace_and_clef_partitioning_rules():
+    """
+    Verify exact rule:
+    1. Curved braces or labels ('piano' / 'keyboard') identify piano part (always exactly 2 staves: RH Treble + LH Bass).
+    2. Remaining unlabeled staves are partitioned: Treble clef -> women parts, Bass clef -> male parts.
+    3. Partitioned into two synchronized MusicXMLs (score_piano.musicxml and score_vocals.musicxml).
+    """
+    # Create a 4-staff score:
+    # Staff 0: Unlabeled Treble clef (Women)
+    # Staff 1: Unlabeled Bass clef (Men)
+    # Staff 2: Piano RH (Treble) in brace
+    # Staff 3: Piano LH (Bass) in brace
+    sc = stream.Score()
+    p_w = stream.Part(id="P1") # Unlabeled women
+    p_m = stream.Part(id="P2") # Unlabeled men
+    p_prh = stream.Part(id="P3") # Piano RH
+    p_plh = stream.Part(id="P4") # Piano LH
+
+    p_w.insert(0, clef.TrebleClef())
+    p_m.insert(0, clef.BassClef())
+    p_prh.insert(0, clef.TrebleClef())
+    p_plh.insert(0, clef.BassClef())
+
+    for m_num in range(1, 4):
+        # Women
+        mw = stream.Measure(number=m_num)
+        mw.append(note.Note("G4", quarterLength=4.0))
+        p_w.append(mw)
+        # Men
+        mm = stream.Measure(number=m_num)
+        mm.append(note.Note("D3", quarterLength=4.0))
+        p_m.append(mm)
+        # Piano RH
+        mprh = stream.Measure(number=m_num)
+        mprh.append(note.Note("B4", quarterLength=4.0))
+        p_prh.append(mprh)
+        # Piano LH
+        mplh = stream.Measure(number=m_num)
+        mplh.append(note.Note("G2", quarterLength=4.0))
+        p_plh.append(mplh)
+
+    sc.append(p_w)
+    sc.append(p_m)
+    sc.append(p_prh)
+    sc.append(p_plh)
+
+    # Add curly brace grouping for P3 and P4
+    sc.append(layout.StaffGroup([p_prh, p_plh], symbol="brace", name="Keyboard"))
+
+    cism = AudiverisEngine._music21_score_to_cism(
+        score=sc,
+        pdf_path=Path("choral_anthem.pdf"),
+        layout_data={"has_piano": True},
+        score_hints={"time_signature": "4/4", "tempo_bpm": 100.0}
+    )
+
+    assert cism.has_piano is True
+    staves = cism.systems[0].staves
+    assert len(staves) == 4
+
+    # Staff 0: Unlabeled Treble -> Women
+    assert staves[0].role == "vocal_women"
+    assert staves[0].bracket_type == "bracket"
+    assert staves[0].clef == "treble"
+
+    # Staff 1: Unlabeled Bass -> Men
+    assert staves[1].role == "vocal_men"
+    assert staves[1].bracket_type == "bracket"
+    assert staves[1].clef == "bass"
+
+    # Staff 2 & 3: Braced Piano -> exactly 2 staves (RH Treble + LH Bass)
+    assert staves[2].role == "piano_rh"
+    assert staves[2].bracket_type == "brace"
+    assert staves[2].clef == "treble"
+
+    assert staves[3].role == "piano_lh"
+    assert staves[3].bracket_type == "brace"
+    assert staves[3].clef == "bass"
+
+    # Voice route and compile partitioned XML
+    routed = VoiceRouterEngine.route_score(cism)
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        out_p = Path(tmp_dir)
+        main_xml, piano_xml, vocals_xml, stems, summary = XMLCompiler.compile_score(routed, out_p)
+
+        assert piano_xml.exists()
+        assert vocals_xml.exists()
+        assert len(summary) == 3  # Exactly 3 synchronized measures
+        assert [m["measure_number"] for m in summary] == [1, 2, 3]

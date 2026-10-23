@@ -8,10 +8,13 @@ ENV PYTHONUNBUFFERED=1 \
     JAVA_TOOL_OPTIONS="-Djava.awt.headless=true" \
     AUDIVERIS_VERSION=5.11.0
 
-# Install Java headless, Tesseract OCR, and headless graphics/AWT dependencies
+# Install Java headless, Ghostscript (required for Audiveris PDF rasterization),
+# Tesseract OCR, zstd (required for deb extraction), and headless graphics/AWT dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     wget \
+    zstd \
+    ghostscript \
     default-jre-headless \
     tesseract-ocr \
     tesseract-ocr-eng \
@@ -24,23 +27,25 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libfontconfig1 \
     libfreetype6 \
     libxext6 \
+    libbsd0 \
+    libmd0 \
+    libx11-6 \
+    libxau6 \
+    libxcb1 \
+    libxdmcp6 \
+    xdg-utils \
+    zlib1g \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Audiveris headless OMR CLI with safe download & fallback
+# Install Audiveris headless OMR CLI and verify executable works
 RUN mkdir -p /usr/share/desktop-directories /opt/audiveris && \
-    (wget -q https://github.com/Audiveris/audiveris/releases/download/${AUDIVERIS_VERSION}/Audiveris-${AUDIVERIS_VERSION}-ubuntu22.04-x86_64.deb -O /tmp/audiveris.deb 2>/dev/null || true) && \
-    if [ -f /tmp/audiveris.deb ] && [ -s /tmp/audiveris.deb ]; then \
-        dpkg-deb -x /tmp/audiveris.deb / && \
-        rm -f /tmp/audiveris.deb && \
-        REAL_BIN=$(find /opt -type f -name "Audiveris" 2>/dev/null | head -n 1) && \
-        if [ -n "$REAL_BIN" ]; then \
-            chmod +x "$REAL_BIN" && \
-            ln -sfn "$REAL_BIN" /usr/local/bin/audiveris && \
-            ln -sfn "$REAL_BIN" /usr/bin/audiveris; \
-        fi \
-    else \
-        rm -f /tmp/audiveris.deb; \
-    fi
+    wget -q https://github.com/Audiveris/audiveris/releases/download/${AUDIVERIS_VERSION}/Audiveris-${AUDIVERIS_VERSION}-ubuntu22.04-x86_64.deb -O /tmp/audiveris.deb && \
+    dpkg-deb -x /tmp/audiveris.deb / && \
+    rm -f /tmp/audiveris.deb && \
+    chmod +x /opt/audiveris/bin/Audiveris && \
+    ln -sfn /opt/audiveris/bin/Audiveris /usr/local/bin/audiveris && \
+    ln -sfn /opt/audiveris/bin/Audiveris /usr/bin/audiveris && \
+    audiveris -batch -help
 
 COPY services/omr_ai_svc/requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
