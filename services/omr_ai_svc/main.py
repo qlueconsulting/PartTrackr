@@ -63,13 +63,26 @@ def process_omr(req: OMRRequest) -> ScoreCISM:
         elif AudiverisEngine.is_installed():
             logger.info(f"Job {req.job_id}: Running Headless Audiveris 5.3+ OMR on {pdf_file.name}...")
             job_workdir = pdf_file.parent / "audiveris_out"
-            score_cism = AudiverisEngine.process_pdf_to_cism(
-                pdf_path=pdf_file,
-                work_dir=job_workdir,
-                layout_data=req.layout_data,
-                score_hints=req.score_hints,
-                custom_instructions=custom_instr
-            )
+            try:
+                score_cism = AudiverisEngine.process_pdf_to_cism(
+                    pdf_path=pdf_file,
+                    work_dir=job_workdir,
+                    layout_data=req.layout_data,
+                    score_hints=req.score_hints,
+                    custom_instructions=custom_instr
+                )
+            except Exception as aud_err:
+                logger.warning(
+                    f"Job {req.job_id}: Audiveris execution failed or produced no output ({aud_err}). "
+                    f"Falling back to Blended Neuro-Symbolic OMR..."
+                )
+                from services.omr_ai_svc.hybrid_fusion_engine import HybridOMRFusionEngine
+                score_cism = HybridOMRFusionEngine.extract_cism(
+                    layout_data=req.layout_data,
+                    custom_instructions=custom_instr,
+                    score_hints=req.score_hints,
+                    gemini_api_key=req.gemini_api_key
+                )
 
         # 3. Blended Neuro-Symbolic Fallback: Fused OCR + Morphological Geometric OMR + Music Theory
         else:

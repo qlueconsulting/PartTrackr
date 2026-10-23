@@ -121,7 +121,22 @@ class AudiverisEngine:
         )
 
         if not exported_files:
-            raise RuntimeError(f"Audiveris completed but produced no MusicXML files in {work_dir}")
+            # Check if Audiveris saved directly in the PDF directory
+            exported_files = sorted(
+                list(pdf_path.parent.glob("*.mxl")) +
+                list(pdf_path.parent.glob("*.xml")) +
+                list(pdf_path.parent.glob("*.musicxml")),
+                key=_natural_sort_key
+            )
+
+        if not exported_files:
+            err_msg = (
+                f"Audiveris exited with code {result.returncode} but produced no MusicXML files in {work_dir}. "
+                f"Stderr: {result.stderr.strip()[:400] if result.stderr else 'none'}. "
+                f"Stdout: {result.stdout.strip()[:400] if result.stdout else 'none'}."
+            )
+            logger.warning(err_msg)
+            raise RuntimeError(err_msg)
 
         stitched_score = cls._stitch_movements(exported_files, pdf_path, layout_data, score_hints)
         return cls._music21_score_to_cism(stitched_score, pdf_path, layout_data, score_hints)

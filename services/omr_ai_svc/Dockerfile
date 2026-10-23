@@ -8,7 +8,7 @@ ENV PYTHONUNBUFFERED=1 \
     JAVA_TOOL_OPTIONS="-Djava.awt.headless=true" \
     AUDIVERIS_VERSION=5.11.0
 
-# Install Java headless, Tesseract OCR, and headless graphics dependencies
+# Install Java headless, Tesseract OCR, and headless graphics/AWT dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     wget \
@@ -17,6 +17,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     tesseract-ocr-eng \
     libgl1 \
     libglib2.0-0 \
+    libxtst6 \
+    libxrender1 \
+    libxi6 \
+    libasound2 \
+    libfontconfig1 \
+    libfreetype6 \
+    libxext6 \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Audiveris headless OMR CLI with safe download & fallback
