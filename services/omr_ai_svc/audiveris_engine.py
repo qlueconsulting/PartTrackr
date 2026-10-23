@@ -372,37 +372,76 @@ class AudiverisEngine:
         bar_ql = Fraction(calculate_bar_quarter_length(default_ts_str))
 
         for m_block in merged_mvts:
-            blk_len = m_block["m_count"]
+            # Check if this movement has printed measure numbers that anchor its starting measure
+            all_block_measures = [
+                m.number for tr in (m_block["vocal_traits"] + m_block["piano_traits"])
+                for m in tr["part"].getElementsByClass(stream.Measure)
+                if m.number is not None and m.number > 0
+            ]
+            if all_block_measures:
+                mvt_min = min(all_block_measures)
+                mvt_max = max(all_block_measures)
+                if mvt_min >= global_measure_num:
+                    # Absolute printed numbering continues across movements
+                    use_absolute = True
+                    mvt_start_num = mvt_min
+                    global_measure_num = mvt_min
+                else:
+                    # Movement restarts numbering from 1 (relative indexing 1..N)
+                    use_absolute = False
+                    mvt_start_num = mvt_min
+
+                blk_len = max(m_block["m_count"], (mvt_max - mvt_min + 1))
+            else:
+                use_absolute = False
+                mvt_start_num = 1
+                blk_len = m_block["m_count"]
+
             for m_i in range(blk_len):
-                # Stitch each vocal part
+                cur_target_num = global_measure_num + m_i
+                local_src_num = (mvt_start_num + m_i) if not use_absolute else cur_target_num
+
+                # Stitch each vocal part with exact measure number alignment
                 for vi, out_p in enumerate(vocal_out_parts):
                     if vi < len(m_block["vocal_traits"]):
                         src_part = m_block["vocal_traits"][vi]["part"]
-                        m_obj = cls._extract_measure(src_part, m_i, global_measure_num, default_ts_str, default_tempo_bpm, bar_ql)
+                        m_obj = cls._extract_measure(
+                            src_part, m_i, cur_target_num, default_ts_str, default_tempo_bpm, bar_ql,
+                            src_measure_num=local_src_num
+                        )
                     else:
-                        m_obj = stream.Measure(number=global_measure_num)
+                        m_obj = stream.Measure(number=cur_target_num)
                         m_obj.append(note.Rest(quarterLength=bar_ql))
                     out_p.append(m_obj)
 
-                # Stitch piano staves
+                # Stitch piano staves with exact measure number alignment
                 if score_has_piano:
                     p_traits = m_block["piano_traits"]
                     if len(p_traits) >= 2:
-                        rh_m = cls._extract_measure(p_traits[0]["part"], m_i, global_measure_num, default_ts_str, default_tempo_bpm, bar_ql)
-                        lh_m = cls._extract_measure(p_traits[1]["part"], m_i, global_measure_num, default_ts_str, default_tempo_bpm, bar_ql)
+                        rh_m = cls._extract_measure(
+                            p_traits[0]["part"], m_i, cur_target_num, default_ts_str, default_tempo_bpm, bar_ql,
+                            src_measure_num=local_src_num
+                        )
+                        lh_m = cls._extract_measure(
+                            p_traits[1]["part"], m_i, cur_target_num, default_ts_str, default_tempo_bpm, bar_ql,
+                            src_measure_num=local_src_num
+                        )
                     elif len(p_traits) == 1:
-                        rh_m = cls._extract_measure(p_traits[0]["part"], m_i, global_measure_num, default_ts_str, default_tempo_bpm, bar_ql)
-                        lh_m = stream.Measure(number=global_measure_num)
+                        rh_m = cls._extract_measure(
+                            p_traits[0]["part"], m_i, cur_target_num, default_ts_str, default_tempo_bpm, bar_ql,
+                            src_measure_num=local_src_num
+                        )
+                        lh_m = stream.Measure(number=cur_target_num)
                         lh_m.append(note.Rest(quarterLength=bar_ql))
                     else:
-                        rh_m = stream.Measure(number=global_measure_num)
+                        rh_m = stream.Measure(number=cur_target_num)
                         rh_m.append(note.Rest(quarterLength=bar_ql))
-                        lh_m = stream.Measure(number=global_measure_num)
+                        lh_m = stream.Measure(number=cur_target_num)
                         lh_m.append(note.Rest(quarterLength=bar_ql))
                     piano_rh.append(rh_m)
                     piano_lh.append(lh_m)
 
-                global_measure_num += 1
+            global_measure_num += blk_len
 
         return unified
 
@@ -414,20 +453,39 @@ class AudiverisEngine:
         target_num: int,
         ts_str: str,
         tempo_bpm: float,
-        bar_ql: Fraction
+        bar_ql: Fraction,
+        src_measure_num: Optional[int] = None
     ) -> music21.stream.Measure:
-        measures = list(part.getElementsByClass(stream.Measure))
         m_out = stream.Measure(number=target_num)
         m_out.timeSignature = meter.TimeSignature(ts_str)
         if target_num == 1:
             m_out.insert(0, tempo.MetronomeMark(number=tempo_bpm))
 
-        if m_idx < len(measures):
-            src_m = measures[m_idx]
+        lookup_num = src_measure_num if src_measure_num is not None else target_num
+
+        # 1. First attempt: match by exact measure number (prevents cross-part desynchronization!)
+        src_m = None
+        for m in part.getElementsByClass(stream.Measure):
+            if m.number == lookup_num:
+                src_m = m
+                break
+
+        # 2. Second attempt: match by index if measure numbers are absent
+        if src_m is None:
+            measures = list(part.getElementsByClass(stream.Measure))
+            if m_idx < len(measures):
+                cand = measures[m_idx]
+                if cand.number is None or cand.number == 0:
+                    src_m = cand
+
+        if src_m is not None:
             elems = list(src_m.flatten().notesAndRests)
             if elems:
                 for el in elems:
                     m_out.insert(float(el.offset), copy.deepcopy(el))
+                # Preserve any rehearsal marks
+                for rm in src_m.getElementsByClass(music21.expressions.RehearsalMark):
+                    m_out.insert(0, copy.deepcopy(rm))
                 return m_out
 
         m_out.append(note.Rest(quarterLength=bar_ql))
@@ -543,23 +601,77 @@ class AudiverisEngine:
                 )
             )
 
+        # Build measure maps for all parts indexed by exact measure number and metric offset
+        # to ensure that when piecing parts back together, individual measure numbers align strictly.
+        part_m_by_num: List[Dict[int, music21.stream.Measure]] = []
+        part_m_by_offset: List[Dict[float, music21.stream.Measure]] = []
+        part_rehearsal_marks: List[Dict[int, str]] = []
+
+        for idx, p in enumerate(parts):
+            num_map: Dict[int, music21.stream.Measure] = {}
+            off_map: Dict[float, music21.stream.Measure] = {}
+            rm_map: Dict[int, str] = {}
+            for m in p.getElementsByClass(stream.Measure):
+                if m.number is not None and m.number >= 0:
+                    num_map[m.number] = m
+                off_key = round(float(m.offset), 2)
+                off_map[off_key] = m
+                rms = list(m.getElementsByClass(music21.expressions.RehearsalMark))
+                if rms and hasattr(rms[0], "content") and rms[0].content:
+                    rm_map[m.number if m.number is not None else 0] = str(rms[0].content)
+
+            part_m_by_num.append(num_map)
+            part_m_by_offset.append(off_map)
+            part_rehearsal_marks.append(rm_map)
+
+        all_detected_numbers = set()
+        for num_map in part_m_by_num:
+            for num in num_map.keys():
+                if num >= 0:
+                    all_detected_numbers.add(num)
+
+        start_num = min(all_detected_numbers) if all_detected_numbers else 1
+        end_num = max(all_detected_numbers) if all_detected_numbers else total_measures
+        if score_hints and score_hints.get("total_measures"):
+            end_num = max(end_num, int(score_hints["total_measures"]))
+        elif layout_data and layout_data.get("total_measures"):
+            end_num = max(end_num, int(layout_data["total_measures"]))
+
+        master_measure_numbers = list(range(start_num, end_num + 1))
+        if not master_measure_numbers:
+            master_measure_numbers = list(range(1, total_measures + 1))
+
         cism_measures: List[MeasureData] = []
         default_ts = (score_hints or {}).get("time_signature", "4/4")
         default_bpm = float((score_hints or {}).get("tempo_bpm", 120.0))
 
-        for m_num in range(1, total_measures + 1):
+        for m_num in master_measure_numbers:
             raw_staves: Dict[str, TrackData] = {}
             m_ts = default_ts
             m_bpm = default_bpm
             m_ql = float(calculate_bar_quarter_length(m_ts))
 
+            # Synchronize Rehearsal Marks across all parts
+            reh_mark = None
+            for rm_map in part_rehearsal_marks:
+                if m_num in rm_map:
+                    reh_mark = rm_map[m_num]
+                    break
+
             for idx, p in enumerate(parts):
-                m_list = measures_by_part[idx]
                 st_id = staves_info[idx].staff_id
+                num_map = part_m_by_num[idx]
+                src_m = num_map.get(m_num)
+
+                # Fallback to index only if part measures have no numbers or if index matches
+                if src_m is None and not num_map and (m_num - 1) < len(measures_by_part[idx]):
+                    cand = measures_by_part[idx][m_num - 1]
+                    if cand.number is None or cand.number == 0 or cand.number == m_num:
+                        src_m = cand
+
                 elements: List[NoteElement] = []
 
-                if m_num - 1 < len(m_list):
-                    src_m = m_list[m_num - 1]
+                if src_m is not None:
                     if src_m.timeSignature:
                         m_ts = src_m.timeSignature.ratioString
                         m_ql = float(src_m.timeSignature.barDuration.quarterLength)
@@ -629,7 +741,7 @@ class AudiverisEngine:
                         NoteElement(
                             pitch=None,
                             duration_quarters=m_ql,
-                            duration_type="whole",
+                            duration_type="whole" if m_ql >= 4.0 else "half",
                             offset_quarters=0.0,
                             is_rest=True
                         )
@@ -647,6 +759,7 @@ class AudiverisEngine:
                     time_signature=m_ts,
                     tempo_bpm=m_bpm,
                     quarter_length=m_ql,
+                    rehearsal_mark=reh_mark,
                     raw_staves=raw_staves
                 )
             )

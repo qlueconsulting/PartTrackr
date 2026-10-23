@@ -197,6 +197,8 @@ class XMLCompiler:
                     m_part.timeSignature = meter.TimeSignature(ts_str)
                 if m_idx == 0 or (m_idx > 0 and all_measures[m_idx - 1].tempo_bpm != tempo_bpm):
                     m_part.insert(0, tempo.MetronomeMark(number=tempo_bpm))
+                if getattr(m_data, "rehearsal_mark", None):
+                    m_part.insert(0, music21.expressions.RehearsalMark(m_data.rehearsal_mark))
 
                 track_data = m_data.tracks.get(p_name)
                 elements = track_data.elements if track_data else []
@@ -218,6 +220,9 @@ class XMLCompiler:
             if m_idx == 0 or (m_idx > 0 and all_measures[m_idx - 1].tempo_bpm != tempo_bpm):
                 m_rh.insert(0, tempo.MetronomeMark(number=tempo_bpm))
                 m_lh.insert(0, tempo.MetronomeMark(number=tempo_bpm))
+            if getattr(m_data, "rehearsal_mark", None):
+                m_rh.insert(0, music21.expressions.RehearsalMark(m_data.rehearsal_mark))
+                m_lh.insert(0, music21.expressions.RehearsalMark(m_data.rehearsal_mark))
 
             piano_track = m_data.tracks.get("piano")
             piano_elements = piano_track.elements if piano_track else []
@@ -247,6 +252,7 @@ class XMLCompiler:
 
             measure_summary.append({
                 "measure_number": m_num,
+                "rehearsal_mark": getattr(m_data, "rehearsal_mark", None),
                 "start_time_seconds": round(cumulative_seconds, 3),
                 "duration_seconds": round(duration_s, 3),
                 "quarter_length": float(bar_ql),

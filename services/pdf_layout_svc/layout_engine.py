@@ -266,9 +266,18 @@ class PDFLayoutEngine:
                         pix_st_m.save(str(st_crop_path))
                         staff_crop_paths[st_id] = str(st_crop_path)
 
+                    # Check if this measure has an aligned rehearsal mark identifier
+                    reh_mark = None
+                    if "rehearsal_anchors" in sys:
+                        for rm_txt, rm_x in sys["rehearsal_anchors"].items():
+                            if abs(rm_x - bx0) < 40.0:
+                                reh_mark = rm_txt
+                                break
+
                     measures_data.append({
                         "measure_number": m_num,
                         "bar_index_in_system": b_i,
+                        "rehearsal_mark": reh_mark,
                         "crop_image_path": str(m_crop_path),
                         "staff_crop_paths": staff_crop_paths,
                         "bounding_box": {
@@ -755,14 +764,30 @@ class PDFLayoutEngine:
             x_l = sys_item["x_left"]
             x_r = sys_item["x_right"]
 
-            # Anchor start_measure_num from OCR if located directly above this system
-            if ocr_page and ocr_page.measure_numbers:
+            # Anchor start_measure_num, internal anchors, and rehearsal marks from OCR
+            if ocr_page:
                 sys_top_y = sys_item["y_top"]
-                for m_num, m_item in sorted(ocr_page.measure_numbers.items()):
-                    m_y = m_item.bbox_pt[1]
-                    if (sys_top_y - 45.0) <= m_y <= (sys_top_y + 15.0):
-                        sys_item["start_measure_num"] = m_num
-                        break
+                if ocr_page.measure_numbers:
+                    for m_num, m_item in sorted(ocr_page.measure_numbers.items()):
+                        m_y = m_item.bbox_pt[1]
+                        m_x = m_item.bbox_pt[0]
+                        if (sys_top_y - 45.0) <= m_y <= (sys_top_y + 18.0):
+                            if m_x <= (x_l + 85.0):
+                                if "start_measure_num" not in sys_item or m_num < sys_item["start_measure_num"]:
+                                    sys_item["start_measure_num"] = m_num
+                            else:
+                                if "internal_measure_anchors" not in sys_item:
+                                    sys_item["internal_measure_anchors"] = {}
+                                sys_item["internal_measure_anchors"][m_num] = m_x
+
+                if hasattr(ocr_page, "rehearsal_marks") and ocr_page.rehearsal_marks:
+                    for rm_item in ocr_page.rehearsal_marks:
+                        rm_y = rm_item.bbox_pt[1]
+                        rm_x = rm_item.bbox_pt[0]
+                        if (sys_top_y - 45.0) <= rm_y <= (sys_top_y + 20.0):
+                            if "rehearsal_anchors" not in sys_item:
+                                sys_item["rehearsal_anchors"] = {}
+                            sys_item["rehearsal_anchors"][rm_item.text] = rm_x
 
             bar_candidates = []
             if len(staves) >= 2:

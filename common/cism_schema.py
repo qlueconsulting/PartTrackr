@@ -56,6 +56,7 @@ class MeasureData(BaseModel):
     tempo_bpm: float = 120.0
     key_signature_fifths: int = 0
     key_signature_mode: str = "major"
+    rehearsal_mark: Optional[str] = Field(None, description="'A', 'B', '10', 'Rehearsal 1', etc.")
     tempo_directive: Optional[str] = Field(None, description="'poco rit.', 'a tempo', 'Poco meno mosso', etc.")
     dynamic_mark: Optional[str] = Field(None, description="'pp', 'p', 'mp', 'mf', 'f', 'ff', etc.")
     has_fermata: bool = Field(False, description="True if measure contains a fermata")

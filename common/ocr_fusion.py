@@ -39,6 +39,7 @@ class ScoreOCRPageResult:
     tempo_text: Optional[str] = None
     margin_labels: List[ScoreOCRItem] = field(default_factory=list)
     measure_numbers: Dict[int, ScoreOCRItem] = field(default_factory=dict)
+    rehearsal_marks: List[ScoreOCRItem] = field(default_factory=list)
     lyrics: List[ScoreOCRItem] = field(default_factory=list)
     directives: List[ScoreOCRItem] = field(default_factory=list)
     all_items: List[ScoreOCRItem] = field(default_factory=list)
@@ -138,13 +139,23 @@ class ScoreOCREngine:
             t_lower = text_str.lower()
             is_tempo = ("with " in t_lower or "tempo" in t_lower or any(tt in t_lower for tt in cls.TEMPO_TERMS)) and len(text_str) >= 4
 
-            # 1. Measure Numbers in Left Margin (1-3 digits, below top-edge folio page number)
-            if re.match(r"^\d{1,3}$", text_str) and pt_x0 < (page_w_pt * 0.22) and pt_y1 > 28.0:
-                ocr_item.zone = "measure_number"
-                m_val = int(text_str)
-                res.measure_numbers[m_val] = ocr_item
+            # 1. Rehearsal Marks (e.g. [A], [B], [C] or isolated uppercase letters near staves)
+            reh_match = re.match(r"^[\[\(]?([A-Z])[\]\)]?$", text_str)
+            m_num_match = re.match(r"^[\[\(]?(\d{1,3})[\]\)]?$", text_str)
 
-            # 2. Header Zone (above top system)
+            if reh_match and pt_y1 > 28.0 and not is_tempo and (pt_x0 < (page_w_pt * 0.40) or pt_y1 < y_header_cutoff + 50.0):
+                ocr_item.zone = "rehearsal_mark"
+                ocr_item.text = reh_match.group(1)
+                res.rehearsal_marks.append(ocr_item)
+
+            # 2. Measure Numbers: left margin or boxed/bracketed measure anchors across page
+            elif m_num_match and pt_y1 > 28.0 and not (pt_y0 < 30.0 and (pt_x0 < 60.0 or pt_x1 > page_w_pt - 60.0)):
+                m_val = int(m_num_match.group(1))
+                if m_val < 500:
+                    ocr_item.zone = "measure_number"
+                    res.measure_numbers[m_val] = ocr_item
+
+            # 3. Header Zone (above top system)
             elif pt_y1 < y_header_cutoff or (is_tempo and pt_y0 < (y_header_cutoff + 35.0)):
                 ocr_item.zone = "header"
                 if is_tempo:

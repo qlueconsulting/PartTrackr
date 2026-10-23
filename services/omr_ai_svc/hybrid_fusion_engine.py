@@ -162,12 +162,13 @@ class HybridOMRFusionEngine:
                                         if idx_el < len(m_lyrics):
                                             el.lyric = m_lyrics[idx_el].text
 
-                # Build MeasureData
+                # Build MeasureData with preserved measure number and rehearsal mark
                 measures_out.append(MeasureData(
                     measure_number=m_num,
                     time_signature=time_sig,
                     tempo_bpm=tempo_bpm,
                     key_signature_fifths=curr_key_fifths,
+                    rehearsal_mark=m_dict.get("rehearsal_mark"),
                     quarter_length=quarter_length,
                     bounding_box=bbox,
                     raw_staves=raw_staves

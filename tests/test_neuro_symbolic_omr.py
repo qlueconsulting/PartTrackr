@@ -523,3 +523,105 @@ def test_two_pass_top_down_macro_layout_and_isolated_staff_reading():
         assert vocals_xml.exists()
         assert len(summary) >= 1
 
+
+def test_cross_part_measure_number_and_rehearsal_alignment():
+    """
+    Verify that when piecing parts back together:
+    1. Parts with delayed entry (e.g. choir entering at measure 5 after piano intro) align on exact measure numbers,
+       never shifting subsequent measures out of phase.
+    2. Rehearsal marks (e.g. [A], [B]) synchronize across parts and compile into MusicXML.
+    3. score_piano.musicxml and score_vocals.musicxml remain strictly synchronized measure by measure.
+    """
+    # Create a 6-measure score where:
+    # Piano RH & LH play measures 1 to 6
+    # Choir (Vocal) rests for measures 1..4 and enters at Measure 5 (labeled Rehearsal [A])
+    sc = stream.Score()
+
+    p_choir = stream.Part(id="Choir")
+    p_choir.partName = "Choir"
+    p_prh = stream.Part(id="Piano_RH")
+    p_prh.partName = "Piano RH"
+    p_plh = stream.Part(id="Piano_LH")
+    p_plh.partName = "Piano LH"
+
+    # Piano plays measures 1 to 6
+    for m_i in range(1, 7):
+        m_rh = stream.Measure(number=m_i)
+        m_rh.append(note.Note("C5", quarterLength=4.0))
+        if m_i == 5:
+            m_rh.insert(0, music21.expressions.RehearsalMark("A"))
+        p_prh.append(m_rh)
+
+        m_lh = stream.Measure(number=m_i)
+        m_lh.append(note.Note("C3", quarterLength=4.0))
+        if m_i == 5:
+            m_lh.insert(0, music21.expressions.RehearsalMark("A"))
+        p_plh.append(m_lh)
+
+    # Choir only has measures 5 and 6 (Audiveris exports only active measures when voices enter)
+    for m_i in [5, 6]:
+        m_ch = stream.Measure(number=m_i)
+        n = note.Note("G4", quarterLength=4.0)
+        n.lyric = "Hallelujah"
+        m_ch.append(n)
+        m_ch.insert(0, music21.expressions.RehearsalMark("A"))
+        p_choir.append(m_ch)
+
+    sc.append(p_choir)
+    sc.append(p_prh)
+    sc.append(p_plh)
+
+    # Piece parts back together into CISM
+    cism = AudiverisEngine._music21_score_to_cism(
+        score=sc,
+        pdf_path=Path("choral_anthem.pdf"),
+        layout_data={"has_piano": True},
+        score_hints={"time_signature": "4/4", "tempo_bpm": 100.0}
+    )
+
+    # Must contain exactly 6 synchronized measures
+    all_meas = cism.all_measures()
+    assert len(all_meas) == 6
+    assert [m.measure_number for m in all_meas] == [1, 2, 3, 4, 5, 6]
+
+    # Measures 1..4: Choir must have clean rests, Piano must have notes
+    for m_idx in range(4):
+        m = all_meas[m_idx]
+        choir_track = m.raw_staves["st_0"]
+        assert all(el.is_rest for el in choir_track.elements), f"Choir should rest in measure {m.measure_number}"
+        piano_rh_track = m.raw_staves["st_1"]
+        assert any(not el.is_rest for el in piano_rh_track.elements), f"Piano RH should play in measure {m.measure_number}"
+
+    # Measure 5 (Rehearsal [A]): Choir and Piano must BOTH be active and aligned
+    m5 = all_meas[4]
+    assert m5.measure_number == 5
+    assert m5.rehearsal_mark == "A"
+    choir_m5 = m5.raw_staves["st_0"]
+    assert any(el.pitch == "G4" for el in choir_m5.elements)
+    assert any(el.lyric == "Hallelujah" for el in choir_m5.elements)
+    piano_m5 = m5.raw_staves["st_1"]
+    assert any(el.pitch == "C5" for el in piano_m5.elements)
+
+    # Route score and verify partitioned XML synchronization
+    routed = VoiceRouterEngine.route_score(cism)
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        out_p = Path(tmp_dir)
+        main_xml, piano_xml, vocals_xml, stems, summary = XMLCompiler.compile_score(routed, out_p)
+
+        assert piano_xml.exists()
+        assert vocals_xml.exists()
+        assert len(summary) == 6
+
+        # Verify rehearsal mark appears in summary at measure 5
+        m5_summary = next(item for item in summary if item["measure_number"] == 5)
+        assert m5_summary["rehearsal_mark"] == "A"
+
+        # Verify MIDI sync map has rehearsal mark
+        mid_p, p_mid, v_mid, s_mids, sync_map_p = MIDIGenerator.compile_midi_and_sync_map(routed, out_p / "midi")
+        import json
+        with open(sync_map_p, "r") as f:
+            sync_data = json.load(f)
+        m5_sync = next(item for item in sync_data["measures"] if item["measure_number"] == 5)
+        assert m5_sync["rehearsal_mark"] == "A"
+
+

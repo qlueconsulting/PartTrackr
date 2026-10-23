@@ -234,7 +234,9 @@ def reconcile_cism_measures(
             last_sys.measures.append(new_m)
 
     # 3. Renumber all measures sequentially 1..target_total_measures & apply overrides
-    seq = 1
+    # If the opening measure was an explicit pickup (measure 0), preserve 0-based start
+    first_m = all_meas[0] if all_meas else None
+    seq = 0 if (first_m and (first_m.measure_number == 0 or first_m.is_pickup)) else 1
     for sys in cism.systems:
         for m in sys.measures:
             m.measure_number = seq

@@ -89,6 +89,7 @@ class MIDIGenerator:
 
             sync_map["measures"].append({
                 "measure_number": m_num,
+                "rehearsal_mark": getattr(m_data, "rehearsal_mark", None),
                 "start_time_ms": round(running_time_ms, 2),
                 "duration_ms": round(measure_dur_ms, 2),
                 "time_signature": ts,
