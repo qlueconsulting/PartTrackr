@@ -625,3 +625,213 @@ def test_cross_part_measure_number_and_rehearsal_alignment():
         assert m5_sync["rehearsal_mark"] == "A"
 
 
+def test_vertical_split_remerging_with_divergent_measure_counts():
+    """Verify that vocal and piano movements with divergent measure counts merge concurrently, not serially."""
+    # Vocal movement: 3 measures
+    mvt_voc = stream.Score()
+    p_v = stream.Part(id="Vocal")
+    for i in range(1, 4):
+        m = stream.Measure(number=i)
+        n = note.Note("C5", quarterLength=4.0)
+        n.lyric = f"Word{i}"
+        m.append(n)
+        p_v.append(m)
+    mvt_voc.append(p_v)
+
+    # Piano movement: 5 measures (diverges by 2 measures!)
+    mvt_pno = stream.Score()
+    p_rh = stream.Part(id="Piano_RH")
+    p_lh = stream.Part(id="Piano_LH")
+    for i in range(1, 6):
+        m_rh = stream.Measure(number=i)
+        m_rh.append(note.Note("E4", quarterLength=4.0))
+        p_rh.append(m_rh)
+
+        m_lh = stream.Measure(number=i)
+        m_lh.append(note.Note("C3", quarterLength=4.0))
+        p_lh.append(m_lh)
+    mvt_pno.append(p_rh)
+    mvt_pno.append(p_lh)
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        tmp_p = Path(tmp_dir)
+        f_v = tmp_p / "mvt1_vocal.xml"
+        f_p = tmp_p / "mvt2_piano.xml"
+        mvt_voc.write("musicxml", fp=str(f_v))
+        mvt_pno.write("musicxml", fp=str(f_p))
+
+        stitched = AudiverisEngine._stitch_movements(
+            [f_v, f_p],
+            pdf_path=Path("choral_divergent.pdf"),
+            layout_data={"has_piano": True},
+            score_hints={"time_signature": "4/4", "tempo_bpm": 120.0, "accompaniment_type": "piano"}
+        )
+
+        parts = list(stitched.parts)
+        p_rh_out = next(p for p in parts if p.id == "Piano_RH")
+        p_v_out = next(p for p in parts if "Vocal" in p.id)
+
+        # Must merge into max(3, 5) = 5 parallel measures, NOT 3 + 5 = 8 serial measures!
+        v_meas = list(p_v_out.getElementsByClass(stream.Measure))
+        p_meas = list(p_rh_out.getElementsByClass(stream.Measure))
+        assert len(v_meas) == 5
+        assert len(p_meas) == 5
+
+        # In measures 1..3, vocal has notes and piano has notes (parallel synchronization)
+        for i in range(3):
+            assert any(isinstance(el, note.Note) for el in v_meas[i].flatten().notesAndRests)
+            assert any(isinstance(el, note.Note) for el in p_meas[i].flatten().notesAndRests)
+
+        # In measures 4..5, piano has notes and vocal has padding rests
+        for i in range(3, 5):
+            assert all(isinstance(el, note.Rest) for el in v_meas[i].flatten().notesAndRests)
+            assert any(isinstance(el, note.Note) for el in p_meas[i].flatten().notesAndRests)
+
+
+def test_vertical_split_remerging_when_piano_movement_is_first():
+    """Verify that when the piano movement is exported first (idx 0), it merges with the vocal movement."""
+    mvt_pno = stream.Score()
+    p_rh = stream.Part(id="Piano_RH")
+    p_lh = stream.Part(id="Piano_LH")
+    for i in range(1, 4):
+        m_rh = stream.Measure(number=i)
+        m_rh.append(note.Note("G4", quarterLength=4.0))
+        p_rh.append(m_rh)
+
+        m_lh = stream.Measure(number=i)
+        m_lh.append(note.Note("G2", quarterLength=4.0))
+        p_lh.append(m_lh)
+    mvt_pno.append(p_rh)
+    mvt_pno.append(p_lh)
+
+    mvt_voc = stream.Score()
+    p_v = stream.Part(id="Vocal")
+    for i in range(1, 4):
+        m = stream.Measure(number=i)
+        n = note.Note("D5", quarterLength=4.0)
+        n.lyric = "Sing"
+        m.append(n)
+        p_v.append(m)
+    mvt_voc.append(p_v)
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        tmp_p = Path(tmp_dir)
+        # f1 is piano, f2 is vocal
+        f1 = tmp_p / "mvt1_piano.xml"
+        f2 = tmp_p / "mvt2_vocal.xml"
+        mvt_pno.write("musicxml", fp=str(f1))
+        mvt_voc.write("musicxml", fp=str(f2))
+
+        stitched = AudiverisEngine._stitch_movements(
+            [f1, f2],
+            pdf_path=Path("choral_piano_first.pdf"),
+            layout_data={"has_piano": True},
+            score_hints={"time_signature": "4/4", "tempo_bpm": 120.0, "accompaniment_type": "piano"}
+        )
+
+        parts = list(stitched.parts)
+        p_rh_out = next(p for p in parts if p.id == "Piano_RH")
+        p_v_out = next(p for p in parts if "Vocal" in p.id)
+
+        # Must merge into 3 parallel measures starting at measure 1
+        assert len(list(p_rh_out.getElementsByClass(stream.Measure))) == 3
+        assert len(list(p_v_out.getElementsByClass(stream.Measure))) == 3
+
+
+def test_partitioned_multipage_movement_remerging():
+    """Verify that partitioned movements [vocal_p1, vocal_p2, piano_p1, piano_p2] re-merge into synchronized blocks."""
+    def _make_part(p_id, start_m, end_m, pitch, lyric=None):
+        sc = stream.Score()
+        p = stream.Part(id=p_id)
+        for i in range(start_m, end_m + 1):
+            m = stream.Measure(number=i)
+            n = note.Note(pitch, quarterLength=4.0)
+            if lyric:
+                n.lyric = f"{lyric}_{i}"
+            m.append(n)
+            p.append(m)
+        sc.append(p)
+        return sc
+
+    # 4 movements: vocal across 2 pages, piano across 2 pages
+    voc_p1 = _make_part("Vocal", 1, 3, "E4", "P1")
+    voc_p2 = _make_part("Vocal", 4, 6, "F4", "P2")
+
+    pno_p1 = stream.Score()
+    p_rh1 = stream.Part(id="Piano_RH")
+    p_lh1 = stream.Part(id="Piano_LH")
+    for i in range(1, 4):
+        m_rh = stream.Measure(number=i)
+        m_rh.append(note.Note("G4", quarterLength=4.0))
+        p_rh1.append(m_rh)
+        m_lh = stream.Measure(number=i)
+        m_lh.append(note.Note("C3", quarterLength=4.0))
+        p_lh1.append(m_lh)
+    pno_p1.append(p_rh1)
+    pno_p1.append(p_lh1)
+
+    pno_p2 = stream.Score()
+    p_rh2 = stream.Part(id="Piano_RH")
+    p_lh2 = stream.Part(id="Piano_LH")
+    for i in range(4, 7):
+        m_rh = stream.Measure(number=i)
+        m_rh.append(note.Note("A4", quarterLength=4.0))
+        p_rh2.append(m_rh)
+        m_lh = stream.Measure(number=i)
+        m_lh.append(note.Note("D3", quarterLength=4.0))
+        p_lh2.append(m_lh)
+    pno_p2.append(p_rh2)
+    pno_p2.append(p_lh2)
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        tmp_p = Path(tmp_dir)
+        f1 = tmp_p / "score_01_vocal_p1.xml"
+        f2 = tmp_p / "score_02_vocal_p2.xml"
+        f3 = tmp_p / "score_03_piano_p1.xml"
+        f4 = tmp_p / "score_04_piano_p2.xml"
+
+        voc_p1.write("musicxml", fp=str(f1))
+        voc_p2.write("musicxml", fp=str(f2))
+        pno_p1.write("musicxml", fp=str(f3))
+        pno_p2.write("musicxml", fp=str(f4))
+
+        stitched = AudiverisEngine._stitch_movements(
+            [f1, f2, f3, f4],
+            pdf_path=Path("choral_partitioned.pdf"),
+            layout_data={"has_piano": True},
+            score_hints={"time_signature": "4/4", "tempo_bpm": 120.0, "accompaniment_type": "piano"}
+        )
+
+        parts = list(stitched.parts)
+        p_rh_out = next(p for p in parts if p.id == "Piano_RH")
+        p_v_out = next(p for p in parts if "Vocal" in p.id)
+
+        v_meas = list(p_v_out.getElementsByClass(stream.Measure))
+        p_meas = list(p_rh_out.getElementsByClass(stream.Measure))
+
+        # Must merge into 6 total parallel measures (1..6)
+        assert len(v_meas) == 6
+        assert len(p_meas) == 6
+        assert [m.number for m in v_meas] == [1, 2, 3, 4, 5, 6]
+        assert [m.number for m in p_meas] == [1, 2, 3, 4, 5, 6]
+
+        # Both vocal and piano are active simultaneously across measures 1..6
+        for m_idx in range(6):
+            assert any(isinstance(el, note.Note) for el in v_meas[m_idx].flatten().notesAndRests)
+            assert any(isinstance(el, note.Note) for el in p_meas[m_idx].flatten().notesAndRests)
+
+
+def test_piano_midi_channel_routing_and_timbre():
+    """Verify that piano uses GM Program 0 (Acoustic Grand Piano) and melodic tracks avoid GM percussion channel 9."""
+    from common.taxonomy import PART_METADATA
+    assert PART_METADATA["piano"]["gm_program"] == 0
+    assert PART_METADATA["piano"]["channel"] == 0
+
+    # Ensure bass parts do NOT use GM Drum channel 9
+    assert PART_METADATA["bass_1"]["channel"] != 9
+    assert PART_METADATA["bass_2"]["channel"] != 9
+    assert PART_METADATA["bass_1"]["channel"] == 10
+    assert PART_METADATA["bass_2"]["channel"] == 11
+
+
+

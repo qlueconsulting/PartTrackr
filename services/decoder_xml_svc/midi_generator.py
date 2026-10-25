@@ -206,20 +206,31 @@ class MIDIGenerator:
                         if 0 <= mp <= 127:
                             pitches_to_emit.append(mp)
 
-                    # Velocity with subtle metric accent
+                    # Velocity with metric dynamics and piano touch sensitivity
                     vel = el.velocity or base_vel
                     if el.offset_quarters == 0.0:
-                        vel = min(127, vel + 4)
+                        vel = min(127, vel + 5)
+                    elif el.offset_quarters == float(Fraction(bar_ql, 2)):
+                        vel = min(127, vel + 2)
+
+                    if part_name == "piano" and not el.velocity:
+                        # Acoustic grand piano touch: warm presence
+                        vel = max(68, min(118, vel + 3))
 
                     start_q = cumulative_quarters + Fraction(f"{el.offset_quarters:.4f}")
                     end_q = start_q + Fraction(f"{el.duration_quarters:.4f}")
 
-                    for mp in pitches_to_emit:
+                    for p_idx, mp in enumerate(pitches_to_emit):
                         is_tie_continue = getattr(el, "tie", None) in ("continue", "stop")
                         is_tie_start = getattr(el, "tie", None) in ("start", "continue")
 
+                        # Voicing: bass note slightly firmer for grand piano fullness
+                        note_vel = vel
+                        if part_name == "piano" and len(pitches_to_emit) > 1 and p_idx == 0:
+                            note_vel = min(127, vel + 4)
+
                         if not is_tie_continue or mp not in active_ties:
-                            events.append((start_q, "note_on", mp, vel))
+                            events.append((start_q, "note_on", mp, note_vel))
                             active_ties[mp] = start_q
 
                         if not is_tie_start:

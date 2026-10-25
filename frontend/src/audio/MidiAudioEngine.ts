@@ -13,6 +13,7 @@ interface ScheduledNote {
 interface ActiveVoice {
   osc1: OscillatorNode
   osc2?: OscillatorNode
+  osc3?: OscillatorNode
   gain: GainNode
   stopTime: number
 }
@@ -361,47 +362,86 @@ export class MidiAudioEngine {
       const osc1 = this.audioCtx.createOscillator()
       const env = this.audioCtx.createGain()
 
-      // Calculate safe, non-inverted ADSR parameters
-      const attack = Math.min(0.04, duration * 0.2)
-      const release = Math.min(0.05, duration * 0.2)
+      // Calculate safe ADSR timings
       const t0 = when
+      const attack = Math.min(0.035, duration * 0.15)
+      const release = Math.min(0.06, duration * 0.2)
       const tAttack = t0 + attack
       const tSustainEnd = Math.max(tAttack, t0 + duration - release)
       const tEnd = t0 + duration
 
       if (note.isPiano) {
-        // Piano-like struck harmonic tone (triangle + sub-octave)
+        // Acoustic Grand Piano Physical Synthesis Model:
+        // 1. Primary string fundamental (triangle + warm harmonic profile)
         osc1.type = 'triangle'
         osc1.frequency.setValueAtTime(note.freq, t0)
 
-        // Envelope: percussive attack, rapid initial decay to warm sustain
-        env.gain.setValueAtTime(0.0001, t0)
-        env.gain.linearRampToValueAtTime(0.7, tAttack)
-        env.gain.exponentialRampToValueAtTime(0.25, Math.min(tSustainEnd, t0 + 0.15))
-        env.gain.exponentialRampToValueAtTime(0.0001, tEnd)
+        // 2. Secondary string unison overtone with subtle detuned chorus (+2.2 cents)
+        const osc2 = this.audioCtx.createOscillator()
+        osc2.type = 'sine'
+        osc2.frequency.setValueAtTime(note.freq * 2.0, t0)
+        osc2.detune.setValueAtTime(2.2, t0)
 
-        osc1.connect(env)
+        // 3. Felt-hammer strike transient & inharmonic high chime
+        const osc3 = this.audioCtx.createOscillator()
+        osc3.type = 'sine'
+        osc3.frequency.setValueAtTime(note.freq * 3.01, t0)
+        osc3.detune.setValueAtTime(-1.8, t0)
+
+        // Hammer transient gain (percussive 35ms burst simulating hammer strike)
+        const hammerGain = this.audioCtx.createGain()
+        hammerGain.gain.setValueAtTime(0.35, t0)
+        hammerGain.gain.exponentialRampToValueAtTime(0.0001, t0 + Math.min(0.045, duration * 0.3))
+
+        // Piano soundboard resonant body lowpass filter
+        // High harmonic brightness at impact that rapidly mellows into rich string resonance
+        const filter = this.audioCtx.createBiquadFilter()
+        filter.type = 'lowpass'
+        filter.frequency.setValueAtTime(Math.min(5200, note.freq * 7.5), t0)
+        filter.frequency.exponentialRampToValueAtTime(Math.min(1800, note.freq * 2.5), t0 + 0.12)
+        filter.frequency.exponentialRampToValueAtTime(Math.max(220, note.freq * 1.05), tEnd)
+        filter.Q.setValueAtTime(1.8, t0)
+
+        // Grand piano natural struck envelope: 3ms punchy attack, prompt decay to warm resonant ring-out
+        env.gain.setValueAtTime(0.0001, t0)
+        env.gain.linearRampToValueAtTime(0.85, t0 + 0.004)
+        env.gain.exponentialRampToValueAtTime(0.35, t0 + 0.18)
+        env.gain.exponentialRampToValueAtTime(0.18, tSustainEnd)
+        env.gain.exponentialRampToValueAtTime(0.0001, tEnd + 0.04)
+
+        // Routing: Oscillators -> Filter -> Envelope -> DestNode
+        osc1.connect(filter)
+        osc2.connect(filter)
+        osc3.connect(hammerGain)
+        hammerGain.connect(filter)
+        filter.connect(env)
         env.connect(destNode)
 
         osc1.start(t0)
-        osc1.stop(tEnd + 0.05)
+        osc2.start(t0)
+        osc3.start(t0)
+        osc1.stop(tEnd + 0.06)
+        osc2.stop(tEnd + 0.06)
+        osc3.stop(t0 + 0.06)
 
         this.activeVoices.push({
           osc1,
+          osc2,
+          osc3,
           gain: env,
-          stopTime: tEnd + 0.05,
+          stopTime: tEnd + 0.06,
         })
       } else {
         // Choral Vocal Formant Synth (sawtooth + subtle warm sine octave)
         osc1.type = 'sawtooth'
         osc1.frequency.setValueAtTime(note.freq, t0)
 
-        // Optional second oscillator for vocal richness
+        // Second oscillator for choral vocal warmth
         const osc2 = this.audioCtx.createOscillator()
         osc2.type = 'sine'
-        osc2.frequency.setValueAtTime(note.freq * 0.5, t0) // undertone warmth
+        osc2.frequency.setValueAtTime(note.freq * 0.5, t0)
 
-        // Lowpass filter to simulate vocal tract formant resonance
+        // Lowpass filter simulating human vocal tract formant resonance
         const filter = this.audioCtx.createBiquadFilter()
         filter.type = 'lowpass'
         filter.frequency.setValueAtTime(Math.min(2400, note.freq * 3.5), t0)
@@ -409,7 +449,7 @@ export class MidiAudioEngine {
 
         // Vocal ADSR envelope
         env.gain.setValueAtTime(0.0001, t0)
-        env.gain.linearRampToValueAtTime(0.45, tAttack) // gentle vocal onset
+        env.gain.linearRampToValueAtTime(0.45, tAttack)
         env.gain.setValueAtTime(0.38, tSustainEnd)
         env.gain.linearRampToValueAtTime(0.0001, tEnd)
 
@@ -431,7 +471,6 @@ export class MidiAudioEngine {
         })
       }
     } catch (err) {
-      // Prevent individual note error from interrupting playback
       console.warn('Note synthesis error:', err)
     }
   }
@@ -444,6 +483,7 @@ export class MidiAudioEngine {
         try {
           v.osc1.disconnect()
           v.osc2?.disconnect()
+          v.osc3?.disconnect()
           v.gain.disconnect()
         } catch {
           // ignore
@@ -460,8 +500,10 @@ export class MidiAudioEngine {
         v.gain.gain.setValueAtTime(0, this.audioCtx?.currentTime || 0)
         v.osc1.stop()
         v.osc2?.stop()
+        v.osc3?.stop()
         v.osc1.disconnect()
         v.osc2?.disconnect()
+        v.osc3?.disconnect()
         v.gain.disconnect()
       } catch {
         // ignore

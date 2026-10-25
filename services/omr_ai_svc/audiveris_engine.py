@@ -310,39 +310,90 @@ class AudiverisEngine:
             })
 
         # Vertical System Split Re-Merger
+        # Choral scores with piano accompaniment frequently have vocal staves and piano staves
+        # partitioned into separate movement XML files (either adjacent or partitioned by part).
+        # We re-merge corresponding vocal and piano movements into concurrent vertical blocks
+        # so vocal and piano parts are strictly synchronized in parallel measures starting at Measure 1.
         merged_mvts: List[Dict[str, Any]] = []
-        idx = 0
-        while idx < len(classified_mvts):
-            curr = classified_mvts[idx]
-            if idx + 1 < len(classified_mvts):
-                nxt = classified_mvts[idx + 1]
-                curr_vocal_only = len(curr["vocal_traits"]) > 0 and len(curr["piano_traits"]) == 0
-                curr_piano_only = len(curr["piano_traits"]) > 0 and len(curr["vocal_traits"]) == 0
-                nxt_vocal_only = len(nxt["vocal_traits"]) > 0 and len(nxt["piano_traits"]) == 0
-                nxt_piano_only = len(nxt["piano_traits"]) > 0 and len(nxt["vocal_traits"]) == 0
 
-                bars_match = abs(curr["m_count"] - nxt["m_count"]) <= 1
-                if bars_match and (
-                    (curr_vocal_only and nxt_piano_only) or
-                    (idx > 0 and curr_piano_only and nxt_vocal_only)
-                ):
-                    v_src = curr if curr_vocal_only else nxt
-                    p_src = nxt if curr_vocal_only else curr
+        def _get_mvt_span(m_entry: Dict[str, Any]) -> Tuple[Optional[int], Optional[int]]:
+            all_nums = [
+                m.number for tr in (m_entry["vocal_traits"] + m_entry["piano_traits"])
+                for m in tr["part"].getElementsByClass(stream.Measure)
+                if m.number is not None and m.number > 0
+            ]
+            if all_nums:
+                return min(all_nums), max(all_nums)
+            return None, None
+
+        vocal_only_indices = [
+            i for i, m in enumerate(classified_mvts)
+            if len(m["vocal_traits"]) > 0 and len(m["piano_traits"]) == 0
+        ]
+        piano_only_indices = [
+            i for i, m in enumerate(classified_mvts)
+            if len(m["piano_traits"]) > 0 and len(m["vocal_traits"]) == 0
+        ]
+
+        if score_has_piano and vocal_only_indices and piano_only_indices:
+            paired_piano_indices = set()
+            used_vocal_indices = set()
+            merged_blocks: List[Tuple[int, Dict[str, Any]]] = []
+
+            available_pianos = list(piano_only_indices)
+
+            for v_idx in vocal_only_indices:
+                v_src = classified_mvts[v_idx]
+                v_min, v_max = _get_mvt_span(v_src)
+
+                best_p_idx = None
+                # Priority 1: Match by printed measure start number if both movements have numbers
+                if v_min is not None:
+                    cands = []
+                    for p_idx in available_pianos:
+                        p_min, p_max = _get_mvt_span(classified_mvts[p_idx])
+                        if p_min is not None:
+                            cands.append((abs(v_min - p_min), p_idx))
+                    if cands:
+                        cands.sort(key=lambda x: x[0])
+                        if cands[0][0] <= 3:
+                            best_p_idx = cands[0][1]
+
+                # Priority 2: Fallback to rank order pairing (e.g. 1st vocal with 1st piano, 2nd with 2nd)
+                if best_p_idx is None and available_pianos:
+                    v_rank = vocal_only_indices.index(v_idx)
+                    p_rank = min(v_rank, len(available_pianos) - 1)
+                    best_p_idx = available_pianos[p_rank]
+
+                if best_p_idx is not None:
+                    p_src = classified_mvts[best_p_idx]
+                    available_pianos.remove(best_p_idx)
+                    paired_piano_indices.add(best_p_idx)
+                    used_vocal_indices.add(v_idx)
+                    sort_order = min(v_idx, best_p_idx)
                     logger.info(
-                        f"AudiverisEngine: Re-merging vertically split movements {curr['file'].name} + {nxt['file'].name}"
+                        f"AudiverisEngine: Re-merging split movements {v_src['file'].name} + {p_src['file'].name}"
                     )
-                    merged_mvts.append({
-                        "file": curr["file"],
-                        "score": curr["score"],
-                        "m_count": max(curr["m_count"], nxt["m_count"]),
-                        "vocal_traits": v_src["vocal_traits"],
-                        "piano_traits": p_src["piano_traits"]
-                    })
-                    idx += 2
-                    continue
+                    merged_blocks.append((
+                        sort_order,
+                        {
+                            "file": v_src["file"],
+                            "score": v_src["score"],
+                            "m_count": max(v_src["m_count"], p_src["m_count"]),
+                            "vocal_traits": v_src["vocal_traits"],
+                            "piano_traits": p_src["piano_traits"]
+                        }
+                    ))
 
-            merged_mvts.append(curr)
-            idx += 1
+            # Add any movements that were already complete (both vocal + piano) or remaining
+            for idx, m_entry in enumerate(classified_mvts):
+                if idx not in used_vocal_indices and idx not in paired_piano_indices:
+                    merged_blocks.append((idx, m_entry))
+
+            merged_blocks.sort(key=lambda item: item[0])
+            merged_mvts = [block for _, block in merged_blocks]
+        else:
+            merged_mvts = classified_mvts
 
         # Stitch horizontally into unified score
         unified = stream.Score()
@@ -663,11 +714,21 @@ class AudiverisEngine:
                 num_map = part_m_by_num[idx]
                 src_m = num_map.get(m_num)
 
-                # Fallback to index only if part measures have no numbers or if index matches
-                if src_m is None and not num_map and (m_num - 1) < len(measures_by_part[idx]):
-                    cand = measures_by_part[idx][m_num - 1]
-                    if cand.number is None or cand.number == 0 or cand.number == m_num:
-                        src_m = cand
+                # Multi-tier measure resolution: prevents missing measures or phantom rests
+                if src_m is None:
+                    # 1. Fallback by measure index relative to start_num
+                    rel_idx = m_num - start_num
+                    if 0 <= rel_idx < len(measures_by_part[idx]):
+                        cand = measures_by_part[idx][rel_idx]
+                        if cand.number is None or cand.number == 0 or cand.number == m_num:
+                            src_m = cand
+
+                    # 2. Fallback by metric offset (only if unnumbered or number matches)
+                    if src_m is None and idx < len(part_m_by_offset):
+                        expected_offset = round(float(rel_idx * m_ql), 2)
+                        cand_off = part_m_by_offset[idx].get(expected_offset)
+                        if cand_off and (cand_off.number is None or cand_off.number == 0 or cand_off.number == m_num):
+                            src_m = cand_off
 
                 elements: List[NoteElement] = []
 

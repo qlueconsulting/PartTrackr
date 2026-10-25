@@ -101,7 +101,7 @@ PART_METADATA: Dict[str, Dict[str, Any]] = {
         "default_pan": 0.7,
         "gm_program": 54,
         "default_clef": "bass",
-        "channel": 9,
+        "channel": 10,  # Melodic channel (GM Channel 9 is reserved for percussion/drums)
     },
     "bass_2": {
         "display_name": "Bass II",
@@ -109,7 +109,7 @@ PART_METADATA: Dict[str, Dict[str, Any]] = {
         "default_pan": 0.8,
         "gm_program": 54,
         "default_clef": "bass",
-        "channel": 10,
+        "channel": 11,
     },
     "piano": {
         "display_name": "Piano Accompaniment",
