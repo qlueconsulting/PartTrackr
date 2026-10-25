@@ -142,6 +142,32 @@ class VoiceRouterEngine:
                 rh_elements = rh_cands
                 lh_elements = lh_cands
 
+        # Clean octave separation: Treble staff (piano_rh) holds notes >= C4 (MIDI 60),
+        # Bass staff (piano_lh) holds notes < C4 (MIDI 60). Eliminates cross-staff bleed and distorted octaves.
+        if rh_elements or lh_elements:
+            cleaned_rh: List[NoteElement] = []
+            cleaned_lh: List[NoteElement] = []
+            for el in rh_elements:
+                if el.is_rest or not el.pitch:
+                    continue
+                mp = el.midi_pitch or MusicTheoryEngine.pitch_to_midi(el.pitch)
+                if mp >= 60:
+                    cleaned_rh.append(el)
+                else:
+                    cleaned_lh.append(el)
+
+            for el in lh_elements:
+                if el.is_rest or not el.pitch:
+                    continue
+                mp = el.midi_pitch or MusicTheoryEngine.pitch_to_midi(el.pitch)
+                if mp < 60:
+                    cleaned_lh.append(el)
+                else:
+                    cleaned_rh.append(el)
+
+            rh_elements = cleaned_rh
+            lh_elements = cleaned_lh
+
         whole_rest = [NoteElement(pitch=None, duration_quarters=m.quarter_length, duration_type="whole", offset_quarters=0.0, is_rest=True)]
 
         tracks["piano_rh"] = TrackData(

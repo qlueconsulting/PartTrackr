@@ -229,3 +229,164 @@ def test_xml_compiler_piano_fallback_split_around_middle_c():
         assert "C3" in lh_pitches
         assert "F2" in lh_pitches
 
+
+def test_stitch_movements_parallel_measure_alignment_with_different_printed_numbers():
+    """Verify that AudiverisEngine._stitch_movements_bottom_up correctly recombines vocal and piano movements in parallel lockstep without measure displacement."""
+    from services.omr_ai_svc.audiveris_engine import AudiverisEngine
+
+    # Page 1: 2 measures (measures 1..2), both vocal and piano complete
+    mvt1 = stream.Score()
+    p_voc1 = stream.Part(id="Vocal1")
+    p_rh1 = stream.Part(id="RH1")
+    p_lh1 = stream.Part(id="LH1")
+    for i in (1, 2):
+        mv = stream.Measure(number=i)
+        nv = note.Note("G4", quarterLength=4.0)
+        nv.lyric = f"Lyric {i}"
+        mv.append(nv)
+        p_voc1.append(mv)
+
+        mrh = stream.Measure(number=i)
+        mrh.append(note.Note("D5", quarterLength=4.0))
+        p_rh1.append(mrh)
+
+        mlh = stream.Measure(number=i)
+        mlh.append(note.Note("G3", quarterLength=4.0))
+        p_lh1.append(mlh)
+    mvt1.append(p_voc1)
+    mvt1.append(p_rh1)
+    mvt1.append(p_lh1)
+
+    # Page 2: Split into two movements by Audiveris!
+    # Movement 2: Vocal only, printed measure numbers 3..4
+    mvt2_voc = stream.Score()
+    p_voc2 = stream.Part(id="Vocal2")
+    for i in (3, 4):
+        mv = stream.Measure(number=i)
+        nv = note.Note("A4", quarterLength=4.0)
+        nv.lyric = f"Lyric {i}"
+        mv.append(nv)
+        p_voc2.append(mv)
+    mvt2_voc.append(p_voc2)
+
+    # Movement 3: Piano only, default 1-based measure numbers (1..2)
+    mvt3_pno = stream.Score()
+    p_rh2 = stream.Part(id="RH2")
+    p_lh2 = stream.Part(id="LH2")
+    for i in (1, 2):
+        mrh = stream.Measure(number=i)
+        mrh.append(note.Note("E5", quarterLength=4.0))
+        p_rh2.append(mrh)
+
+        mlh = stream.Measure(number=i)
+        mlh.append(note.Note("C3", quarterLength=4.0))
+        p_lh2.append(mlh)
+    mvt3_pno.append(p_rh2)
+    mvt3_pno.append(p_lh2)
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        tmp_p = Path(tmp_dir)
+        mvt1.write("musicxml", fp=str(tmp_p / "mvt1.mxl"))
+        mvt2_voc.write("musicxml", fp=str(tmp_p / "mvt2.mxl"))
+        mvt3_pno.write("musicxml", fp=str(tmp_p / "mvt3.mxl"))
+
+        mvt_files = [tmp_p / "mvt1.mxl", tmp_p / "mvt2.mxl", tmp_p / "mvt3.mxl"]
+        unified = AudiverisEngine._stitch_movements(
+            mvt_files,
+            pdf_path=Path("test_score.pdf"),
+            layout_data={"has_piano": True},
+            score_hints={"accompaniment_type": "piano", "total_measures": 4}
+        )
+
+        assert unified is not None
+        print("UNIFIED PARTS:", [(p.id, p.partName) for p in unified.parts])
+        vocal_part = [p for p in unified.parts if "vocal" in (p.partName or p.id).lower()][0]
+        piano_rh = [p for p in unified.parts if "right hand" in (p.partName or "").lower() or "rh" in (p.id or "").lower()][0]
+        piano_lh = [p for p in unified.parts if "left hand" in (p.partName or "").lower() or "lh" in (p.id or "").lower()][0]
+
+        # Verify that all parts have exactly measures 1, 2, 3, 4 with notes, not rests!
+        v_measures = list(vocal_part.getElementsByClass(stream.Measure))
+        rh_measures = list(piano_rh.getElementsByClass(stream.Measure))
+        lh_measures = list(piano_lh.getElementsByClass(stream.Measure))
+
+        assert [m.number for m in v_measures] == [1, 2, 3, 4]
+        assert [m.number for m in rh_measures] == [1, 2, 3, 4]
+        assert [m.number for m in lh_measures] == [1, 2, 3, 4]
+
+        # Verify Measure 3 and 4 have notes for both vocal and piano (not disjointed or rests)
+        m3_v_notes = [n for n in v_measures[2].recurse().notes]
+        m3_rh_notes = [n for n in rh_measures[2].recurse().notes]
+        m3_lh_notes = [n for n in lh_measures[2].recurse().notes]
+
+        assert len(m3_v_notes) == 1 and m3_v_notes[0].pitch.nameWithOctave == "A4"
+        assert len(m3_rh_notes) == 1 and m3_rh_notes[0].pitch.nameWithOctave == "E5"
+        assert len(m3_lh_notes) == 1 and m3_lh_notes[0].pitch.nameWithOctave == "C3"
+
+
+def test_router_piano_octave_separation():
+    """Verify VoiceRouterEngine cleanly isolates Treble octaves (>= C4) to piano_rh and Bass octaves (< C4) to piano_lh."""
+    from services.voice_router_svc.router_engine import VoiceRouterEngine
+
+    cism = ScoreCISM(
+        score_id="test_router_octave",
+        title="Router Octave Test",
+        has_piano=True,
+    )
+    sys1 = SystemData(
+        system_index=0,
+        page_num=1,
+        bounding_box=BoundingBox(x=0, y=0, w=500, h=200),
+        staves=[
+            StaffInfo(staff_id="s_rh", index=0, role="piano_rh", clef="treble", y_top=10, y_bot=40),
+            StaffInfo(staff_id="s_lh", index=1, role="piano_lh", clef="bass", y_top=60, y_bot=90),
+        ],
+        measures=[
+            MeasureData(
+                measure_number=1,
+                system_index=0,
+                time_signature="4/4",
+                quarter_length=4.0,
+                raw_staves={
+                    # Contaminated with ink bleed: RH has stray G3 (MIDI 55), LH has stray G4 (MIDI 67)
+                    "s_rh": TrackData(
+                        track_name="s_rh",
+                        clef="treble",
+                        elements=[
+                            NoteElement(pitch="G3", duration_quarters=2.0, duration_type="half", midi_pitch=55),
+                            NoteElement(pitch="E5", duration_quarters=2.0, duration_type="half", midi_pitch=76),
+                        ],
+                    ),
+                    "s_lh": TrackData(
+                        track_name="s_lh",
+                        clef="bass",
+                        elements=[
+                            NoteElement(pitch="G4", duration_quarters=2.0, duration_type="half", midi_pitch=67),
+                            NoteElement(pitch="C3", duration_quarters=2.0, duration_type="half", midi_pitch=48),
+                        ],
+                    ),
+                },
+            )
+        ]
+    )
+    cism.systems.append(sys1)
+
+    routed = VoiceRouterEngine.route_score(cism)
+    m1_tracks = routed.systems[0].measures[0].tracks
+
+    rh_track = m1_tracks["piano_rh"]
+    lh_track = m1_tracks["piano_lh"]
+
+    rh_pitches = [el.pitch for el in rh_track.elements if not el.is_rest]
+    lh_pitches = [el.pitch for el in lh_track.elements if not el.is_rest]
+
+    # RH must only have octave >= 4 (E5, G4)
+    assert all(MusicTheoryEngine.pitch_to_midi(p) >= 60 for p in rh_pitches)
+    assert "E5" in rh_pitches
+    assert "G4" in rh_pitches
+
+    # LH must only have octave < 4 (G3, C3)
+    assert all(MusicTheoryEngine.pitch_to_midi(p) < 60 for p in lh_pitches)
+    assert "G3" in lh_pitches
+    assert "C3" in lh_pitches
+
+

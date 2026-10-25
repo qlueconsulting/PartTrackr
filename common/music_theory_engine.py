@@ -97,6 +97,11 @@ class MusicTheoryEngine:
         return f"{names[pitch_class]}{octave}"
 
     @classmethod
+    def midi_to_pitch_name(cls, midi_num: int, preferred_accidental: str = "#") -> str:
+        """Alias for midi_to_pitch."""
+        return cls.midi_to_pitch(midi_num, preferred_accidental=preferred_accidental)
+
+    @classmethod
     def resolve_step_to_pitch(
         cls,
         step: str,

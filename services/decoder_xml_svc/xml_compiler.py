@@ -286,8 +286,15 @@ class XMLCompiler:
             cumulative_seconds += duration_s
 
         # Assemble unified full score MusicXML (score.musicxml)
-        sc.append(layout.StaffGroup(vocal_parts, symbol="bracket", name="Choir"))
-        for vp in vocal_parts:
+        # Filter vocal parts to those with active notes so the choir staves sit directly adjacent to piano staves
+        active_vocal_parts = [
+            vp for vp in vocal_parts
+            if any(any(isinstance(el, (note.Note, chord.Chord)) for el in m.recurse().getElementsByClass(note.GeneralNote)) for m in vp.getElementsByClass(stream.Measure))
+        ]
+        chosen_vocal_parts = active_vocal_parts if active_vocal_parts else vocal_parts
+
+        sc.append(layout.StaffGroup(chosen_vocal_parts, symbol="bracket", name="Choir"))
+        for vp in chosen_vocal_parts:
             sc.append(vp)
 
         if cism.has_piano:
@@ -304,8 +311,8 @@ class XMLCompiler:
         # Write partitioned Vocals-only MusicXML (score_vocals.musicxml)
         sc_vocals = stream.Score()
         sc_vocals.metadata = sc.metadata
-        sc_vocals.append(layout.StaffGroup(vocal_parts, symbol="bracket", name="Choir"))
-        for vp in vocal_parts:
+        sc_vocals.append(layout.StaffGroup(chosen_vocal_parts, symbol="bracket", name="Choir"))
+        for vp in chosen_vocal_parts:
             sc_vocals.append(vp)
         vocals_xml_path = output_dir / "score_vocals.musicxml"
         sc_vocals.write("musicxml", fp=str(vocals_xml_path))

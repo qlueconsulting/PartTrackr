@@ -143,7 +143,7 @@ class GeometricOMREngine:
             h_img, w_img = arr.shape
             bw = (arr < 190).astype(np.uint8)
 
-            if text_mask_np is not None and text_mask_np.shape == bw.shape:
+            if text_mask_np is not None and isinstance(text_mask_np, np.ndarray) and text_mask_np.shape == bw.shape:
                 bw[text_mask_np == 1] = 0
 
             # Pass 1: Standard Extraction
@@ -163,7 +163,7 @@ class GeometricOMREngine:
                     clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
                     enhanced = clahe.apply(arr)
                     _, bw_retry = cv2.threshold(enhanced, 0, 1, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-                    if text_mask_np is not None and text_mask_np.shape == bw_retry.shape:
+                    if text_mask_np is not None and isinstance(text_mask_np, np.ndarray) and text_mask_np.shape == bw_retry.shape:
                         bw_retry[text_mask_np == 1] = 0
                     kernel = np.ones((2, 2), np.uint8)
                     bw_retry = cv2.morphologyEx(bw_retry, cv2.MORPH_CLOSE, kernel)
@@ -209,7 +209,7 @@ class GeometricOMREngine:
             h_img, w_img = arr.shape
             bw = (arr < 190).astype(np.uint8)
 
-            if text_mask_np is not None and text_mask_np.shape == bw.shape:
+            if text_mask_np is not None and isinstance(text_mask_np, np.ndarray) and text_mask_np.shape == bw.shape:
                 bw[text_mask_np == 1] = 0
 
             track, conf = cls._extract_single_staff_from_bitmap(
@@ -228,7 +228,7 @@ class GeometricOMREngine:
                     clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
                     enhanced = clahe.apply(arr)
                     _, bw_retry = cv2.threshold(enhanced, 0, 1, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-                    if text_mask_np is not None and text_mask_np.shape == bw_retry.shape:
+                    if text_mask_np is not None and isinstance(text_mask_np, np.ndarray) and text_mask_np.shape == bw_retry.shape:
                         bw_retry[text_mask_np == 1] = 0
                     kernel = np.ones((2, 2), np.uint8)
                     bw_retry = cv2.morphologyEx(bw_retry, cv2.MORPH_CLOSE, kernel)
@@ -281,8 +281,8 @@ class GeometricOMREngine:
         labeled, num_features = ndimage.label(bw_clean)
         objects = ndimage.find_objects(labeled)
 
-        y_lo = max(0, int(y_top_staff - 3.0 * spacing))
-        y_hi = min(h_img, int(y_bot_staff + 3.0 * spacing))
+        y_lo = max(0, int(y_top_staff - 1.8 * spacing))
+        y_hi = min(h_img, int(y_bot_staff + 1.8 * spacing))
 
         notes_found: List[Dict[str, Any]] = []
 
@@ -375,16 +375,16 @@ class GeometricOMREngine:
 
                 dur_t = "quarter" if abs(dur_q - 1.0) < 0.1 else ("half" if abs(dur_q - 2.0) < 0.1 else "eighth")
 
-                primary_pitch = sorted(ev["pitches"])[-1]
+                primary_pitch = max(ev["pitches"], key=MusicTheoryEngine.pitch_to_midi)
                 matched_elements.append(NoteElement(
                     pitch=primary_pitch,
-                    midi_pitch=ev["midis"][-1],
+                    midi_pitch=max(ev["midis"]),
                     duration_quarters=dur_q,
                     duration_type=dur_t,
                     offset_quarters=off_q,
                     stem_direction=ev["stem"],
                     is_chord=is_chord,
-                    chord_pitches=sorted(ev["pitches"]),
+                    chord_pitches=sorted(ev["pitches"], key=MusicTheoryEngine.pitch_to_midi),
                     is_rest=False
                 ))
 
@@ -451,8 +451,8 @@ class GeometricOMREngine:
             y_top_staff = five[0]
             y_bot_staff = five[4]
 
-            y_lo = max(0, int(y_top_staff - 2.5 * spacing))
-            y_hi = min(h_img, int(y_bot_staff + 2.5 * spacing))
+            y_lo = max(0, int(y_top_staff - 1.8 * spacing))
+            y_hi = min(h_img, int(y_bot_staff + 1.8 * spacing))
 
             notes_found: List[Dict[str, Any]] = []
 
@@ -539,16 +539,16 @@ class GeometricOMREngine:
 
                     dur_t = "quarter" if abs(dur_q - 1.0) < 0.1 else ("half" if abs(dur_q - 2.0) < 0.1 else "eighth")
 
-                    primary_pitch = sorted(ev["pitches"])[-1]
+                    primary_pitch = max(ev["pitches"], key=MusicTheoryEngine.pitch_to_midi)
                     matched_elements.append(NoteElement(
                         pitch=primary_pitch,
-                        midi_pitch=ev["midis"][-1],
+                        midi_pitch=max(ev["midis"]),
                         duration_quarters=dur_q,
                         duration_type=dur_t,
                         offset_quarters=off_q,
                         stem_direction=ev["stem"],
                         is_chord=is_chord,
-                        chord_pitches=sorted(ev["pitches"]),
+                        chord_pitches=sorted(ev["pitches"], key=MusicTheoryEngine.pitch_to_midi),
                         is_rest=False
                     ))
 

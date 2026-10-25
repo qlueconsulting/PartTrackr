@@ -317,13 +317,27 @@ class AudiverisEngine:
         merged_mvts: List[Dict[str, Any]] = []
 
         def _get_mvt_span(m_entry: Dict[str, Any]) -> Tuple[Optional[int], Optional[int]]:
-            all_nums = [
-                m.number for tr in (m_entry["vocal_traits"] + m_entry["piano_traits"])
+            v_nums = [
+                m.number for tr in m_entry["vocal_traits"]
                 for m in tr["part"].getElementsByClass(stream.Measure)
                 if m.number is not None and m.number > 0
             ]
-            if all_nums:
+            p_nums = [
+                m.number for tr in m_entry["piano_traits"]
+                for m in tr["part"].getElementsByClass(stream.Measure)
+                if m.number is not None and m.number > 0
+            ]
+            if v_nums and p_nums:
+                if min(v_nums) > 1 and min(p_nums) == 1:
+                    return min(v_nums), max(v_nums)
+                elif min(p_nums) > 1 and min(v_nums) == 1:
+                    return min(p_nums), max(p_nums)
+                all_nums = v_nums + p_nums
                 return min(all_nums), max(all_nums)
+            elif v_nums:
+                return min(v_nums), max(v_nums)
+            elif p_nums:
+                return min(p_nums), max(p_nums)
             return None, None
 
         vocal_only_indices = [
@@ -359,7 +373,25 @@ class AudiverisEngine:
                         if cands[0][0] <= 3:
                             best_p_idx = cands[0][1]
 
-                # Priority 2: Fallback to rank order pairing (e.g. 1st vocal with 1st piano, 2nd with 2nd)
+                # Priority 2: Match by rehearsal marks in movements if present
+                if best_p_idx is None:
+                    v_rms = {
+                        rm.content for tr in v_src["vocal_traits"]
+                        for rm in tr["part"].recurse().getElementsByClass(music21.expressions.RehearsalMark)
+                        if hasattr(rm, "content") and rm.content
+                    }
+                    if v_rms:
+                        for p_idx in available_pianos:
+                            p_rms = {
+                                rm.content for tr in classified_mvts[p_idx]["piano_traits"]
+                                for rm in tr["part"].recurse().getElementsByClass(music21.expressions.RehearsalMark)
+                                if hasattr(rm, "content") and rm.content
+                            }
+                            if v_rms.intersection(p_rms):
+                                best_p_idx = p_idx
+                                break
+
+                # Priority 3: Fallback to rank order pairing (e.g. 1st vocal with 1st piano, 2nd with 2nd)
                 if best_p_idx is None and available_pianos:
                     v_rank = vocal_only_indices.index(v_idx)
                     p_rank = min(v_rank, len(available_pianos) - 1)
@@ -411,8 +443,10 @@ class AudiverisEngine:
 
         piano_rh = stream.Part(id="Piano_RH")
         piano_rh.partName = "Piano Right Hand"
+        piano_rh.insert(0, clef.TrebleClef())
         piano_lh = stream.Part(id="Piano_LH")
         piano_lh.partName = "Piano Left Hand"
+        piano_lh.insert(0, clef.BassClef())
         if score_has_piano:
             unified.append(piano_rh)
             unified.append(piano_lh)
@@ -423,34 +457,43 @@ class AudiverisEngine:
         bar_ql = Fraction(calculate_bar_quarter_length(default_ts_str))
 
         for m_block in merged_mvts:
-            # Check if this movement has printed measure numbers that anchor its starting measure
-            all_block_measures = [
-                m.number for tr in (m_block["vocal_traits"] + m_block["piano_traits"])
+            v_nums = [
+                m.number for tr in m_block["vocal_traits"]
                 for m in tr["part"].getElementsByClass(stream.Measure)
                 if m.number is not None and m.number > 0
             ]
-            if all_block_measures:
-                mvt_min = min(all_block_measures)
-                mvt_max = max(all_block_measures)
-                if mvt_min >= global_measure_num:
-                    # Absolute printed numbering continues across movements
-                    use_absolute = True
-                    mvt_start_num = mvt_min
-                    global_measure_num = mvt_min
-                else:
-                    # Movement restarts numbering from 1 (relative indexing 1..N)
-                    use_absolute = False
-                    mvt_start_num = mvt_min
-
-                blk_len = max(m_block["m_count"], (mvt_max - mvt_min + 1))
-            else:
-                use_absolute = False
-                mvt_start_num = 1
+            p_nums = [
+                m.number for tr in m_block["piano_traits"]
+                for m in tr["part"].getElementsByClass(stream.Measure)
+                if m.number is not None and m.number > 0
+            ]
+            counts = [
+                len(list(tr["part"].getElementsByClass(stream.Measure)))
+                for tr in (m_block["vocal_traits"] + m_block["piano_traits"])
+            ]
+            blk_len = max(counts, default=m_block["m_count"])
+            if blk_len == 0:
                 blk_len = m_block["m_count"]
+
+            valid_start = None
+            if v_nums and min(v_nums) >= global_measure_num:
+                valid_start = min(v_nums)
+            elif p_nums and min(p_nums) >= global_measure_num:
+                valid_start = min(p_nums)
+            elif v_nums and min(v_nums) > 1 and abs(min(v_nums) - global_measure_num) <= 2:
+                valid_start = min(v_nums)
+            elif p_nums and min(p_nums) > 1 and abs(min(p_nums) - global_measure_num) <= 2:
+                valid_start = min(p_nums)
+
+            if valid_start is not None:
+                mvt_start_num = valid_start
+                global_measure_num = valid_start
+            else:
+                mvt_start_num = global_measure_num
 
             for m_i in range(blk_len):
                 cur_target_num = global_measure_num + m_i
-                local_src_num = (mvt_start_num + m_i) if not use_absolute else cur_target_num
+                local_src_num = mvt_start_num + m_i
 
                 # Stitch each vocal part with exact measure number alignment
                 for vi, out_p in enumerate(vocal_out_parts):
@@ -514,20 +557,18 @@ class AudiverisEngine:
 
         lookup_num = src_measure_num if src_measure_num is not None else target_num
 
-        # 1. First attempt: match by exact measure number (prevents cross-part desynchronization!)
+        # 1. Match by exact measure number (prevents cross-part desynchronization!)
         src_m = None
         for m in part.getElementsByClass(stream.Measure):
-            if m.number == lookup_num:
+            if m.number == target_num or m.number == lookup_num:
                 src_m = m
                 break
 
-        # 2. Second attempt: match by index if measure numbers are absent
+        # 2. Match by index within movement block (lockstep measure alignment across staves)
         if src_m is None:
             measures = list(part.getElementsByClass(stream.Measure))
-            if m_idx < len(measures):
-                cand = measures[m_idx]
-                if cand.number is None or cand.number == 0:
-                    src_m = cand
+            if 0 <= m_idx < len(measures):
+                src_m = measures[m_idx]
 
         if src_m is not None:
             elems = list(src_m.flatten().notesAndRests)
@@ -714,7 +755,7 @@ class AudiverisEngine:
                 num_map = part_m_by_num[idx]
                 src_m = num_map.get(m_num)
 
-                # Multi-tier measure resolution: prevents missing measures or phantom rests
+                # Multi-tier measure resolution: ensures all parts align exactly in parallel measures
                 if src_m is None:
                     # 1. Fallback by measure index relative to start_num
                     rel_idx = m_num - start_num
@@ -723,7 +764,7 @@ class AudiverisEngine:
                         if cand.number is None or cand.number == 0 or cand.number == m_num:
                             src_m = cand
 
-                    # 2. Fallback by metric offset (only if unnumbered or number matches)
+                    # 2. Fallback by metric offset
                     if src_m is None and idx < len(part_m_by_offset):
                         expected_offset = round(float(rel_idx * m_ql), 2)
                         cand_off = part_m_by_offset[idx].get(expected_offset)
