@@ -37,6 +37,21 @@ class MusicTheoryEngine:
     }
 
     @classmethod
+    def diatonic_step_to_step_and_octave(cls, step_val: int, clef: str = "treble") -> Tuple[str, int]:
+        """
+        Analytically converts staff vertical step_val (where 0 = bottom staff line, 8 = top staff line)
+        to standard diatonic step letter ('C', 'D', 'E', 'F', 'G', 'A', 'B') and octave integer.
+        Handles arbitrary ledger lines above and below without clipping or defaulting.
+        """
+        diatonic = ["C", "D", "E", "F", "G", "A", "B"]
+        is_bass = clef in ("bass", "f") or clef.startswith("bass")
+        base_diatonic_idx = 18 if is_bass else 30
+        idx = base_diatonic_idx + int(step_val)
+        step = diatonic[idx % 7]
+        octave = idx // 7
+        return step, octave
+
+    @classmethod
     def resolve_key_alterations(cls, fifths: int) -> Dict[str, str]:
         """
         Returns map of diatonic step -> accidental string based on Circle of Fifths.

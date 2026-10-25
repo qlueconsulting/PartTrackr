@@ -112,19 +112,55 @@ class VoiceRouterEngine:
             )
 
         # 1. Route Piano Accompaniment (Rule A1a & Rule A5)
-        piano_elements: List[NoteElement] = []
+        # Dedicated RH (Treble) and LH (Bass) staves for Grand Staff MusicXML transcription
+        rh_elements: List[NoteElement] = []
+        lh_elements: List[NoteElement] = []
+
         if piano_staves and has_piano_in_score:
-            for pst in piano_staves:
-                raw_t = m.raw_staves.get(pst.staff_id)
-                if raw_t:
-                    piano_elements.extend(copy.deepcopy(raw_t.elements))
-        
-        if not piano_elements:
-            tracks["piano"].elements = [
-                NoteElement(pitch=None, duration_quarters=m.quarter_length, duration_type="whole", offset_quarters=0.0, is_rest=True)
-            ]
-        else:
-            tracks["piano"].elements = piano_elements
+            pst_rh = next((pst for pst in piano_staves if pst.role == "piano_rh"), piano_staves[0])
+            pst_lh = next((pst for pst in piano_staves if pst.role == "piano_lh"), piano_staves[-1] if len(piano_staves) > 1 else None)
+
+            raw_rh = m.raw_staves.get(pst_rh.staff_id) if pst_rh else None
+            raw_lh = m.raw_staves.get(pst_lh.staff_id) if pst_lh else None
+
+            if raw_rh and raw_rh.elements:
+                rh_elements = copy.deepcopy(raw_rh.elements)
+            if raw_lh and raw_lh.elements:
+                lh_elements = copy.deepcopy(raw_lh.elements)
+
+        # If only one staff had all notes, split into RH (>= C4) and LH (< C4)
+        if not rh_elements and lh_elements:
+            rh_cands = [el for el in lh_elements if (not el.is_rest and (el.midi_pitch or 60) >= 60)]
+            lh_cands = [el for el in lh_elements if (not el.is_rest and (el.midi_pitch or 60) < 60)]
+            if rh_cands:
+                rh_elements = rh_cands
+                lh_elements = lh_cands
+        elif rh_elements and not lh_elements:
+            rh_cands = [el for el in rh_elements if (not el.is_rest and (el.midi_pitch or 60) >= 60)]
+            lh_cands = [el for el in rh_elements if (not el.is_rest and (el.midi_pitch or 60) < 60)]
+            if lh_cands:
+                rh_elements = rh_cands
+                lh_elements = lh_cands
+
+        whole_rest = [NoteElement(pitch=None, duration_quarters=m.quarter_length, duration_type="whole", offset_quarters=0.0, is_rest=True)]
+
+        tracks["piano_rh"] = TrackData(
+            track_name="piano_rh",
+            clef="treble",
+            elements=rh_elements if rh_elements else whole_rest
+        )
+        tracks["piano_lh"] = TrackData(
+            track_name="piano_lh",
+            clef="bass",
+            elements=lh_elements if lh_elements else whole_rest
+        )
+        # Unified piano track for 11-part compatibility & MIDI
+        combined_elements = rh_elements + lh_elements
+        tracks["piano"] = TrackData(
+            track_name="piano",
+            clef="grand",
+            elements=combined_elements if combined_elements else whole_rest
+        )
 
         # 2. Check if this measure is an instrumental interlude (no vocal notes on raw staves)
         has_vocal_notes = False

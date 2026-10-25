@@ -14,6 +14,7 @@ from common.cism_schema import (
     BoundingBox,
 )
 from common.lockstep_utils import reconcile_cism_measures
+from common.music_theory_engine import MusicTheoryEngine
 
 logger = logging.getLogger("omr_ai_svc.vector")
 
@@ -234,8 +235,8 @@ class VectorSMuFLExtractor:
         line_spacing = (st.y_bot - st.y_top) / 4.0 if (st.y_bot - st.y_top) > 0 else 6.0
         step_px = line_spacing / 2.0
 
-        ref_midi = 77 if st.clef == "treble" else 57  # F5 for top treble line, A3 for top bass line
-        ref_pitch_name = "F5" if st.clef == "treble" else "A3"
+        is_bass = (st.clef in ("bass", "f")) or (st.role == "piano_lh")
+        clef_name = "bass" if is_bass else "treble"
 
         elements: List[NoteElement] = []
         box_glyphs.sort(key=lambda g: g["x"])
@@ -248,10 +249,12 @@ class VectorSMuFLExtractor:
             off_ql = round((rel_x / bar_w) * 4.0, 1)
 
             if code in SMUFL_NOTEHEADS:
-                # Vertical step distance from top line
+                # Vertical step distance from top line (Line 5 is step_val = 8)
                 steps_down = round((g["y"] - st.y_top) / step_px)
-                midi = ref_midi - steps_down
-                pitch_str = cls._midi_to_pitch_str(midi)
+                step_val = 8 - int(steps_down)
+                step, octave = MusicTheoryEngine.diatonic_step_to_step_and_octave(step_val, clef=clef_name)
+                pitch_str, midi = MusicTheoryEngine.resolve_step_to_pitch(step, octave, key_fifths=0, clef=clef_name)
+
                 dur_ql = 1.0 if code == SMUFL_NOTEHEAD_BLACK else (2.0 if code == SMUFL_NOTEHEAD_HALF else 4.0)
                 dur_type = "quarter" if code == SMUFL_NOTEHEAD_BLACK else ("half" if code == SMUFL_NOTEHEAD_HALF else "whole")
 

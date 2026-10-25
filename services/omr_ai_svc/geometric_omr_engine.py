@@ -286,8 +286,9 @@ class GeometricOMREngine:
 
         notes_found: List[Dict[str, Any]] = []
 
-        is_bass = (staff.clef in ("bass", "f")) or (staff.role in ("piano_lh", "vocal_men") and staff.clef == "bass")
+        is_bass = (staff.clef in ("bass", "f")) or (staff.role == "piano_lh") or (staff.role == "vocal_men" and staff.clef not in ("treble", "treble_8vb"))
         is_treble_8vb = (staff.clef == "treble_8vb") or (staff.role == "vocal_men" and staff.clef == "treble")
+        clef_for_theory = "bass" if is_bass else "treble"
 
         for sl in objects:
             yc = (sl[0].start + sl[0].stop) / 2.0
@@ -299,15 +300,13 @@ class GeometricOMREngine:
             if y_lo <= yc <= y_hi:
                 if (0.35 * spacing) <= obj_h <= (3.5 * spacing) and (0.35 * spacing) <= obj_w <= (3.5 * spacing) and area >= 10:
                     step_val = int(round((y_bot_staff - yc) / step_px))
-                    step_map = cls.BASS_STEPS if is_bass else cls.TREBLE_STEPS
-                    default_step = ('D', 3) if is_bass else ('B', 4)
-                    step_info = step_map.get(step_val, default_step)
+                    step, octave = MusicTheoryEngine.diatonic_step_to_step_and_octave(step_val, clef=clef_for_theory)
 
                     pitch_str, midi_num = MusicTheoryEngine.resolve_step_to_pitch(
-                        step=step_info[0],
-                        octave=step_info[1],
+                        step=step,
+                        octave=octave,
                         key_fifths=key_fifths,
-                        clef="bass" if is_bass else "treble"
+                        clef=clef_for_theory
                     )
 
                     if is_treble_8vb and midi_num > 55:
@@ -467,13 +466,14 @@ class GeometricOMREngine:
                 if y_lo <= yc <= y_hi:
                     if (0.35 * spacing) <= obj_h <= (3.5 * spacing) and (0.35 * spacing) <= obj_w <= (3.5 * spacing) and area >= 12:
                         step_val = int(round((y_bot_staff - yc) / step_px))
-                        step_map = cls.TREBLE_STEPS if st.clef == "treble" else cls.BASS_STEPS
-                        step_info = step_map.get(step_val, ('C', 4 if st.clef == 'treble' else 3))
+                        is_bass = (st.clef in ("bass", "f")) or (st.role == "piano_lh") or (st.role == "vocal_men" and st.clef not in ("treble", "treble_8vb"))
+                        clef_for_theory = "bass" if is_bass else "treble"
+                        step, octave = MusicTheoryEngine.diatonic_step_to_step_and_octave(step_val, clef=clef_for_theory)
                         pitch_str, midi_num = MusicTheoryEngine.resolve_step_to_pitch(
-                            step=step_info[0],
-                            octave=step_info[1],
+                            step=step,
+                            octave=octave,
                             key_fifths=key_fifths,
-                            clef=st.clef
+                            clef=clef_for_theory
                         )
 
                         cy, cx = int(yc), int(xc)

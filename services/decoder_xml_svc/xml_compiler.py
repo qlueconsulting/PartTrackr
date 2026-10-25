@@ -146,11 +146,6 @@ class XMLCompiler:
             else:
                 vocal_parts.append(p)
 
-        # Add StaffGroups for bracket / brace
-        sc.append(layout.StaffGroup(vocal_parts, symbol="bracket", name="Choir"))
-        if piano_parts:
-            sc.append(layout.StaffGroup(piano_parts, symbol="brace", name="Piano"))
-
         # Flatten measures in order
         all_measures = cism.all_measures()
         measure_summary = []
@@ -163,14 +158,16 @@ class XMLCompiler:
         sc_piano = stream.Score()
         sc_piano.metadata = sc.metadata
         p_piano_rh = stream.Part(id="piano_rh")
-        p_piano_rh.partName = "Piano RH"
+        p_piano_rh.partName = "Piano"
+        p_piano_rh.partAbbreviation = "Pno."
         p_piano_rh.insert(0, clef.TrebleClef())
         inst_rh = music21.instrument.Instrument()
         inst_rh.midiProgram = 0
         p_piano_rh.insert(0, inst_rh)
 
         p_piano_lh = stream.Part(id="piano_lh")
-        p_piano_lh.partName = "Piano LH"
+        p_piano_lh.partName = ""
+        p_piano_lh.partAbbreviation = ""
         p_piano_lh.insert(0, clef.BassClef())
         inst_lh = music21.instrument.Instrument()
         inst_lh.midiProgram = 0
@@ -224,26 +221,51 @@ class XMLCompiler:
                 m_rh.insert(0, music21.expressions.RehearsalMark(m_data.rehearsal_mark))
                 m_lh.insert(0, music21.expressions.RehearsalMark(m_data.rehearsal_mark))
 
-            piano_track = m_data.tracks.get("piano")
-            piano_elements = piano_track.elements if piano_track else []
+            # 1. First priority: dedicated piano_rh and piano_lh tracks from router
+            track_rh = m_data.tracks.get("piano_rh")
+            track_lh = m_data.tracks.get("piano_lh")
             rh_elems = []
             lh_elems = []
-            has_split = False
-            for el in piano_elements:
-                if el.is_rest or not el.pitch:
-                    rh_elems.append(el)
-                    lh_elems.append(el)
-                else:
-                    has_split = True
-                    midi_p = el.midi_pitch or cls._pitch_to_midi_num(el.pitch)
-                    if midi_p >= 60:
+
+            if track_rh and any(not el.is_rest for el in track_rh.elements):
+                rh_elems = track_rh.elements
+            if track_lh and any(not el.is_rest for el in track_lh.elements):
+                lh_elems = track_lh.elements
+
+            # 2. Second priority: pre-routing raw staves from OMR if present
+            if not rh_elems or not lh_elems:
+                raw_rh = None
+                raw_lh = None
+                for sys_obj in cism.systems:
+                    for st_info in sys_obj.staves:
+                        if st_info.role == "piano_rh" and st_info.staff_id in m_data.raw_staves:
+                            raw_rh = m_data.raw_staves[st_info.staff_id]
+                        elif st_info.role == "piano_lh" and st_info.staff_id in m_data.raw_staves:
+                            raw_lh = m_data.raw_staves[st_info.staff_id]
+                if not rh_elems and raw_rh and any(not el.is_rest for el in raw_rh.elements):
+                    rh_elems = raw_rh.elements
+                if not lh_elems and raw_lh and any(not el.is_rest for el in raw_lh.elements):
+                    lh_elems = raw_lh.elements
+
+            # 3. Fallback: split unified piano track diatonically around Middle C (MIDI 60)
+            if not rh_elems and not lh_elems:
+                p_track = m_data.tracks.get("piano")
+                p_elems = p_track.elements if p_track else []
+                for el in p_elems:
+                    if el.is_rest:
+                        continue
+                    mp = el.midi_pitch or cls._pitch_to_midi_num(el.pitch)
+                    if mp >= 60:
                         rh_elems.append(el)
                     else:
                         lh_elems.append(el)
 
-            if not has_split:
-                rh_elems = piano_elements
-                lh_elems = piano_elements
+            # Pad empty hand measures with whole rests
+            whole_rest_el = [NoteElement(pitch=None, duration_quarters=float(bar_ql), duration_type="whole", is_rest=True)]
+            if not rh_elems:
+                rh_elems = whole_rest_el
+            if not lh_elems:
+                lh_elems = whole_rest_el
 
             cls._populate_measure_from_elements(m_rh, rh_elems, bar_ql)
             cls._populate_measure_from_elements(m_lh, lh_elems, bar_ql)
@@ -263,10 +285,19 @@ class XMLCompiler:
             })
             cumulative_seconds += duration_s
 
-        for p_name in CANONICAL_11_PARTS:
-            sc.append(parts[p_name])
+        # Assemble unified full score MusicXML (score.musicxml)
+        sc.append(layout.StaffGroup(vocal_parts, symbol="bracket", name="Choir"))
+        for vp in vocal_parts:
+            sc.append(vp)
 
-        # Write unified full score MusicXML
+        if cism.has_piano:
+            sc.append(layout.StaffGroup([p_piano_rh, p_piano_lh], symbol="brace", name="Piano", abbreviation="Pno."))
+            sc.append(p_piano_rh)
+            sc.append(p_piano_lh)
+        else:
+            # If a cappella, still provide piano part if requested
+            sc.append(parts["piano"])
+
         main_xml_path = output_dir / "score.musicxml"
         sc.write("musicxml", fp=str(main_xml_path))
 
@@ -279,7 +310,7 @@ class XMLCompiler:
         vocals_xml_path = output_dir / "score_vocals.musicxml"
         sc_vocals.write("musicxml", fp=str(vocals_xml_path))
 
-        # Write partitioned Piano-only MusicXML (score_piano.musicxml) with 2 staves
+        # Write partitioned Piano-only MusicXML (score_piano.musicxml) with 2 staves (RH Treble + LH Bass)
         sc_piano.append(p_piano_rh)
         sc_piano.append(p_piano_lh)
         piano_xml_path = output_dir / "score_piano.musicxml"
@@ -290,7 +321,12 @@ class XMLCompiler:
         for p_name in CANONICAL_11_PARTS:
             single_sc = stream.Score()
             single_sc.metadata = sc.metadata
-            single_sc.append(parts[p_name])
+            if p_name == "piano" and cism.has_piano:
+                single_sc.append(layout.StaffGroup([p_piano_rh, p_piano_lh], symbol="brace", name="Piano", abbreviation="Pno."))
+                single_sc.append(p_piano_rh)
+                single_sc.append(p_piano_lh)
+            else:
+                single_sc.append(parts[p_name])
             stem_xml = stems_dir / f"{p_name}.musicxml"
             single_sc.write("musicxml", fp=str(stem_xml))
             stem_paths[p_name] = stem_xml
