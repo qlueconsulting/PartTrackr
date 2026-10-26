@@ -11,7 +11,7 @@ services:
     image: ghcr.io/qlueconsulting/parttrackr-backend:latest
     container_name: parttrackr_backend
     ports:
-      - "8000:8000" # Core Rehearsal API
+      - "8004:8000" # Core Rehearsal API (Host: 8004 -> Container: 8000)
       - "8005:8005" # Pipeline Gateway API
     volumes:
       - ./storage:/app/storage
@@ -33,7 +33,9 @@ services:
       retries: 3
     restart: unless-stopped
     networks:
-      - parttrackr_net
+      parttrackr_net:
+        aliases:
+          - gateway-svc
 
   # ============================================================================
   # 2. React / Vite Diagnostic & Rehearsal Player UI (Pre-built GHCR Image)
@@ -45,7 +47,7 @@ services:
       - "8001:8001"
     environment:
       - VITE_GATEWAY_URL=http://localhost:8005
-      - VITE_BACKEND_URL=http://localhost:8000
+      - VITE_BACKEND_URL=http://localhost:8004
     depends_on:
       - parttrackr-backend
     restart: unless-stopped
