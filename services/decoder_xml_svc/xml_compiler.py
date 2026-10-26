@@ -158,7 +158,7 @@ class XMLCompiler:
         sc_piano = stream.Score()
         sc_piano.metadata = sc.metadata
         p_piano_rh = stream.Part(id="piano_rh")
-        p_piano_rh.partName = "Piano"
+        p_piano_rh.partName = "Piano RH"
         p_piano_rh.partAbbreviation = "Pno."
         p_piano_rh.insert(0, clef.TrebleClef())
         inst_rh = music21.instrument.Instrument()
@@ -166,8 +166,8 @@ class XMLCompiler:
         p_piano_rh.insert(0, inst_rh)
 
         p_piano_lh = stream.Part(id="piano_lh")
-        p_piano_lh.partName = ""
-        p_piano_lh.partAbbreviation = ""
+        p_piano_lh.partName = "Piano LH"
+        p_piano_lh.partAbbreviation = "Pno."
         p_piano_lh.insert(0, clef.BassClef())
         inst_lh = music21.instrument.Instrument()
         inst_lh.midiProgram = 0

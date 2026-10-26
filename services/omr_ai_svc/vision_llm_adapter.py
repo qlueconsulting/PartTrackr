@@ -158,25 +158,46 @@ class VisionLLMAdapter:
         total_measures = 0
         engines_used = set()
 
-        # Fast 1.5-second pre-check: Is Ollama reachable AND is the model pulled?
-        model_name = os.environ.get("OLLAMA_MODEL", "qwen2.5-vl:7b")
+        # Fast pre-check: Probe Ollama candidate endpoints and resolve the exact model name
+        candidates = [
+            ollama_url,
+            os.environ.get("OLLAMA_BASE_URL"),
+            "http://192.168.2.4:11434",
+            "http://localhost:11434",
+            "http://127.0.0.1:11434",
+            "http://ollama:11434",
+            "http://host.docker.internal:11434"
+        ]
+        active_endpoint = None
+        resolved_model_name = [os.environ.get("OLLAMA_MODEL", "qwen2.5vl:7b")]
         ollama_active = [False]
-        if ollama_endpoint:
+
+        for cand in candidates:
+            if not cand:
+                continue
+            cand_clean = cand.rstrip("/")
             try:
-                resp = requests.get(f"{ollama_endpoint.rstrip('/')}/api/tags", timeout=1.5)
+                resp = requests.get(f"{cand_clean}/api/tags", timeout=1.0)
                 if resp.status_code == 200:
                     models = resp.json().get("models", [])
-                    target_base = model_name.split(":")[0].replace("-", "").replace("_", "").lower()
+                    target_base = resolved_model_name[0].split(":")[0].replace("-", "").replace("_", "").lower()
                     for m in models:
-                        m_name = m.get("name", "").replace("-", "").replace("_", "").lower()
-                        if target_base in m_name:
+                        m_name = m.get("name", "")
+                        clean_m = m_name.replace("-", "").replace("_", "").lower()
+                        if target_base in clean_m or "qwen" in clean_m or "vision" in clean_m:
                             ollama_active[0] = True
-                            logger.info(f"Ollama vision model '{m.get('name')}' detected on {ollama_endpoint}")
+                            active_endpoint = cand_clean
+                            resolved_model_name[0] = m_name
+                            logger.info(f"Ollama vision model '{m_name}' detected on {cand_clean}")
                             break
-                    if not ollama_active[0]:
-                        logger.info(f"Ollama reachable, but '{model_name}' not pulled. Fast-pathing to OpenCV CV engine.")
-            except Exception as e:
-                logger.debug(f"Ollama not reachable ({e}). Fast-pathing to OpenCV CV engine.")
+                    if ollama_active[0]:
+                        break
+            except Exception:
+                continue
+
+        if not ollama_active[0]:
+            logger.info(f"Ollama endpoint not active or model not pulled. Fast-pathing to OpenCV CV engine.")
+
 
         for sys_dict in systems_raw:
             sys_idx = sys_dict["system_index"]
@@ -197,7 +218,8 @@ class VisionLLMAdapter:
                     m_crop_path=m_crop,
                     staves=staves_out,
                     api_key=api_key,
-                    ollama_url=ollama_endpoint if ollama_active[0] else None,
+                    ollama_url=active_endpoint if ollama_active[0] else None,
+                    ollama_model=resolved_model_name[0] if ollama_active[0] else None,
                     custom_instructions=active_instructions,
                     score_hints=score_hints,
                     ollama_active_state=ollama_active,
@@ -264,7 +286,8 @@ class VisionLLMAdapter:
         staves: List[StaffInfo],
         api_key: Optional[str],
         ollama_url: Optional[str],
-        custom_instructions: Optional[str],
+        ollama_model: Optional[str] = None,
+        custom_instructions: Optional[str] = None,
         score_hints: Optional[Dict[str, Any]] = None,
         ollama_active_state: Optional[List[bool]] = None,
         quarter_length: float = 4.0,
@@ -279,10 +302,15 @@ class VisionLLMAdapter:
 
         # 2. Try Local GPU Ollama if available
         if ollama_url and m_crop_path and Path(m_crop_path).exists():
-            ollama_res = cls._call_ollama_vision(m_crop_path, ollama_url, custom_instructions, score_hints, composer=composer, layout_data=layout_data)
+            ollama_res = cls._call_ollama_vision(
+                m_crop_path, ollama_url,
+                model_name=ollama_model or os.environ.get("OLLAMA_MODEL", "qwen2.5vl:7b"),
+                custom_instructions=custom_instructions, score_hints=score_hints,
+                composer=composer, layout_data=layout_data
+            )
             if ollama_res:
-                model_name = os.environ.get("OLLAMA_MODEL", "qwen2.5-vl:7b")
-                return cls._format_staves_response(ollama_res, staves, quarter_length=quarter_length), f"Ollama ({model_name})"
+                used_model = ollama_model or os.environ.get("OLLAMA_MODEL", "qwen2.5vl:7b")
+                return cls._format_staves_response(ollama_res, staves, quarter_length=quarter_length), f"Ollama ({used_model})"
             else:
                 # Trip the circuit breaker for subsequent measures if Ollama fails
                 if ollama_active_state is not None:
@@ -331,19 +359,20 @@ class VisionLLMAdapter:
         cls,
         image_path: str,
         ollama_url: str,
+        model_name: Optional[str] = None,
         custom_instructions: Optional[str] = None,
         score_hints: Optional[Dict[str, Any]] = None,
         composer: str = "",
         layout_data: Optional[Dict[str, Any]] = None
     ) -> Optional[Dict[str, Any]]:
-        model_name = os.environ.get("OLLAMA_MODEL", "qwen2.5-vl:7b")
+        target_model = model_name or os.environ.get("OLLAMA_MODEL", "qwen2.5vl:7b")
         try:
             with open(image_path, "rb") as f:
                 img_b64 = base64.b64encode(f.read()).decode("ascii")
 
             prompt = cls.build_ground_truth_prompt(custom_instructions, score_hints, composer=composer, layout_data=layout_data)
             payload = {
-                "model": model_name,
+                "model": target_model,
                 "prompt": prompt,
                 "images": [img_b64],
                 "format": "json",
@@ -352,10 +381,10 @@ class VisionLLMAdapter:
             resp = requests.post(f"{ollama_url.rstrip('/')}/api/generate", json=payload, timeout=15)
             if resp.status_code == 200:
                 raw = resp.json().get("response", "")
-                logger.info(f"Successfully processed crop via Ollama ({model_name})")
+                logger.info(f"Successfully processed crop via Ollama ({target_model})")
                 return json.loads(raw)
             else:
-                logger.info(f"Ollama ({model_name}) returned HTTP {resp.status_code} (model may need to be pulled: 'ollama pull {model_name}')")
+                logger.info(f"Ollama ({target_model}) returned HTTP {resp.status_code} (model may need to be pulled: 'ollama pull {target_model}')")
         except Exception as e:
             logger.debug(f"Ollama OMR call skipped/failed ({e}) - using CV fallback")
         return None

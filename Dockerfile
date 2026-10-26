@@ -95,9 +95,12 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
-# Copy application source code
+# Copy application source code and modular packages
 COPY app /app/app
+COPY common /app/common
+COPY services /app/services
 COPY storage /app/storage
+COPY soundfonts /app/soundfonts
 
 # Copy built frontend assets from Stage 1
 COPY --from=frontend-builder /app/frontend/dist /app/frontend/dist

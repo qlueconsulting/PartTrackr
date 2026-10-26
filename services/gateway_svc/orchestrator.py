@@ -19,6 +19,10 @@ OMR_SVC_URL = os.environ.get("OMR_SVC_URL", "http://omr-ai-svc:8007")
 ROUTER_SVC_URL = os.environ.get("ROUTER_SVC_URL", "http://voice-router-svc:8008")
 DECODER_SVC_URL = os.environ.get("DECODER_SVC_URL", "http://decoder-xml-svc:8009")
 
+# Modular Monolith In-Process Mode (eliminates Docker daemon & HTTP serialization latency)
+IN_PROCESS_MODE = os.environ.get("IN_PROCESS_MODE", "true").lower() in ("true", "1", "yes")
+
+
 
 def _get_fallback_urls(primary_url: str, default_service_name: str, container_alias: str, port: int) -> list:
     candidates = [
@@ -133,49 +137,64 @@ class PipelineOrchestrator:
         append_job_log(job_dir, "info", "gateway-svc", f"Pipeline initiated for '{pdf_path.name}' (Job ID: {job_id})")
 
         try:
+            # Stage 0: Preflight Bifurcation Classification (Born-Digital vs. Paper Scan)
+            from common.score_classifier import ScoreBifurcationClassifier, ScoreSourceType
+            classification = ScoreBifurcationClassifier.classify_pdf(pdf_path)
+            source_type = classification["source_type"]
+            confidence = classification["confidence"]
+            append_job_log(
+                job_dir, "info", "preflight-classifier",
+                f"Score Ingestion Type: {source_type.upper()} (Confidence: {confidence:.2f})",
+                classification
+            )
+
             # Stage 1: Layout & Crops
             job.status = "layout"
             job.stage_message = "Rasterizing PDF at 300 DPI and detecting staff bounding boxes..."
             db.commit()
 
-            append_job_log(
-                job_dir, "info", "pdf-layout-svc",
-                f"POST {LAYOUT_SVC_URL}/api/v1/layout/process - Rasterizing pages and extracting staves..."
-            )
-
-            layout_payload = {
-                "job_id": job_id,
-                "pdf_path": str(pdf_path),
-                "output_dir": str(job_dir / "layout"),
-                "dpi": 300,
-                "score_hints": score_hints,
-            }
             layout_data = None
-            try:
-                resp_layout = await _post_with_retry_and_fallback(
-                    "pdf-layout-svc",
-                    LAYOUT_SVC_URL,
-                    "/api/v1/layout/process",
-                    layout_payload,
-                    fallback_urls=_get_fallback_urls(LAYOUT_SVC_URL, "pdf-layout-svc", "parttrackr_layout", 8006)
-                )
-                if resp_layout.status_code != 200:
-                    err_txt = resp_layout.text
-                    append_job_log(job_dir, "error", "pdf-layout-svc", f"Layout service error HTTP {resp_layout.status_code}", err_txt)
-                    raise RuntimeError(f"Layout service error: {err_txt}")
-                layout_data = resp_layout.json()
-            except (httpx.ConnectError, httpx.ConnectTimeout) as conn_err:
-                logger.warning(f"Layout HTTP endpoint unreachable ({conn_err}). Executing PDFLayoutEngine directly in-process...")
-                append_job_log(job_dir, "warning", "pdf-layout-svc", f"Layout HTTP unreachable ({conn_err}). Executing in-process fallback...")
+            if IN_PROCESS_MODE:
+                append_job_log(job_dir, "info", "pdf-layout-svc", "In-Process Mode: executing PDFLayoutEngine directly...")
                 try:
                     from services.pdf_layout_svc.layout_engine import PDFLayoutEngine
                     layout_data = PDFLayoutEngine.process_pdf(pdf_path, job_dir / "layout", dpi=300, score_hints=score_hints)
                 except Exception as fallback_err:
-                    logger.error(f"In-process fallback failed for pdf-layout-svc: {fallback_err}\n{traceback.format_exc()}")
-                    append_job_log(job_dir, "error", "pdf-layout-svc", f"Layout service unreachable ({conn_err}) and in-process fallback failed ({fallback_err}).")
+                    logger.error(f"In-process layout execution failed: {fallback_err}\n{traceback.format_exc()}")
+                    append_job_log(job_dir, "error", "pdf-layout-svc", f"Layout service unreachable and in-process fallback failed ({fallback_err}).")
                     raise RuntimeError(
-                        f"pdf-layout-svc ({LAYOUT_SVC_URL}) is unreachable ({conn_err}) and in-process fallback failed: {fallback_err}. Ensure container is running on parttrackr_net."
+                        f"pdf-layout-svc ({LAYOUT_SVC_URL}) is unreachable and in-process fallback failed: {fallback_err}. Ensure container is running on parttrackr_net."
                     ) from fallback_err
+            else:
+                append_job_log(
+                    job_dir, "info", "pdf-layout-svc",
+                    f"POST {LAYOUT_SVC_URL}/api/v1/layout/process - Rasterizing pages and extracting staves..."
+                )
+                layout_payload = {
+                    "job_id": job_id,
+                    "pdf_path": str(pdf_path),
+                    "output_dir": str(job_dir / "layout"),
+                    "dpi": 300,
+                    "score_hints": score_hints,
+                }
+                try:
+                    resp_layout = await _post_with_retry_and_fallback(
+                        "pdf-layout-svc",
+                        LAYOUT_SVC_URL,
+                        "/api/v1/layout/process",
+                        layout_payload,
+                        fallback_urls=_get_fallback_urls(LAYOUT_SVC_URL, "pdf-layout-svc", "parttrackr_layout", 8006)
+                    )
+                    if resp_layout.status_code != 200:
+                        err_txt = resp_layout.text
+                        append_job_log(job_dir, "error", "pdf-layout-svc", f"Layout service error HTTP {resp_layout.status_code}", err_txt)
+                        raise RuntimeError(f"Layout service error: {err_txt}")
+                    layout_data = resp_layout.json()
+                except (httpx.ConnectError, httpx.ConnectTimeout) as conn_err:
+                    logger.warning(f"Layout HTTP endpoint unreachable ({conn_err}). Executing PDFLayoutEngine directly in-process...")
+                    append_job_log(job_dir, "warning", "pdf-layout-svc", f"Layout HTTP unreachable ({conn_err}). Executing in-process fallback...")
+                    from services.pdf_layout_svc.layout_engine import PDFLayoutEngine
+                    layout_data = PDFLayoutEngine.process_pdf(pdf_path, job_dir / "layout", dpi=300, score_hints=score_hints)
 
             job.layout_data = layout_data
             job.title = layout_data.get("title", job.title)
@@ -201,37 +220,50 @@ class PipelineOrchestrator:
             job.stage_message = "Extracting symbolic musical elements and lyrics into Raw CISM JSON..."
             db.commit()
 
-            append_job_log(
-                job_dir, "info", "omr-ai-svc",
-                f"POST {OMR_SVC_URL}/api/v1/omr/process - Running hybrid OMR across {layout_data.get('total_systems')} systems..."
-            )
-
             active_instructions = custom_instructions or (score_hints.get("custom_instructions") if score_hints else None)
-            omr_payload = {
-                "job_id": job_id,
-                "pdf_path": str(pdf_path),
-                "layout_data": layout_data,
-                "custom_instructions": active_instructions,
-                "score_hints": score_hints,
-            }
             raw_cism = None
-            try:
-                resp_omr = await _post_with_retry_and_fallback(
-                    "omr-ai-svc",
-                    OMR_SVC_URL,
-                    "/api/v1/omr/process",
-                    omr_payload,
-                    fallback_urls=_get_fallback_urls(OMR_SVC_URL, "omr-ai-svc", "parttrackr_omr", 8007)
+
+            if IN_PROCESS_MODE:
+                append_job_log(job_dir, "info", "omr-ai-svc", f"In-Process Mode: running OMR extraction for {source_type}...")
+                if source_type == ScoreSourceType.BORN_DIGITAL_SMUFL.value:
+                    from services.omr_ai_svc.vector_smufl_extractor import VectorSMuFLExtractor
+                    cism_obj = VectorSMuFLExtractor.extract_cism(pdf_path, layout_data, score_hints=score_hints)
+                else:
+                    from services.omr_ai_svc.hybrid_fusion_engine import HybridOMRFusionEngine
+                    cism_obj = HybridOMRFusionEngine.extract_cism(
+                        layout_data=layout_data,
+                        custom_instructions=active_instructions,
+                        score_hints=score_hints
+                    )
+                raw_cism = cism_obj.model_dump()
+            else:
+                append_job_log(
+                    job_dir, "info", "omr-ai-svc",
+                    f"POST {OMR_SVC_URL}/api/v1/omr/process - Running hybrid OMR across {layout_data.get('total_systems')} systems..."
                 )
-                if resp_omr.status_code != 200:
-                    err_txt = resp_omr.text
-                    append_job_log(job_dir, "error", "omr-ai-svc", f"OMR service error HTTP {resp_omr.status_code}", err_txt)
-                    raise RuntimeError(f"OMR service error: {err_txt}")
-                raw_cism = resp_omr.json()
-            except (httpx.ConnectError, httpx.ConnectTimeout) as conn_err:
-                logger.warning(f"OMR HTTP endpoint unreachable ({conn_err}). Executing HybridOMRFusionEngine directly in-process...")
-                append_job_log(job_dir, "warning", "omr-ai-svc", f"OMR HTTP unreachable ({conn_err}). Executing in-process fallback...")
+                omr_payload = {
+                    "job_id": job_id,
+                    "pdf_path": str(pdf_path),
+                    "layout_data": layout_data,
+                    "custom_instructions": active_instructions,
+                    "score_hints": score_hints,
+                }
                 try:
+                    resp_omr = await _post_with_retry_and_fallback(
+                        "omr-ai-svc",
+                        OMR_SVC_URL,
+                        "/api/v1/omr/process",
+                        omr_payload,
+                        fallback_urls=_get_fallback_urls(OMR_SVC_URL, "omr-ai-svc", "parttrackr_omr", 8007)
+                    )
+                    if resp_omr.status_code != 200:
+                        err_txt = resp_omr.text
+                        append_job_log(job_dir, "error", "omr-ai-svc", f"OMR service error HTTP {resp_omr.status_code}", err_txt)
+                        raise RuntimeError(f"OMR service error: {err_txt}")
+                    raw_cism = resp_omr.json()
+                except (httpx.ConnectError, httpx.ConnectTimeout) as conn_err:
+                    logger.warning(f"OMR HTTP endpoint unreachable ({conn_err}). Executing in-process fallback...")
+                    append_job_log(job_dir, "warning", "omr-ai-svc", f"OMR HTTP unreachable ({conn_err}). Executing in-process fallback...")
                     from services.omr_ai_svc.vector_smufl_extractor import VectorSMuFLExtractor
                     if VectorSMuFLExtractor.can_extract(pdf_path):
                         cism_obj = VectorSMuFLExtractor.extract_cism(pdf_path, layout_data, score_hints=score_hints)
@@ -241,12 +273,6 @@ class PipelineOrchestrator:
                             layout_data=layout_data, custom_instructions=active_instructions, score_hints=score_hints
                         )
                     raw_cism = cism_obj.model_dump()
-                except Exception as fallback_err:
-                    logger.error(f"In-process fallback failed for omr-ai-svc: {fallback_err}\n{traceback.format_exc()}")
-                    append_job_log(job_dir, "error", "omr-ai-svc", f"OMR service unreachable ({conn_err}) and in-process fallback failed ({fallback_err}).")
-                    raise RuntimeError(
-                        f"omr-ai-svc ({OMR_SVC_URL}) is unreachable ({conn_err}) and in-process fallback failed: {fallback_err}. Ensure container is running on parttrackr_net."
-                    ) from fallback_err
 
             job.raw_cism = raw_cism
             db.commit()
@@ -263,46 +289,46 @@ class PipelineOrchestrator:
             job.stage_message = "Routing staves to 11 canonical tracks with unison duplication & divisi splitting..."
             db.commit()
 
-            append_job_log(
-                job_dir, "info", "voice-router-svc",
-                f"POST {ROUTER_SVC_URL}/api/v1/router/process - Routing staves to 11 canonical tracks..."
-            )
-
-            router_payload = {
-                "job_id": job_id,
-                "cism": raw_cism,
-                "overrides": job.overrides,
-                "score_hints": score_hints,
-            }
             routed_cism = None
-            try:
-                resp_router = await _post_with_retry_and_fallback(
-                    "voice-router-svc",
-                    ROUTER_SVC_URL,
-                    "/api/v1/router/process",
-                    router_payload,
-                    fallback_urls=_get_fallback_urls(ROUTER_SVC_URL, "voice-router-svc", "parttrackr_router", 8008)
+            if IN_PROCESS_MODE:
+                append_job_log(job_dir, "info", "voice-router-svc", "In-Process Mode: routing staves to 11 canonical tracks...")
+                from services.voice_router_svc.router_engine import VoiceRouterEngine
+                from common.cism_schema import ScoreCISM
+                cism_obj = ScoreCISM(**raw_cism)
+                routed_cism_obj = VoiceRouterEngine.route_score(cism_obj, overrides=job.overrides, score_hints=score_hints)
+                routed_cism = routed_cism_obj.model_dump()
+            else:
+                append_job_log(
+                    job_dir, "info", "voice-router-svc",
+                    f"POST {ROUTER_SVC_URL}/api/v1/router/process - Routing staves to 11 canonical tracks..."
                 )
-                if resp_router.status_code != 200:
-                    err_txt = resp_router.text
-                    append_job_log(job_dir, "error", "voice-router-svc", f"Voice router error HTTP {resp_router.status_code}", err_txt)
-                    raise RuntimeError(f"Voice router service error: {err_txt}")
-                routed_cism = resp_router.json()
-            except (httpx.ConnectError, httpx.ConnectTimeout) as conn_err:
-                logger.warning(f"Voice router HTTP endpoint unreachable ({conn_err}). Executing VoiceRouterEngine directly in-process...")
-                append_job_log(job_dir, "warning", "voice-router-svc", f"Voice router HTTP unreachable ({conn_err}). Executing in-process fallback...")
+                router_payload = {
+                    "job_id": job_id,
+                    "cism": raw_cism,
+                    "overrides": job.overrides,
+                    "score_hints": score_hints,
+                }
                 try:
+                    resp_router = await _post_with_retry_and_fallback(
+                        "voice-router-svc",
+                        ROUTER_SVC_URL,
+                        "/api/v1/router/process",
+                        router_payload,
+                        fallback_urls=_get_fallback_urls(ROUTER_SVC_URL, "voice-router-svc", "parttrackr_router", 8008)
+                    )
+                    if resp_router.status_code != 200:
+                        err_txt = resp_router.text
+                        append_job_log(job_dir, "error", "voice-router-svc", f"Voice router error HTTP {resp_router.status_code}", err_txt)
+                        raise RuntimeError(f"Voice router service error: {err_txt}")
+                    routed_cism = resp_router.json()
+                except (httpx.ConnectError, httpx.ConnectTimeout) as conn_err:
+                    logger.warning(f"Voice router HTTP endpoint unreachable ({conn_err}). Executing in-process fallback...")
+                    append_job_log(job_dir, "warning", "voice-router-svc", f"Voice router HTTP unreachable ({conn_err}). Executing in-process fallback...")
                     from services.voice_router_svc.router_engine import VoiceRouterEngine
                     from common.cism_schema import ScoreCISM
                     cism_obj = ScoreCISM(**raw_cism)
                     routed_cism_obj = VoiceRouterEngine.route_score(cism_obj, overrides=job.overrides, score_hints=score_hints)
                     routed_cism = routed_cism_obj.model_dump()
-                except Exception as fallback_err:
-                    logger.error(f"In-process fallback failed for voice-router-svc: {fallback_err}\n{traceback.format_exc()}")
-                    append_job_log(job_dir, "error", "voice-router-svc", f"Voice router service unreachable ({conn_err}) and in-process fallback failed ({fallback_err}).")
-                    raise RuntimeError(
-                        f"voice-router-svc ({ROUTER_SVC_URL}) is unreachable ({conn_err}) and in-process fallback failed: {fallback_err}. Ensure container is running on parttrackr_net."
-                    ) from fallback_err
 
             job.routed_cism = routed_cism
             db.commit()
@@ -318,35 +344,65 @@ class PipelineOrchestrator:
             job.stage_message = "Compiling validated MusicXML, 11-channel MIDI, and synchronization map..."
             db.commit()
 
-            append_job_log(
-                job_dir, "info", "decoder-xml-svc",
-                f"POST {DECODER_SVC_URL}/api/v1/decoder/compile - Validating metric lockstep, MusicXML, and MIDI..."
-            )
-
-            decoder_payload = {
-                "job_id": job_id,
-                "cism": routed_cism,
-                "output_dir": str(job_dir / "compiled"),
-                "score_hints": score_hints,
-            }
             decoder_result = None
-            try:
-                resp_decoder = await _post_with_retry_and_fallback(
-                    "decoder-xml-svc",
-                    DECODER_SVC_URL,
-                    "/api/v1/decoder/compile",
-                    decoder_payload,
-                    fallback_urls=_get_fallback_urls(DECODER_SVC_URL, "decoder-xml-svc", "parttrackr_decoder", 8009)
+            if IN_PROCESS_MODE:
+                append_job_log(job_dir, "info", "decoder-xml-svc", "In-Process Mode: compiling MusicXML, MIDI, and sync map...")
+                from services.decoder_xml_svc.xml_compiler import XMLCompiler
+                from services.decoder_xml_svc.midi_generator import MIDIGenerator
+                from common.cism_schema import ScoreCISM
+                from common.lockstep_utils import reconcile_cism_measures
+
+                routed_cism_obj = ScoreCISM(**routed_cism)
+                target_measures = score_hints.get("total_measures") if score_hints else None
+                if target_measures:
+                    routed_cism_obj = reconcile_cism_measures(
+                        routed_cism_obj,
+                        target_total_measures=int(target_measures),
+                        target_time_signature=score_hints.get("time_signature") if score_hints else None,
+                        target_tempo_bpm=score_hints.get("tempo_bpm") if score_hints else None,
+                    )
+                out_compiled = job_dir / "compiled"
+                xml_path, piano_xml_path, vocals_xml_path, stem_xmls, summary = XMLCompiler.compile_score(routed_cism_obj, out_compiled)
+                midi_path, piano_midi_path, vocals_midi_path, stem_midis, sync_map = MIDIGenerator.compile_midi_and_sync_map(routed_cism_obj, out_compiled)
+                decoder_result = {
+                    "status": "success",
+                    "score_musicxml_path": str(xml_path),
+                    "score_piano_musicxml_path": str(piano_xml_path),
+                    "score_vocals_musicxml_path": str(vocals_xml_path),
+                    "score_midi_path": str(midi_path),
+                    "score_piano_midi_path": str(piano_midi_path),
+                    "score_vocals_midi_path": str(vocals_midi_path),
+                    "sync_map_path": str(sync_map),
+                    "total_measures": len(summary) if isinstance(summary, list) else len(routed_cism.get("systems", [{}])[0].get("measures", [])),
+                    "total_duration_seconds": float(len(summary) * 2.0) if isinstance(summary, list) else 0.0,
+                }
+            else:
+                append_job_log(
+                    job_dir, "info", "decoder-xml-svc",
+                    f"POST {DECODER_SVC_URL}/api/v1/decoder/compile - Validating metric lockstep, MusicXML, and MIDI..."
                 )
-                if resp_decoder.status_code != 200:
-                    err_txt = resp_decoder.text
-                    append_job_log(job_dir, "error", "decoder-xml-svc", f"Decoder error HTTP {resp_decoder.status_code}", err_txt)
-                    raise RuntimeError(f"Decoder service error: {err_txt}")
-                decoder_result = resp_decoder.json()
-            except (httpx.ConnectError, httpx.ConnectTimeout) as conn_err:
-                logger.warning(f"Decoder HTTP endpoint unreachable ({conn_err}). Executing XMLCompiler & MIDIGenerator in-process...")
-                append_job_log(job_dir, "warning", "decoder-xml-svc", f"Decoder HTTP unreachable ({conn_err}). Executing in-process fallback...")
+                decoder_payload = {
+                    "job_id": job_id,
+                    "cism": routed_cism,
+                    "output_dir": str(job_dir / "compiled"),
+                    "score_hints": score_hints,
+                }
                 try:
+                    resp_decoder = await _post_with_retry_and_fallback(
+                        "decoder-xml-svc",
+                        DECODER_SVC_URL,
+                        "/api/v1/decoder/compile",
+                        decoder_payload,
+                        fallback_urls=_get_fallback_urls(DECODER_SVC_URL, "decoder-xml-svc", "parttrackr_decoder", 8009)
+                    )
+                    if resp_decoder.status_code != 200:
+                        err_txt = resp_decoder.text
+                        append_job_log(job_dir, "error", "decoder-xml-svc", f"Decoder error HTTP {resp_decoder.status_code}", err_txt)
+                        raise RuntimeError(f"Decoder service error: {err_txt}")
+                    decoder_result = resp_decoder.json()
+                except (httpx.ConnectError, httpx.ConnectTimeout) as conn_err:
+                    logger.warning(f"Decoder HTTP endpoint unreachable ({conn_err}). Executing XMLCompiler & MIDIGenerator in-process...")
+                    append_job_log(job_dir, "warning", "decoder-xml-svc", f"Decoder HTTP unreachable ({conn_err}). Executing in-process fallback...")
                     from services.decoder_xml_svc.xml_compiler import XMLCompiler
                     from services.decoder_xml_svc.midi_generator import MIDIGenerator
                     from common.cism_schema import ScoreCISM
@@ -375,12 +431,6 @@ class PipelineOrchestrator:
                         "total_measures": len(summary) if isinstance(summary, list) else len(routed_cism.get("systems", [{}])[0].get("measures", [])),
                         "total_duration_seconds": float(len(summary) * 2.0) if isinstance(summary, list) else 0.0,
                     }
-                except Exception as fallback_err:
-                    logger.error(f"In-process fallback failed for decoder-xml-svc: {fallback_err}\n{traceback.format_exc()}")
-                    append_job_log(job_dir, "error", "decoder-xml-svc", f"Decoder service unreachable ({conn_err}) and in-process fallback failed ({fallback_err}).")
-                    raise RuntimeError(
-                        f"decoder-xml-svc ({DECODER_SVC_URL}) is unreachable ({conn_err}) and in-process fallback failed: {fallback_err}. Ensure container is running on parttrackr_net."
-                    ) from fallback_err
 
             # Stage 5: Closed-Loop Verification & Invariant Enforcement
             verification_report = None
@@ -462,6 +512,49 @@ class PipelineOrchestrator:
         db.commit()
 
         append_job_log(job_dir, "info", "voice-router-svc", f"Applying measure overrides for {len(overrides)} measure(s)...", overrides)
+
+        if IN_PROCESS_MODE:
+            try:
+                from services.voice_router_svc.router_engine import VoiceRouterEngine
+                from services.decoder_xml_svc.xml_compiler import XMLCompiler
+                from services.decoder_xml_svc.midi_generator import MIDIGenerator
+                from common.cism_schema import ScoreCISM
+
+                cism_obj = ScoreCISM(**job.raw_cism)
+                routed_cism_obj = VoiceRouterEngine.route_score(cism_obj, overrides=overrides, score_hints=job.score_hints)
+                routed_cism = routed_cism_obj.model_dump()
+                job.routed_cism = routed_cism
+
+                out_compiled = job_dir / "compiled"
+                xml_path, piano_xml_path, vocals_xml_path, stem_xmls, summary = XMLCompiler.compile_score(routed_cism_obj, out_compiled)
+                midi_path, piano_midi_path, vocals_midi_path, stem_midis, sync_map = MIDIGenerator.compile_midi_and_sync_map(routed_cism_obj, out_compiled)
+                decoder_result = {
+                    "status": "success",
+                    "score_musicxml_path": str(xml_path),
+                    "score_piano_musicxml_path": str(piano_xml_path),
+                    "score_vocals_musicxml_path": str(vocals_xml_path),
+                    "score_midi_path": str(midi_path),
+                    "score_piano_midi_path": str(piano_midi_path),
+                    "score_vocals_midi_path": str(vocals_midi_path),
+                    "sync_map_path": str(sync_map),
+                    "total_measures": len(summary) if isinstance(summary, list) else len(routed_cism.get("systems", [{}])[0].get("measures", [])),
+                    "total_duration_seconds": float(len(summary) * 2.0) if isinstance(summary, list) else 0.0,
+                }
+                job.decoder_result = decoder_result
+                job.total_measures = decoder_result.get("total_measures", job.total_measures)
+                job.total_duration_seconds = decoder_result.get("total_duration_seconds", job.total_duration_seconds)
+                db.commit()
+
+                append_job_log(job_dir, "success", "voice-router-svc", "Overrides re-compiled and synchronized successfully in-process.")
+                return {
+                    "routed_cism": routed_cism,
+                    "decoder_result": decoder_result,
+                }
+            except Exception as e:
+                append_job_log(job_dir, "error", "gateway-svc", f"In-process override re-compilation failed: {e}")
+                raise
+            finally:
+                db.close()
 
         async with httpx.AsyncClient(timeout=60.0) as client:
             try:

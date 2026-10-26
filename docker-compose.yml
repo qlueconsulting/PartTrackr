@@ -1,137 +1,47 @@
+version: '3.8'
+
 services:
-  gateway-svc:
-    image: ghcr.io/qlueconsulting/parttrackr-gateway:latest
+  # ============================================================================
+  # 1. PartTrackr Modular Monolith Backend
+  # Runs the unified in-process pipeline:
+  # Preflight Classifier -> Layout Engine -> Local VLM / Vector OMR -> Voice Router -> Decoder -> Verovio Diff
+  # Zero HTTP serialization latency, instant boot (<2s), direct host GPU Ollama access.
+  # ============================================================================
+  parttrackr-backend:
+    image: ghcr.io/qlueconsulting/parttrackr-backend:latest
     build:
       context: .
-      dockerfile: services/gateway_svc/Dockerfile
-    container_name: parttrackr_gateway
+      dockerfile: Dockerfile
+    container_name: parttrackr_backend
     ports:
-      - "8005:8005"
+      - "8000:8000" # Core Rehearsal API
+      - "8005:8005" # Pipeline Gateway API
     volumes:
       - ./storage:/app/storage
+      - ./soundfonts:/app/soundfonts
     environment:
+      - IN_PROCESS_MODE=true
       - STORAGE_DIR=/app/storage
-      - LAYOUT_SVC_URL=http://pdf-layout-svc:8006
-      - OMR_SVC_URL=http://omr-ai-svc:8007
-      - ROUTER_SVC_URL=http://voice-router-svc:8008
-      - DECODER_SVC_URL=http://decoder-xml-svc:8009
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    depends_on:
-      pdf-layout-svc:
-        condition: service_healthy
-      omr-ai-svc:
-        condition: service_healthy
-      voice-router-svc:
-        condition: service_healthy
-      decoder-xml-svc:
-        condition: service_healthy
-    restart: unless-stopped
-    networks:
-      parttrackr_net:
-        aliases:
-          - gateway-svc
-          - parttrackr_gateway
-
-  pdf-layout-svc:
-    image: ghcr.io/qlueconsulting/parttrackr-layout:latest
-    build:
-      context: .
-      dockerfile: services/pdf_layout_svc/Dockerfile
-    container_name: parttrackr_layout
-    ports:
-      - "8006:8006"
-    volumes:
-      - ./storage:/app/storage
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8006/health"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-      start_period: 3s
-    restart: unless-stopped
-    networks:
-      parttrackr_net:
-        aliases:
-          - pdf-layout-svc
-          - parttrackr_layout
-
-  omr-ai-svc:
-    image: ghcr.io/qlueconsulting/parttrackr-omr:latest
-    build:
-      context: .
-      dockerfile: services/omr_ai_svc/Dockerfile
-    container_name: parttrackr_omr
-    ports:
-      - "8007:8007"
-    volumes:
-      - ./storage:/app/storage
-    environment:
-      - STORAGE_DIR=/app/storage
-      - _JAVA_OPTIONS=-Djava.awt.headless=true
-      - JAVA_TOOL_OPTIONS=-Djava.awt.headless=true
-      - OLLAMA_BASE_URL=http://ollama:11434
+      - SOUNDFONT_PATH=/app/soundfonts/GeneralUser_GS.sf2
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434
+      - OLLAMA_MODEL=qwen2.5vl:7b
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+    extra_hosts:
+      # Direct sub-millisecond bridge to your host machine's dual RTX 2060 GPUs
+      - "host.docker.internal:host-gateway"
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8007/health"]
-      interval: 5s
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
       timeout: 3s
-      retries: 5
-      start_period: 10s
+      retries: 3
     restart: unless-stopped
     networks:
-      parttrackr_net:
-        aliases:
-          - omr-ai-svc
-          - parttrackr_omr
+      - parttrackr_net
 
-  voice-router-svc:
-    image: ghcr.io/qlueconsulting/parttrackr-router:latest
-    build:
-      context: .
-      dockerfile: services/voice_router_svc/Dockerfile
-    container_name: parttrackr_router
-    ports:
-      - "8008:8008"
-    volumes:
-      - ./storage:/app/storage
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8008/health"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-      start_period: 3s
-    restart: unless-stopped
-    networks:
-      parttrackr_net:
-        aliases:
-          - voice-router-svc
-          - parttrackr_router
-
-  decoder-xml-svc:
-    image: ghcr.io/qlueconsulting/parttrackr-decoder:latest
-    build:
-      context: .
-      dockerfile: services/decoder_xml_svc/Dockerfile
-    container_name: parttrackr_decoder
-    ports:
-      - "8009:8009"
-    volumes:
-      - ./storage:/app/storage
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8009/health"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-      start_period: 3s
-    restart: unless-stopped
-    networks:
-      parttrackr_net:
-        aliases:
-          - decoder-xml-svc
-          - parttrackr_decoder
-
-  diagnostic-ui:
+  # ============================================================================
+  # 2. React / Vite Diagnostic & Rehearsal Player UI
+  # ============================================================================
+  parttrackr-ui:
     image: ghcr.io/qlueconsulting/parttrackr-ui:latest
     build:
       context: ./frontend
@@ -141,38 +51,13 @@ services:
       - "8001:8001"
     environment:
       - VITE_GATEWAY_URL=http://localhost:8005
+      - VITE_BACKEND_URL=http://localhost:8000
     depends_on:
-      - gateway-svc
+      - parttrackr-backend
     restart: unless-stopped
     networks:
-      parttrackr_net:
-        aliases:
-          - diagnostic-ui
-          - parttrackr_ui
-
-  # Optional Local GPU Vision LLM Service (Dual NVIDIA RTX 2060 Super 8GB + RTX 2060 6GB = 14GB VRAM)
-  ollama:
-    image: ollama/ollama:latest
-    container_name: parttrackr_ollama
-    ports:
-      - "11434:11434"
-    volumes:
-      - ./ollama_models:/root/.ollama
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-    restart: unless-stopped
-    networks:
-      parttrackr_net:
-        aliases:
-          - ollama
-          - parttrackr_ollama
+      - parttrackr_net
 
 networks:
   parttrackr_net:
-    name: parttrackr_net
     driver: bridge
