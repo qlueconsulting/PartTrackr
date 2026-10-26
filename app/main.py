@@ -48,6 +48,10 @@ app.add_middleware(
 # API routes
 app.include_router(api_router, prefix=settings.API_V1_PREFIX)
 
+# Unified In-Process Pipeline Gateway & Job Stepper Router
+from services.gateway_svc.main import router as gateway_router
+app.include_router(gateway_router)
+
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -82,6 +86,7 @@ def health_check():
     return {
         "status": "healthy",
         "service": settings.PROJECT_NAME,
+        "pipeline_gateway": "integrated_in_process",
         "taxonomy_stems": 11,
         "audiveris_configured": settings.AUDIVERIS_CMD,
         "fluidsynth_configured": settings.FLUIDSYNTH_CMD

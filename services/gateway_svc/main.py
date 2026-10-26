@@ -7,7 +7,7 @@ import shutil
 from typing import Optional, Dict, Any, List
 import uuid
 
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException, BackgroundTasks, Depends
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, BackgroundTasks, Depends, APIRouter
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse, JSONResponse
 from pydantic import BaseModel
@@ -25,6 +25,8 @@ STORAGE_DIR.mkdir(parents=True, exist_ok=True)
 
 DB_PATH = STORAGE_DIR / "parttrackr_jobs.db"
 SessionFactory = init_db(DB_PATH)
+
+router = APIRouter()
 
 app = FastAPI(
     title="PartTrackr - API Gateway Service",
@@ -71,7 +73,7 @@ class ScoreHintsRequest(BaseModel):
     save_as_template: Optional[bool] = True
 
 
-@app.post("/api/v1/jobs/upload")
+@router.post("/api/v1/jobs/upload")
 async def upload_pdf_job(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
@@ -149,7 +151,7 @@ async def upload_pdf_job(
     }
 
 
-@app.get("/api/v1/jobs/{job_id}/preflight")
+@router.get("/api/v1/jobs/{job_id}/preflight")
 async def get_job_preflight(job_id: str, db: Session = Depends(get_db)):
     job = db.query(Job).filter(Job.id == job_id).first()
     if not job:
@@ -169,8 +171,8 @@ async def get_job_preflight(job_id: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/api/v1/jobs/{job_id}/start_processing")
-@app.post("/api/v1/jobs/{job_id}/reprocess")
+@router.post("/api/v1/jobs/{job_id}/start_processing")
+@router.post("/api/v1/jobs/{job_id}/reprocess")
 async def reprocess_job_with_hints(
     job_id: str,
     hints: ScoreHintsRequest,
@@ -239,7 +241,7 @@ async def reprocess_job_with_hints(
     }
 
 
-@app.get("/api/v1/jobs/{job_id}")
+@router.get("/api/v1/jobs/{job_id}")
 def get_job_status(job_id: str, db: Session = Depends(get_db)):
     job = db.query(Job).filter(Job.id == job_id).first()
     if not job:
@@ -266,7 +268,7 @@ def get_job_status(job_id: str, db: Session = Depends(get_db)):
     }
 
 
-@app.get("/api/v1/jobs/{job_id}/events")
+@router.get("/api/v1/jobs/{job_id}/events")
 async def job_events_sse(job_id: str):
     """Server-Sent Events stream for real-time stepper updates in the Diagnostic UI."""
     async def event_generator():
@@ -302,7 +304,7 @@ async def job_events_sse(job_id: str):
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
-@app.get("/api/v1/jobs/{job_id}/logs")
+@router.get("/api/v1/jobs/{job_id}/logs")
 def get_job_logs(job_id: str, db: Session = Depends(get_db)):
     job = db.query(Job).filter(Job.id == job_id).first()
     if not job:
@@ -330,7 +332,7 @@ def get_job_logs(job_id: str, db: Session = Depends(get_db)):
     }
 
 
-@app.post("/api/v1/jobs/{job_id}/override")
+@router.post("/api/v1/jobs/{job_id}/override")
 async def override_voice_routing(
     job_id: str,
     payload: Dict[str, Any],
@@ -351,7 +353,7 @@ async def override_voice_routing(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/api/v1/jobs/{job_id}/files/{file_subpath:path}")
+@router.get("/api/v1/jobs/{job_id}/files/{file_subpath:path}")
 def serve_job_file(job_id: str, file_subpath: str):
     file_path = STORAGE_DIR / "jobs" / job_id / file_subpath
     if not file_path.exists() or not file_path.is_file():
@@ -371,7 +373,7 @@ def serve_job_file(job_id: str, file_subpath: str):
     return FileResponse(file_path, media_type=media_map.get(ext, "application/octet-stream"))
 
 
-@app.get("/api/v1/jobs/{job_id}/piano_musicxml")
+@router.get("/api/v1/jobs/{job_id}/piano_musicxml")
 def get_piano_musicxml(job_id: str):
     file_path = STORAGE_DIR / "jobs" / job_id / "compiled" / "score_piano.musicxml"
     if not file_path.exists():
@@ -379,7 +381,7 @@ def get_piano_musicxml(job_id: str):
     return FileResponse(file_path, media_type="application/vnd.recordare.musicxml+xml", filename=f"{job_id}_piano.musicxml")
 
 
-@app.get("/api/v1/jobs/{job_id}/vocals_musicxml")
+@router.get("/api/v1/jobs/{job_id}/vocals_musicxml")
 def get_vocals_musicxml(job_id: str):
     file_path = STORAGE_DIR / "jobs" / job_id / "compiled" / "score_vocals.musicxml"
     if not file_path.exists():
@@ -387,7 +389,7 @@ def get_vocals_musicxml(job_id: str):
     return FileResponse(file_path, media_type="application/vnd.recordare.musicxml+xml", filename=f"{job_id}_vocals.musicxml")
 
 
-@app.get("/api/v1/jobs/{job_id}/score_musicxml")
+@router.get("/api/v1/jobs/{job_id}/score_musicxml")
 def get_score_musicxml(job_id: str):
     file_path = STORAGE_DIR / "jobs" / job_id / "compiled" / "score.musicxml"
     if not file_path.exists():
@@ -395,7 +397,7 @@ def get_score_musicxml(job_id: str):
     return FileResponse(file_path, media_type="application/vnd.recordare.musicxml+xml", filename=f"{job_id}_score.musicxml")
 
 
-@app.get("/api/v1/jobs")
+@router.get("/api/v1/jobs")
 def list_jobs(limit: int = 10, db: Session = Depends(get_db)):
     """Returns the most recent jobs submitted (up to limit, defaults to 10) with full metadata and score hints."""
     effective_limit = max(1, min(limit, 50))
@@ -421,7 +423,7 @@ def list_jobs(limit: int = 10, db: Session = Depends(get_db)):
 
 
 
-@app.get("/api/v1/learning/blueprints")
+@router.get("/api/v1/learning/blueprints")
 def get_learned_blueprints():
     """Returns all learned score style blueprints and their fingerprints."""
     from common.learning_store import LearningManager
@@ -432,6 +434,8 @@ def get_learned_blueprints():
         logger.warning(f"Error fetching learned blueprints: {e}")
         return {}
 
+
+app.include_router(router)
 
 if __name__ == "__main__":
     import uvicorn

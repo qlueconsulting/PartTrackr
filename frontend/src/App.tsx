@@ -188,7 +188,7 @@ export const App: React.FC = () => {
       setIsPlaying(playing)
     }
 
-    addLog('info', 'client', 'Diagnostic Studio v2.0 initialized. Connecting to gateway-svc:8005...')
+    addLog('info', 'client', 'Diagnostic Studio v2.0 initialized. Connecting to PartTrackr Unified Monolith API...')
     fetchLatestJobs()
 
     return () => {

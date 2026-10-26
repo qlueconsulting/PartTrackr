@@ -11,8 +11,7 @@ services:
     image: ghcr.io/qlueconsulting/parttrackr-backend:latest
     container_name: parttrackr_backend
     ports:
-      - "8004:8000" # Core Rehearsal API (Host: 8004 -> Container: 8000)
-      - "8005:8005" # Pipeline Gateway API
+      - "8004:8000" # Unified Rehearsal & Pipeline Monolith API (Host: 8004 -> Container: 8000)
     volumes:
       - ./storage:/app/storage
       - ./soundfonts:/app/soundfonts
@@ -46,7 +45,7 @@ services:
     ports:
       - "8001:8001"
     environment:
-      - VITE_GATEWAY_URL=http://localhost:8005
+      - VITE_GATEWAY_URL=http://localhost:8004
       - VITE_BACKEND_URL=http://localhost:8004
     depends_on:
       - parttrackr-backend

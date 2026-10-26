@@ -33,7 +33,7 @@ interface StepConfig {
 }
 
 const STEPS: StepConfig[] = [
-  { key: 'pending', label: 'File Intake', service: 'gateway-svc', port: '8005', icon: FileCheck },
+  { key: 'pending', label: 'File Intake', service: 'monolith-api', port: '8004', icon: FileCheck },
   { key: 'layout', label: 'Layout & Crops', service: 'pdf-layout-svc', port: '8006', icon: Layers },
   { key: 'omr', label: 'Hybrid OMR', service: 'omr-ai-svc', port: '8007', icon: Cpu },
   { key: 'routing', label: '11-Part Voice Router', service: 'voice-router-svc', port: '8008', icon: GitBranch },
