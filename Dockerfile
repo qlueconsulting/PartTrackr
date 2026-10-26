@@ -99,8 +99,9 @@ RUN pip install --no-cache-dir --upgrade pip && \
 COPY app /app/app
 COPY common /app/common
 COPY services /app/services
-COPY storage /app/storage
-COPY soundfonts /app/soundfonts
+
+# Ensure storage and soundfont directories exist
+RUN mkdir -p /app/storage /app/soundfonts
 
 # Copy built frontend assets from Stage 1
 COPY --from=frontend-builder /app/frontend/dist /app/frontend/dist
