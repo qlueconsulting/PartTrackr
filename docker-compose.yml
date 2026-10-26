@@ -2,16 +2,13 @@ version: '3.8'
 
 services:
   # ============================================================================
-  # 1. PartTrackr Modular Monolith Backend
+  # 1. PartTrackr Modular Monolith Backend (Pre-built GHCR Image)
   # Runs the unified in-process pipeline:
   # Preflight Classifier -> Layout Engine -> Local VLM / Vector OMR -> Voice Router -> Decoder -> Verovio Diff
-  # Zero HTTP serialization latency, instant boot (<2s), direct host GPU Ollama access.
+  # Zero local build time, instant boot (<2s), direct host GPU Ollama access.
   # ============================================================================
   parttrackr-backend:
     image: ghcr.io/qlueconsulting/parttrackr-backend:latest
-    build:
-      context: .
-      dockerfile: Dockerfile
     container_name: parttrackr_backend
     ports:
       - "8000:8000" # Core Rehearsal API
@@ -39,13 +36,10 @@ services:
       - parttrackr_net
 
   # ============================================================================
-  # 2. React / Vite Diagnostic & Rehearsal Player UI
+  # 2. React / Vite Diagnostic & Rehearsal Player UI (Pre-built GHCR Image)
   # ============================================================================
   parttrackr-ui:
     image: ghcr.io/qlueconsulting/parttrackr-ui:latest
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
     container_name: parttrackr_ui
     ports:
       - "8001:8001"
