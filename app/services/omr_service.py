@@ -234,8 +234,23 @@ class OMREngine:
         if target_num == 1:
             m_out.insert(0, tempo.MetronomeMark(number=tempo_bpm))
 
-        if m_idx < len(measures):
-            src_m = measures[m_idx]
+        # 1. Match by exact measure number first
+        src_m = None
+        for m in measures:
+            if m.number == target_num:
+                src_m = m
+                break
+
+        # 2. Match by index only if measure does not belong to a future/different measure number
+        if src_m is None and m_idx < len(measures):
+            cand = measures[m_idx]
+            has_explicit_numbers = any(m.number is not None and m.number > 0 for m in measures)
+            if not has_explicit_numbers:
+                src_m = cand
+            elif cand.number in (None, 0, target_num, m_idx + 1):
+                src_m = cand
+
+        if src_m is not None:
             elems = list(src_m.flatten().notesAndRests)
             if elems:
                 for el in elems:

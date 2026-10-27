@@ -24,6 +24,44 @@ class VoiceRouterEngine:
     """
 
     @classmethod
+    def _is_definitely_vocal_staff(cls, st: StaffInfo, sys: SystemData) -> bool:
+        """Determines if a staff is unequivocally a vocal part via lyrics, vocal labels, or choral brackets."""
+        if st.has_lyrics:
+            return True
+        for m in sys.measures:
+            raw_t = m.raw_staves.get(st.staff_id)
+            if raw_t:
+                for el in raw_t.elements:
+                    if el.lyric and el.lyric.strip():
+                        return True
+
+        lbl = (st.label or "").lower()
+        vocal_keywords = (
+            "soprano", "alto", "tenor", "baritone", "bass",
+            "choir", "chorus", "women", "men", "voices",
+            "s.", "a.", "t.", "b.", "s1", "s2", "a1", "a2", "t1", "t2", "b1", "b2",
+            "solo", "cantor", "unison", "congregation"
+        )
+        if any(k in lbl for k in vocal_keywords):
+            return True
+
+        if st.bracket_type == "bracket":
+            return True
+
+        return False
+
+    @classmethod
+    def _is_definitely_piano_staff(cls, st: StaffInfo) -> bool:
+        """Determines if a staff is unequivocally an accompaniment staff via brace, role, or label."""
+        if st.bracket_type == "brace" or st.role in ("piano_rh", "piano_lh"):
+            return True
+        lbl = (st.label or "").lower()
+        piano_keywords = ("piano", "keyboard", "pno", "organ", "org", "pianoforte", "accomp")
+        if any(k in lbl for k in piano_keywords):
+            return True
+        return False
+
+    @classmethod
     def route_score(
         cls,
         cism: ScoreCISM,
@@ -58,28 +96,49 @@ class VoiceRouterEngine:
             vocal_staves: List[StaffInfo] = []
             piano_staves: List[StaffInfo] = []
 
-            for st in sys.staves:
-                if st.bracket_type == "brace" or st.role in ("piano_rh", "piano_lh"):
-                    piano_staves.append(st)
-                else:
-                    vocal_staves.append(st)
+            # Tier 1: Lyric-Anchored Staff Exclusion
+            # Staves with lyrics or vocal labels can NEVER be assigned to piano
+            vocal_ids = {
+                st.staff_id for st in sys.staves if cls._is_definitely_vocal_staff(st, sys)
+            }
+            piano_ids = {
+                st.staff_id for st in sys.staves if cls._is_definitely_piano_staff(st) and st.staff_id not in vocal_ids
+            }
 
-            # Fallback bottom-up anchor if 3+ staves and none explicitly marked brace
-            if not piano_staves and len(sys.staves) >= 3 and cism_out.has_piano:
-                piano_staves = sys.staves[-2:]
-                vocal_staves = sys.staves[:-2]
-            elif not piano_staves and len(sys.staves) == 2 and cism_out.has_piano:
-                has_vocal_label = any(
-                    st.label and any(k in st.label.lower() for k in ("soprano", "alto", "tenor", "bass", "men", "women", "choir", "s.", "a.", "t.", "b."))
-                    for st in sys.staves
-                )
-                if not has_vocal_label:
-                    piano_staves = sys.staves
+            if piano_ids:
+                for st in sys.staves:
+                    if st.staff_id in piano_ids:
+                        piano_staves.append(st)
+                    else:
+                        vocal_staves.append(st)
+            elif cism_out.has_piano and len(sys.staves) >= 3:
+                # Bottom 2 non-vocal staves anchor to piano Grand Staff
+                bottom_candidates = [st for st in sys.staves[-2:] if st.staff_id not in vocal_ids]
+                if len(bottom_candidates) == 2:
+                    piano_staves = sys.staves[-2:]
+                    vocal_staves = sys.staves[:-2]
+                else:
+                    # Bottom staves have vocal lyrics! System is a cappella or vocal-only
+                    vocal_staves = list(sys.staves)
+                    piano_staves = []
+            elif cism_out.has_piano and len(sys.staves) == 2:
+                if not vocal_ids:
+                    piano_staves = list(sys.staves)
                     vocal_staves = []
+                else:
+                    vocal_staves = list(sys.staves)
+                    piano_staves = []
+            else:
+                vocal_staves = list(sys.staves)
+                piano_staves = []
 
             # Hard Rule: If piano part exists, it is ALWAYS exactly two staves (RH Treble + LH Bass)
             if len(piano_staves) > 2:
                 piano_staves = piano_staves[-2:]
+
+            # Order staves top-to-bottom by vertical position for rock-solid voice leading
+            vocal_staves.sort(key=lambda s: s.y_top)
+            piano_staves.sort(key=lambda s: s.y_top)
 
             for m in sys.measures:
                 m.tracks = cls._route_measure(
@@ -324,10 +383,23 @@ class VoiceRouterEngine:
 
     @classmethod
     def _route_four_vocal_staves(cls, staves: List[StaffInfo], m: MeasureData, tracks: Dict[str, TrackData]):
-        s_raw = m.raw_staves.get(staves[0].staff_id)
-        a_raw = m.raw_staves.get(staves[1].staff_id)
-        t_raw = m.raw_staves.get(staves[2].staff_id)
-        b_raw = m.raw_staves.get(staves[3].staff_id)
+        # Match by explicit part label first if available
+        s_staff = next((st for st in staves if st.label and any(k in st.label.lower() for k in ("soprano", "s.", "s1"))), None)
+        a_staff = next((st for st in staves if st.label and any(k in st.label.lower() for k in ("alto", "a.", "a1"))), None)
+        t_staff = next((st for st in staves if st.label and any(k in st.label.lower() for k in ("tenor", "t.", "t1"))), None)
+        b_staff = next((st for st in staves if st.label and any(k in st.label.lower() for k in ("bass", "b.", "b1", "baritone"))), None)
+
+        if not (s_staff and a_staff and t_staff and b_staff):
+            sorted_staves = sorted(staves, key=lambda s: s.y_top)
+            s_staff = sorted_staves[0]
+            a_staff = sorted_staves[1]
+            t_staff = sorted_staves[2]
+            b_staff = sorted_staves[3]
+
+        s_raw = m.raw_staves.get(s_staff.staff_id)
+        a_raw = m.raw_staves.get(a_staff.staff_id)
+        t_raw = m.raw_staves.get(t_staff.staff_id)
+        b_raw = m.raw_staves.get(b_staff.staff_id)
 
         s_up, s_low = cls._split_divisi_elements(s_raw.elements if s_raw else [], m.quarter_length)
         a_up, a_low = cls._split_divisi_elements(a_raw.elements if a_raw else [], m.quarter_length)

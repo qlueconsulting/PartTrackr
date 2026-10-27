@@ -894,7 +894,18 @@ class PDFLayoutEngine:
             if not is_a_cappella_hint:
                 if n_staves >= 3:
                     # In a choral score with 3+ staves, piano accompaniment is anchored to the bottom 2 staves
-                    piano_staff_indices = [n_staves - 2, n_staves - 1]
+                    # UNLESS the bottom staves explicitly bear vocal labels (e.g. Tenor/Bass in 4-part SATB)
+                    bottom_staves_have_vocal = any(
+                        sys["staves"][idx].get("label") and any(
+                            k in sys["staves"][idx]["label"].lower()
+                            for k in ("soprano", "alto", "tenor", "bass", "men", "women", "choir", "s.", "a.", "t.", "b.")
+                        )
+                        for idx in [n_staves - 2, n_staves - 1]
+                    )
+                    if not bottom_staves_have_vocal:
+                        piano_staff_indices = [n_staves - 2, n_staves - 1]
+                    else:
+                        piano_staff_indices = []  # Bottom staves are vocal choir parts!
                 elif n_staves == 2:
                     # Exactly 2 staves: check if explicitly marked as piano via brace or label
                     has_vocal_label = any(

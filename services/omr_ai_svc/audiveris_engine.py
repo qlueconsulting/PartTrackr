@@ -565,10 +565,18 @@ class AudiverisEngine:
                 break
 
         # 2. Match by index within movement block (lockstep measure alignment across staves)
+        # CRITICAL INVARIANT: Only match by index if candidate does not belong to a different explicit measure number!
+        # If cand.number > target_num (e.g., choir enters at bar 5 while piano plays intro bars 1-4),
+        # cand belongs to a future measure. Stealing it causes vocal parts to jump ahead of the piano!
         if src_m is None:
             measures = list(part.getElementsByClass(stream.Measure))
             if 0 <= m_idx < len(measures):
-                src_m = measures[m_idx]
+                cand = measures[m_idx]
+                has_explicit_numbers = any(m.number is not None and m.number > 0 for m in measures)
+                if not has_explicit_numbers:
+                    src_m = cand
+                elif cand.number in (None, 0, target_num, lookup_num, m_idx + 1):
+                    src_m = cand
 
         if src_m is not None:
             elems = list(src_m.flatten().notesAndRests)
