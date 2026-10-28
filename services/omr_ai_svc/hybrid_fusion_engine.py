@@ -71,8 +71,12 @@ class HybridOMRFusionEngine:
             key_fifths = int(score_hints["key_signature_fifths"])
 
         has_piano = layout_data.get("has_piano", True)
+        is_piano_only = False
         if score_hints:
-            if score_hints.get("accompaniment_type") == "a_cappella":
+            if score_hints.get("piano_only") or score_hints.get("accompaniment_type") == "piano_only":
+                is_piano_only = True
+                has_piano = True
+            elif score_hints.get("accompaniment_type") == "a_cappella":
                 has_piano = False
             elif score_hints.get("accompaniment_type") in ("piano", "orchestra_reduction"):
                 has_piano = True
@@ -80,25 +84,26 @@ class HybridOMRFusionEngine:
         systems_out: List[SystemData] = []
         total_measures = 0
 
-        # Load page images and run OCR if available
+        # Load page images and run OCR if available (skip in piano_only mode for maximum speed and zero text bleed)
         pages_ocr: Dict[int, ScoreOCRPageResult] = {}
-        for p_data in layout_data.get("pages", []):
-            p_num = p_data.get("page_num", 1)
-            img_path = p_data.get("image_path")
-            if img_path and Path(img_path).exists():
-                try:
-                    from PIL import Image
-                    import numpy as np
-                    pil_img = Image.open(img_path).convert("RGB")
-                    img_arr = np.array(pil_img)
-                    pages_ocr[p_num] = ScoreOCREngine.process_page_image(
-                        img_arr,
-                        p_data.get("width_pt", 612.0),
-                        p_data.get("height_pt", 792.0),
-                        p_num
-                    )
-                except Exception as e:
-                    logger.debug(f"OCR load error on page {p_num}: {e}")
+        if not is_piano_only:
+            for p_data in layout_data.get("pages", []):
+                p_num = p_data.get("page_num", 1)
+                img_path = p_data.get("image_path")
+                if img_path and Path(img_path).exists():
+                    try:
+                        from PIL import Image
+                        import numpy as np
+                        pil_img = Image.open(img_path).convert("RGB")
+                        img_arr = np.array(pil_img)
+                        pages_ocr[p_num] = ScoreOCREngine.process_page_image(
+                            img_arr,
+                            p_data.get("width_pt", 612.0),
+                            p_data.get("height_pt", 792.0),
+                            p_num
+                        )
+                    except Exception as e:
+                        logger.debug(f"OCR load error on page {p_num}: {e}")
 
         for sys_dict in systems_raw:
             sys_idx = sys_dict["system_index"]
@@ -122,18 +127,48 @@ class HybridOMRFusionEngine:
                             curr_key_fifths = int(mod_f)
 
                 # 1. Run Geometric Staff-Removed OMR (Pass 2 isolated staff revisit if crops exist)
-                raw_staves = GeometricOMREngine.recognize_measure_crop(
-                    crop_image_path=m_crop,
-                    staves=staves_out,
-                    key_fifths=curr_key_fifths,
-                    quarter_length=quarter_length,
-                    time_signature=time_sig,
-                    staff_crop_paths=m_dict.get("staff_crop_paths")
-                )
+                if is_piano_only:
+                    # In piano-only mode, focus 100% of recognition on piano RH and LH staves
+                    piano_staves = [st for st in staves_out if st.role in ("piano_rh", "piano_lh") or st.bracket_type == "brace"]
+                    target_staves = piano_staves if piano_staves else staves_out
+                    raw_staves = GeometricOMREngine.recognize_measure_crop(
+                        crop_image_path=m_crop,
+                        staves=target_staves,
+                        key_fifths=curr_key_fifths,
+                        quarter_length=quarter_length,
+                        time_signature=time_sig,
+                        staff_crop_paths=m_dict.get("staff_crop_paths")
+                    )
+                    # For vocal staves, populate whole rests
+                    whole_rest_el = [
+                        NoteElement(
+                            pitch=None,
+                            duration_quarters=quarter_length,
+                            duration_type="dotted_half" if quarter_length == 3.0 else "whole",
+                            offset_quarters=0.0,
+                            is_rest=True
+                        )
+                    ]
+                    for st in staves_out:
+                        if st.staff_id not in raw_staves:
+                            raw_staves[st.staff_id] = TrackData(
+                                track_name=st.staff_id,
+                                clef=st.clef,
+                                elements=whole_rest_el
+                            )
+                else:
+                    raw_staves = GeometricOMREngine.recognize_measure_crop(
+                        crop_image_path=m_crop,
+                        staves=staves_out,
+                        key_fifths=curr_key_fifths,
+                        quarter_length=quarter_length,
+                        time_signature=time_sig,
+                        staff_crop_paths=m_dict.get("staff_crop_paths")
+                    )
 
                 # 2. Layer 1 OCR Cross-Validation: Check for silent vocal measures before choral entry
                 choral_entry = (score_hints or {}).get("choral_entry_measure")
-                if choral_entry and m_num < int(choral_entry):
+                if choral_entry and m_num < int(choral_entry) and not is_piano_only:
                     for st in staves_out:
                         if st.role in ("vocal", "vocal_men", "vocal_women"):
                             raw_staves[st.staff_id] = TrackData(
@@ -191,7 +226,10 @@ class HybridOMRFusionEngine:
             total_measures=total_measures,
             has_piano=has_piano,
             systems=systems_out,
-            metadata={"omr_engine": "Neuro-Symbolic Sensor-Fusion (OCR + Geometric OMR + Music Theory)"}
+            metadata={
+                "omr_engine": "Neuro-Symbolic Sensor-Fusion (OCR + Geometric OMR + Music Theory)",
+                "piano_only": is_piano_only,
+            }
         )
 
         target_measures = score_hints.get("total_measures") if score_hints else None

@@ -286,6 +286,8 @@ class XMLCompiler:
             cumulative_seconds += duration_s
 
         # Assemble unified full score MusicXML (score.musicxml)
+        is_piano_only = bool((cism.metadata or {}).get("piano_only"))
+
         # Filter vocal parts to those with active notes so the choir staves sit directly adjacent to piano staves
         active_vocal_parts = [
             vp for vp in vocal_parts
@@ -293,17 +295,23 @@ class XMLCompiler:
         ]
         chosen_vocal_parts = active_vocal_parts if active_vocal_parts else vocal_parts
 
-        sc.append(layout.StaffGroup(chosen_vocal_parts, symbol="bracket", name="Choir"))
-        for vp in chosen_vocal_parts:
-            sc.append(vp)
-
-        if cism.has_piano:
+        if is_piano_only or (not active_vocal_parts and cism.has_piano):
+            # Piano-only extraction: score.musicxml contains strictly the Keyboard Grand Staff
             sc.append(layout.StaffGroup([p_piano_rh, p_piano_lh], symbol="brace", name="Piano", abbreviation="Pno."))
             sc.append(p_piano_rh)
             sc.append(p_piano_lh)
         else:
-            # If a cappella, still provide piano part if requested
-            sc.append(parts["piano"])
+            sc.append(layout.StaffGroup(chosen_vocal_parts, symbol="bracket", name="Choir"))
+            for vp in chosen_vocal_parts:
+                sc.append(vp)
+
+            if cism.has_piano:
+                sc.append(layout.StaffGroup([p_piano_rh, p_piano_lh], symbol="brace", name="Piano", abbreviation="Pno."))
+                sc.append(p_piano_rh)
+                sc.append(p_piano_lh)
+            else:
+                # If a cappella, still provide piano part if requested
+                sc.append(parts["piano"])
 
         main_xml_path = output_dir / "score.musicxml"
         sc.write("musicxml", fp=str(main_xml_path))

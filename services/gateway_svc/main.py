@@ -66,6 +66,7 @@ class ScoreHintsRequest(BaseModel):
     tempo_bpm: Optional[float] = None
     choral_voicing: Optional[str] = None
     accompaniment_type: Optional[str] = None
+    piano_only: Optional[bool] = False
     staves_per_system: Optional[int] = None
     total_measures: Optional[int] = None
     custom_instructions: Optional[str] = None
@@ -381,6 +382,14 @@ def get_piano_musicxml(job_id: str):
     return FileResponse(file_path, media_type="application/vnd.recordare.musicxml+xml", filename=f"{job_id}_piano.musicxml")
 
 
+@router.get("/api/v1/jobs/{job_id}/piano_midi")
+def get_piano_midi(job_id: str):
+    file_path = STORAGE_DIR / "jobs" / job_id / "compiled" / "score_piano.mid"
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="score_piano.mid not found for this job")
+    return FileResponse(file_path, media_type="audio/midi", filename=f"{job_id}_piano.mid")
+
+
 @router.get("/api/v1/jobs/{job_id}/vocals_musicxml")
 def get_vocals_musicxml(job_id: str):
     file_path = STORAGE_DIR / "jobs" / job_id / "compiled" / "score_vocals.musicxml"
@@ -389,12 +398,30 @@ def get_vocals_musicxml(job_id: str):
     return FileResponse(file_path, media_type="application/vnd.recordare.musicxml+xml", filename=f"{job_id}_vocals.musicxml")
 
 
+@router.get("/api/v1/jobs/{job_id}/vocals_midi")
+def get_vocals_midi(job_id: str):
+    file_path = STORAGE_DIR / "jobs" / job_id / "compiled" / "score_vocals.mid"
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="score_vocals.mid not found for this job")
+    return FileResponse(file_path, media_type="audio/midi", filename=f"{job_id}_vocals.mid")
+
+
 @router.get("/api/v1/jobs/{job_id}/score_musicxml")
 def get_score_musicxml(job_id: str):
     file_path = STORAGE_DIR / "jobs" / job_id / "compiled" / "score.musicxml"
     if not file_path.exists():
         raise HTTPException(status_code=404, detail="score.musicxml not found for this job")
     return FileResponse(file_path, media_type="application/vnd.recordare.musicxml+xml", filename=f"{job_id}_score.musicxml")
+
+
+@router.get("/api/v1/jobs/{job_id}/score_midi")
+def get_score_midi(job_id: str):
+    file_path = STORAGE_DIR / "jobs" / job_id / "compiled" / "score.mid"
+    if not file_path.exists():
+        file_path = STORAGE_DIR / "jobs" / job_id / "compiled" / "score_11ch.mid"
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="score MIDI not found for this job")
+    return FileResponse(file_path, media_type="audio/midi", filename=f"{job_id}_score.mid")
 
 
 @router.get("/api/v1/jobs")
